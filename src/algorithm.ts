@@ -1,17 +1,21 @@
 /**
  * Algorithm interface — handoff §6.
  *
- * The generation algorithm is out of scope for this repo and is supplied
- * separately. This file only pins the interface this service codes against
- * so the rest of the service (mapping, minting, rendering pipeline) can be
- * built and typechecked before the real implementation lands.
+ * Implemented: ported from inshell-art/agent-art-Signature-prototype (the
+ * design panel's frozen defaults — see algorithm/settings.ts). The port
+ * itself lives in algorithm/{hash,geometry,svg,settings}.ts and is a
+ * faithful translation of that prototype's JS, not a reinterpretation.
  *
- * Do not implement render_canonical / render_instance here. Replace this
- * file's body wholesale when the algorithm is supplied — the surrounding
- * service should not need to change.
+ * `renderInstance`'s use of `offsets` is this service's own addition, not
+ * part of the prototype — the prototype only ever produces one canonical
+ * mark per handle. See algorithm/offsets.ts for what each axis perturbs
+ * and why; treat that mapping as a first pass, since the handoff reserves
+ * that aesthetic decision for whoever supplies "the algorithm" (§5).
  */
 
-import { NotImplementedError } from "./errors.js";
+import { applyOffsets, ENVELOPE as OFFSET_ENVELOPE } from "./algorithm/offsets.js";
+import { DEFAULT_SETTINGS, SPECIFICATION_VERSION } from "./algorithm/settings.js";
+import { renderSvgForText } from "./algorithm/svg.js";
 
 /** Fixed keys, fixed order, bounded per ENVELOPE (handoff §6). */
 export type OffsetVector = Record<string, number>;
@@ -19,22 +23,26 @@ export type OffsetVector = Record<string, number>;
 /** Per-axis bounds, used to validate the mapping table at startup (§5, §6). */
 export type Envelope = Record<string, { min: number; max: number }>;
 
-// TODO(algorithm): supplied with the real implementation.
-export const SPEC_VERSION: string | undefined = undefined;
+export const SPEC_VERSION: string = `personal-field-${SPECIFICATION_VERSION}`;
 
-// TODO(algorithm): supplied with the real implementation.
-export const ENVELOPE: Envelope | undefined = undefined;
+export const ENVELOPE: Envelope = OFFSET_ENVELOPE;
+
+const HANDLE_PATTERN = DEFAULT_SETTINGS.input.pattern;
+
+function assertValidHandle(handle: string): void {
+  if (!HANDLE_PATTERN.test(handle)) {
+    throw new Error(`invalid handle "${handle}" for signature generation`);
+  }
+}
 
 /** Pure function of handle. Returns raw SVG for the zero-offset signature. */
-export function renderCanonical(_handle: string): string {
-  throw new NotImplementedError(
-    "renderCanonical is not implemented — supplied separately with the algorithm (handoff §6)",
-  );
+export function renderCanonical(handle: string): string {
+  assertValidHandle(handle);
+  return renderSvgForText(handle, DEFAULT_SETTINGS).svg;
 }
 
 /** Pure function of its arguments. Returns raw SVG for an offset signature. */
-export function renderInstance(_handle: string, _offsets: OffsetVector): string {
-  throw new NotImplementedError(
-    "renderInstance is not implemented — supplied separately with the algorithm (handoff §6)",
-  );
+export function renderInstance(handle: string, offsets: OffsetVector): string {
+  assertValidHandle(handle);
+  return renderSvgForText(handle, applyOffsets(offsets)).svg;
 }

@@ -9,11 +9,10 @@
 
 import type { Account, Instance, NewInstance, Store } from "./types.js";
 
-let nextInstanceId = 1;
-
 export class MemoryStore implements Store {
   private accounts = new Map<string, Account>(); // keyed by xUserId
   private instances: Instance[] = [];
+  private nextInstanceId = 1;
 
   async getAccountByXUserId(xUserId: string): Promise<Account | null> {
     return this.accounts.get(xUserId) ?? null;
@@ -42,7 +41,7 @@ export class MemoryStore implements Store {
     const sequence = this.instances.filter((i) => i.seedHandle === data.seedHandle).length + 1;
     const instance: Instance = {
       ...data,
-      id: String(nextInstanceId++),
+      id: String(this.nextInstanceId++),
       createdAt: new Date(),
       sequence,
     };

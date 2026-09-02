@@ -2,10 +2,7 @@
  * GET /s/{handle}/{code}/{post_id} — mint or fetch instance (handoff §9.1).
  *
  * Full pipeline: validate, idempotency lookup, map+jitter+envelope assert,
- * render, rasterize, persist. Rendering (`renderInstance` in algorithm.ts)
- * currently throws NotImplementedError — that's the expected, structural
- * stopping point until the real algorithm is supplied; everything before
- * and around it is real.
+ * render, insert, rasterize, store SVG+PNG.
  */
 
 import * as algorithm from "../algorithm.js";
@@ -20,7 +17,11 @@ export function instanceAssetKey(id: string): string {
   return `instance:${id}`;
 }
 
-const HANDLE_PATTERN = /^[A-Za-z0-9_]{1,15}$/;
+export function canonicalAssetKey(handle: string): string {
+  return `canonical:${handle}`;
+}
+
+export const HANDLE_PATTERN = /^[A-Za-z0-9_]{1,15}$/;
 const POST_ID_PATTERN = /^\d+$/;
 
 // Bumped when the reading vocabulary (reading.ts) changes shape.
@@ -75,9 +76,6 @@ export async function mintOrFetchInstance(
     envelope: algorithm.ENVELOPE,
   });
 
-  // Structural stopping point until the real algorithm lands:
-  // renderInstance throws NotImplementedError, which propagates to the
-  // HTTP layer as a 501. Nothing is persisted for an unrendered instance.
   const svg = algorithm.renderInstance(handle, offsetVector);
 
   const instance = await store.insertInstance({

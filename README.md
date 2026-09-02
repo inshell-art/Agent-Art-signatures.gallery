@@ -9,8 +9,9 @@ The accumulated instances for one handle form a cluster. The cluster is the
 work; a single instance is a sample of it.
 
 See [HANDOFF.md](./HANDOFF.md) for the full implementation spec. The
-signature generation algorithm itself is out of scope for this repo and is
-supplied separately as a black-box module (§6 of the handoff).
+signature generation algorithm (§6 of the handoff) is ported from
+[inshell-art/agent-art-Signature-prototype](https://github.com/inshell-art/agent-art-Signature-prototype)
+— see [`src/algorithm/`](./src/algorithm/).
 
 ## Status
 
@@ -19,18 +20,30 @@ Stack: TypeScript / Node.
 - [`src/reading.ts`](./src/reading.ts) — implemented. The reading contract
   from handoff §4: the 4-axis vocabulary, the 4-character URL code, and
   validation (out-of-vocabulary codes are rejected, not coerced).
-- [`src/algorithm.ts`](./src/algorithm.ts) — deliberately blank. Pins the
-  interface from §6 (`renderCanonical`, `renderInstance`, `OffsetVector`,
-  `ENVELOPE`, `SPEC_VERSION`) so the rest of the service can be built against
-  it; the real implementation is supplied separately and replaces this file
-  wholesale.
+- [`src/algorithm/`](./src/algorithm/) — implements §6, ported from the
+  prototype: `hash.ts` (the SHA-256-labeled deterministic randomness — via
+  Node's `crypto`, byte-identical to the prototype's hand-rolled digest
+  since both implement the same standard), `geometry.ts` (character-seeded
+  Bézier anchors, outline/centerline path construction), `settings.ts` (the
+  prototype's frozen default parameters — path mode "Variable outline ·
+  Bézier C", both randomness toggles On), `svg.ts` (serialization), and
+  `offsets.ts` — **not** part of the prototype, which has no notion of an
+  instance. This is the bridge that lets `renderInstance`'s `OffsetVector`
+  perturb the canonical along four axes reusing the reading axis names
+  (`tempo` → rotation range, `weight` → stroke weight, `steadiness` →
+  Y-shift range, `reach` → handle-length range), sized so every combination
+  stays structurally inside `ENVELOPE` and offset zero reproduces the
+  canonical exactly. Treat that specific mapping as a first pass — the
+  handoff reserves the aesthetic call for whoever supplies "the algorithm"
+  (§5); [`src/algorithm.ts`](./src/algorithm.ts) is now the real
+  `renderCanonical`/`renderInstance`/`SPEC_VERSION`/`ENVELOPE` implementation,
+  not a stub.
 - [`src/mapping.ts`](./src/mapping.ts) — **placeholder**. A structurally
   valid `readings.map.v0-placeholder`: additive per-axis offsets, `xxxx` ->
-  zero vector, deterministic within-cell jitter from the source post ID, and
-  an envelope assertion that activates once `algorithm.ENVELOPE` is
-  supplied. The real table's contents are an aesthetic decision that ships
-  with the algorithm (§5) — swap the whole file, keep the function
-  signatures.
+  zero vector, deterministic within-cell jitter from the source post ID,
+  asserted inside `algorithm.ENVELOPE`. The real table's contents are still
+  an aesthetic decision reserved for later (§5) — swap the whole file, keep
+  the function signatures.
 - [`src/store/`](./src/store/) — data model (§7): `schema.sql` is the
   Postgres DDL (append-only `instances`, idempotency key on
   `(seed_handle, source_post_id)`); `types.ts` defines the `Store`
@@ -53,17 +66,15 @@ Stack: TypeScript / Node.
   credentials); `pendingClaims.ts` binds callback `state` to its PKCE
   verifier with a 5-minute TTL. Binds `x_user_id` (never the handle
   string) and freezes `seed_handle` on first claim only, per §10.
-- [`src/api/`](./src/api/) — HTTP API (§9): `GET /s/{handle}/{code}/{post_id}`
-  (mint or fetch, idempotent, rate-limited), `GET /c/{handle}` (cluster),
-  `GET /v/{id}` (verification data), `GET /i/instance/{id}.png` (serves the
-  stored PNG), `GET /claim/start` + `GET /claim/callback` (OAuth claim
-  flow, 501 if no `oauthClient` is configured). The mint path validates,
-  rate-limits, checks idempotency, and derives the offset vector — then
-  calls the algorithm's `renderInstance`, which throws until the real
-  algorithm lands, so new mints currently 501 there specifically. Existing
-  instances still fetch correctly, and everything else in the pipeline
-  (rasterization, storage, image serving, claiming) is exercised by tests
-  independent of the algorithm.
+- [`src/api/`](./src/api/) — HTTP API (§9), now end-to-end:
+  `GET /s/{handle}/{code}/{post_id}` (mint or fetch, idempotent,
+  rate-limited — validates, checks idempotency, derives the offset vector,
+  renders, persists, rasterizes, stores SVG+PNG), `GET /c/{handle}`
+  (cluster listing plus a canonical image URL), `GET /v/{id}` (verification
+  data), `GET /i/instance/{id}.png` and `GET /i/canonical/{handle}.png`
+  (serve the stored/lazily-rendered PNGs), `GET /claim/start` +
+  `GET /claim/callback` (OAuth claim flow, 501 if no `oauthClient` is
+  configured).
 
 ```bash
 npm install

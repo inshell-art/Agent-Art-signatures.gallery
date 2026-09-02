@@ -33,9 +33,20 @@ describe("GET /s/{handle}/{code}/{post_id}", () => {
     expect(res.status).toBe(400);
   });
 
-  it("501s for a new instance — blocked on the algorithm, not the pipeline around it", async () => {
+  it("mints a new instance: renders, rasterizes, persists, and serves an og:image", async () => {
     const res = await fetch(`${baseUrl}/s/alice/hfwo/123`);
-    expect(res.status).toBe(501);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('og:image" content="http://localhost');
+    expect(html).toContain("/i/instance/1.png");
+
+    const instances = await store.listInstancesForHandle("alice");
+    expect(instances).toHaveLength(1);
+    expect(instances[0].readingCode).toBe("hfwo");
+
+    const imageRes = await fetch(`${baseUrl}/i/instance/${instances[0].id}.png`);
+    expect(imageRes.status).toBe(200);
+    expect(imageRes.headers.get("content-type")).toBe("image/png");
   });
 
   it("is idempotent: a pre-existing instance for (handle, post_id) is served, not re-minted", async () => {
@@ -68,17 +79,25 @@ describe("GET /s/{handle}/{code}/{post_id}", () => {
     const results = await Promise.all(requests);
     const statuses = results.map((r) => r.status);
     expect(statuses).toContain(429);
-    // Every non-429 response is the expected 501 (blocked on the algorithm).
-    expect(statuses.filter((s) => s !== 429).every((s) => s === 501)).toBe(true);
+    expect(statuses.filter((s) => s !== 429).every((s) => s === 200)).toBe(true);
   });
 });
 
 describe("GET /c/{handle}", () => {
-  it("lists instances ordered by sequence", async () => {
+  it("lists instances ordered by sequence, with a canonical image URL", async () => {
     const res = await fetch(`${baseUrl}/c/alice`);
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toEqual({ handle: "alice", canonical: null, instances: [] });
+    expect(body).toEqual({
+      handle: "alice",
+      canonical: { image: `${baseUrl}/i/canonical/alice.png` },
+      instances: [],
+    });
+  });
+
+  it("400s on an invalid handle", async () => {
+    const res = await fetch(`${baseUrl}/c/not a handle`);
+    expect(res.status).toBe(400);
   });
 });
 
@@ -131,6 +150,22 @@ describe("GET /i/instance/{id}.png", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("image/png");
     expect(Buffer.from(await res.arrayBuffer())).toEqual(png);
+  });
+});
+
+describe("GET /i/canonical/{handle}.png", () => {
+  it("renders and caches the canonical mark on first request", async () => {
+    const res = await fetch(`${baseUrl}/i/canonical/alice.png`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("image/png");
+    const png = Buffer.from(await res.arrayBuffer());
+    expect(png.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+    expect(await assetStore.getPng("canonical:alice")).toEqual(png);
+  });
+
+  it("400s on an invalid handle", async () => {
+    const res = await fetch(`${baseUrl}/i/canonical/not a handle.png`);
+    expect(res.status).toBe(400);
   });
 });
 

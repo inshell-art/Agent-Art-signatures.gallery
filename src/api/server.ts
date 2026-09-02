@@ -1,27 +1,27 @@
 /**
  * HTTP API — handoff §9, plus rate limiting (§9.1) and X OAuth claiming
- * (§10). The mint path's render step is blocked on the algorithm (see
- * mint.ts) and 501s until that lands; everything around it — validation,
- * idempotency, rate limiting, rasterization/asset serving, claiming — is
- * real.
+ * (§10).
  *
  * Built on node:http rather than a framework — the route count doesn't
  * justify one yet. Swap freely once the surface grows.
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import * as algorithm from "../algorithm.js";
 import type { AssetStore } from "../assets/types.js";
 import { PendingClaims } from "../claim/pendingClaims.js";
 import { generateCodeChallenge, generateCodeVerifier, generateState, type XOAuthClient } from "../claim/xOAuthClient.js";
 import { NotImplementedError, ValidationError } from "../errors.js";
+import { rasterizeSvgToPng } from "../raster.js";
 import { RateLimiter } from "../rateLimit.js";
 import type { Store } from "../store/types.js";
-import { instanceAssetKey, mintOrFetchInstance } from "./mint.js";
+import { canonicalAssetKey, HANDLE_PATTERN, instanceAssetKey, mintOrFetchInstance } from "./mint.js";
 
 const MINT_PATTERN = /^\/s\/([^/]+)\/([^/]+)\/([^/]+)\/?$/;
 const CLUSTER_PATTERN = /^\/c\/([^/]+)\/?$/;
 const VERIFY_PATTERN = /^\/v\/([^/]+)\/?$/;
 const INSTANCE_IMAGE_PATTERN = /^\/i\/instance\/([^/]+)\.png$/;
+const CANONICAL_IMAGE_PATTERN = /^\/i\/canonical\/([^/]+)\.png$/;
 
 // Handoff §9.1: "Rate-limit per handle and per source IP."
 const MINT_LIMIT = 30;
@@ -84,12 +84,14 @@ async function handleMint(
   sendHtml(res, 200, html);
 }
 
-async function handleCluster(store: Store, res: ServerResponse, handle: string) {
+async function handleCluster(store: Store, req: IncomingMessage, res: ServerResponse, handle: string) {
+  if (!HANDLE_PATTERN.test(handle)) {
+    sendJson(res, 400, { error: `invalid handle "${handle}"` });
+    return;
+  }
   const instances = await store.listInstancesForHandle(handle);
-  // Canonical rendering (render_canonical) is blocked on the algorithm too;
-  // exposed as null here rather than omitted, so clients see it's pending
-  // rather than absent.
-  sendJson(res, 200, { handle, canonical: null, instances });
+  const canonicalImage = `${requestBaseUrl(req)}/i/canonical/${encodeURIComponent(handle)}.png`;
+  sendJson(res, 200, { handle, canonical: { image: canonicalImage }, instances });
 }
 
 async function handleVerify(store: Store, res: ServerResponse, id: string) {
@@ -116,6 +118,28 @@ async function handleInstanceImage(assetStore: AssetStore, res: ServerResponse, 
   if (!png) {
     sendJson(res, 404, { error: "image not found" });
     return;
+  }
+  res.writeHead(200, { "Content-Type": "image/png" });
+  res.end(png);
+}
+
+/**
+ * The canonical is a pure function of handle (§6), so it's cached
+ * lazily on first request rather than minted like an instance — nothing
+ * to record in the append-only instances table for it.
+ */
+async function handleCanonicalImage(assetStore: AssetStore, res: ServerResponse, handle: string) {
+  if (!HANDLE_PATTERN.test(handle)) {
+    sendJson(res, 400, { error: `invalid handle "${handle}"` });
+    return;
+  }
+  const key = canonicalAssetKey(handle);
+  let png = await assetStore.getPng(key);
+  if (!png) {
+    const svg = algorithm.renderCanonical(handle);
+    png = await rasterizeSvgToPng(svg);
+    await assetStore.putSvg(key, svg);
+    await assetStore.putPng(key, png);
   }
   res.writeHead(200, { "Content-Type": "image/png" });
   res.end(png);
@@ -184,7 +208,7 @@ export function createApp(store: Store, assetStore: AssetStore, options: AppOpti
 
       const clusterMatch = url.pathname.match(CLUSTER_PATTERN);
       if (clusterMatch) {
-        await handleCluster(store, res, decodeURIComponent(clusterMatch[1]));
+        await handleCluster(store, req, res, decodeURIComponent(clusterMatch[1]));
         return;
       }
 
@@ -197,6 +221,12 @@ export function createApp(store: Store, assetStore: AssetStore, options: AppOpti
       const imageMatch = url.pathname.match(INSTANCE_IMAGE_PATTERN);
       if (imageMatch) {
         await handleInstanceImage(assetStore, res, decodeURIComponent(imageMatch[1]));
+        return;
+      }
+
+      const canonicalImageMatch = url.pathname.match(CANONICAL_IMAGE_PATTERN);
+      if (canonicalImageMatch) {
+        await handleCanonicalImage(assetStore, res, decodeURIComponent(canonicalImageMatch[1]));
         return;
       }
 
