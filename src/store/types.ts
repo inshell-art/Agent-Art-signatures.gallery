@@ -39,7 +39,15 @@ export type NewInstance = Omit<Instance, "id" | "createdAt" | "sequence">;
  * same interface, against schema.sql, is the natural next swap.
  */
 export interface Store {
-  getOrCreateAccount(seedHandle: string, xUserId?: string): Promise<Account | null>;
+  getAccountByXUserId(xUserId: string): Promise<Account | null>;
+
+  /**
+   * Handoff §10: bind to the numeric ID, never the handle string. On first
+   * claim, freezes `seedHandle` to `handle`. On a later claim by the same
+   * `xUserId` (e.g. after a rename), only `currentHandle` is updated —
+   * `seedHandle` never changes post-claim.
+   */
+  claimAccount(xUserId: string, handle: string): Promise<Account>;
 
   /** Idempotency lookup per §7/§9.1: (seed_handle, source_post_id). */
   findInstanceByIdempotencyKey(seedHandle: string, sourcePostId: string): Promise<Instance | null>;

@@ -12,15 +12,23 @@ import type { Account, Instance, NewInstance, Store } from "./types.js";
 let nextInstanceId = 1;
 
 export class MemoryStore implements Store {
-  private accounts = new Map<string, Account>(); // keyed by seedHandle
+  private accounts = new Map<string, Account>(); // keyed by xUserId
   private instances: Instance[] = [];
 
-  async getOrCreateAccount(seedHandle: string, xUserId?: string): Promise<Account | null> {
-    const existing = this.accounts.get(seedHandle);
-    if (existing) return existing;
-    if (!xUserId) return null;
-    const account: Account = { xUserId, seedHandle, currentHandle: seedHandle, claimedAt: null };
-    this.accounts.set(seedHandle, account);
+  async getAccountByXUserId(xUserId: string): Promise<Account | null> {
+    return this.accounts.get(xUserId) ?? null;
+  }
+
+  async claimAccount(xUserId: string, handle: string): Promise<Account> {
+    const existing = this.accounts.get(xUserId);
+    if (existing) {
+      // seedHandle is frozen at first claim (§10); only display updates.
+      const updated: Account = { ...existing, currentHandle: handle };
+      this.accounts.set(xUserId, updated);
+      return updated;
+    }
+    const account: Account = { xUserId, seedHandle: handle, currentHandle: handle, claimedAt: new Date() };
+    this.accounts.set(xUserId, account);
     return account;
   }
 

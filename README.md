@@ -36,13 +36,34 @@ Stack: TypeScript / Node.
   `(seed_handle, source_post_id)`); `types.ts` defines the `Store`
   interface; `memoryStore.ts` is a placeholder in-memory implementation used
   for tests until a Postgres-backed `Store` is wired up.
+- [`src/raster.ts`](./src/raster.ts) — real, not a placeholder: SVG -> PNG
+  via `sharp`, since X only accepts raster for `og:image` (§9.1). Doesn't
+  depend on the algorithm's contents, only on it producing valid SVG.
+- [`src/assets/`](./src/assets/) — asset storage for rendered marks: SVG
+  kept as source of truth, PNG for the card (§9.1). `memoryAssetStore.ts` is
+  a placeholder in-memory implementation, same swap-out story as
+  `MemoryStore`.
+- [`src/rateLimit.ts`](./src/rateLimit.ts) — real sliding-window limiter,
+  per handle and per source IP (§9.1: "unbounded minting is a
+  denial-of-wallet vector"). In-memory; would need a shared backend (e.g.
+  Redis) behind a multi-instance deployment.
+- [`src/claim/`](./src/claim/) — X OAuth 2.0 + PKCE claiming (§10).
+  `xOAuthClient.ts` is a real client against X's public OAuth endpoints
+  (untested against the live API here — needs a registered app's
+  credentials); `pendingClaims.ts` binds callback `state` to its PKCE
+  verifier with a 5-minute TTL. Binds `x_user_id` (never the handle
+  string) and freezes `seed_handle` on first claim only, per §10.
 - [`src/api/`](./src/api/) — HTTP API (§9): `GET /s/{handle}/{code}/{post_id}`
-  (mint or fetch, idempotent), `GET /c/{handle}` (cluster), `GET /v/{id}`
-  (verification data). The mint path validates, checks idempotency, and
-  derives the offset vector — then calls the algorithm's `renderInstance`,
-  which throws until the real algorithm lands, so new mints currently 501.
-  Existing instances still fetch correctly. X OAuth claiming (§10) not yet
-  started.
+  (mint or fetch, idempotent, rate-limited), `GET /c/{handle}` (cluster),
+  `GET /v/{id}` (verification data), `GET /i/instance/{id}.png` (serves the
+  stored PNG), `GET /claim/start` + `GET /claim/callback` (OAuth claim
+  flow, 501 if no `oauthClient` is configured). The mint path validates,
+  rate-limits, checks idempotency, and derives the offset vector — then
+  calls the algorithm's `renderInstance`, which throws until the real
+  algorithm lands, so new mints currently 501 there specifically. Existing
+  instances still fetch correctly, and everything else in the pipeline
+  (rasterization, storage, image serving, claiming) is exercised by tests
+  independent of the algorithm.
 
 ```bash
 npm install
