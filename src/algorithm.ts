@@ -11,6 +11,8 @@
  * service should not need to change.
  */
 
+import { NotImplementedError } from "./errors.js";
+
 /** Fixed keys, fixed order, bounded per ENVELOPE (handoff §6). */
 export type OffsetVector = Record<string, number>;
 
@@ -25,10 +27,14 @@ export const ENVELOPE: Envelope | undefined = undefined;
 
 /** Pure function of handle. Returns raw SVG for the zero-offset signature. */
 export function renderCanonical(_handle: string): string {
-  throw new Error("renderCanonical is not implemented — supplied separately with the algorithm (handoff §6)");
+  throw new NotImplementedError(
+    "renderCanonical is not implemented — supplied separately with the algorithm (handoff §6)",
+  );
 }
 
 /** Pure function of its arguments. Returns raw SVG for an offset signature. */
 export function renderInstance(_handle: string, _offsets: OffsetVector): string {
-  throw new Error("renderInstance is not implemented — supplied separately with the algorithm (handoff §6)");
+  throw new NotImplementedError(
+    "renderInstance is not implemented — supplied separately with the algorithm (handoff §6)",
+  );
 }

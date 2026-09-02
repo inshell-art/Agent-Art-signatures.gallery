@@ -24,7 +24,25 @@ Stack: TypeScript / Node.
   `ENVELOPE`, `SPEC_VERSION`) so the rest of the service can be built against
   it; the real implementation is supplied separately and replaces this file
   wholesale.
-- Mapping table (§5), data model (§7), and HTTP API (§9) not yet started.
+- [`src/mapping.ts`](./src/mapping.ts) — **placeholder**. A structurally
+  valid `readings.map.v0-placeholder`: additive per-axis offsets, `xxxx` ->
+  zero vector, deterministic within-cell jitter from the source post ID, and
+  an envelope assertion that activates once `algorithm.ENVELOPE` is
+  supplied. The real table's contents are an aesthetic decision that ships
+  with the algorithm (§5) — swap the whole file, keep the function
+  signatures.
+- [`src/store/`](./src/store/) — data model (§7): `schema.sql` is the
+  Postgres DDL (append-only `instances`, idempotency key on
+  `(seed_handle, source_post_id)`); `types.ts` defines the `Store`
+  interface; `memoryStore.ts` is a placeholder in-memory implementation used
+  for tests until a Postgres-backed `Store` is wired up.
+- [`src/api/`](./src/api/) — HTTP API (§9): `GET /s/{handle}/{code}/{post_id}`
+  (mint or fetch, idempotent), `GET /c/{handle}` (cluster), `GET /v/{id}`
+  (verification data). The mint path validates, checks idempotency, and
+  derives the offset vector — then calls the algorithm's `renderInstance`,
+  which throws until the real algorithm lands, so new mints currently 501.
+  Existing instances still fetch correctly. X OAuth claiming (§10) not yet
+  started.
 
 ```bash
 npm install
