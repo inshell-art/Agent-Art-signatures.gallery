@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryAssetStore } from "../assets/memoryAssetStore.js";
 import type { XOAuthClient, XUser } from "../claim/xOAuthClient.js";
 import { MemoryStore } from "../store/memoryStore.js";
+import type { XApiClient } from "../verification/xApiClient.js";
 import { startServer, type AppOptions } from "./server.js";
 
 let server: ReturnType<typeof startServer>;
@@ -83,9 +84,11 @@ describe("GET /s/{handle}/{code}/{post_id}", () => {
   });
 });
 
+const JSON_ACCEPT = { headers: { Accept: "application/json" } };
+
 describe("GET /c/{handle}", () => {
-  it("lists instances ordered by sequence, with a canonical image URL", async () => {
-    const res = await fetch(`${baseUrl}/c/alice`);
+  it("lists instances ordered by sequence, with a canonical image URL (JSON on request)", async () => {
+    const res = await fetch(`${baseUrl}/c/alice`, JSON_ACCEPT);
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toEqual({
@@ -93,6 +96,32 @@ describe("GET /c/{handle}", () => {
       canonical: { image: `${baseUrl}/i/canonical/alice.png` },
       instances: [],
     });
+  });
+
+  it("renders an HTML page by default", async () => {
+    await store.insertInstance({
+      xUserId: null,
+      seedHandle: "alice",
+      readingCode: "hfwo" as any,
+      readingJson: { tempo: "hurried", weight: "firm", steadiness: "wavering", reach: "open" },
+      rationale: "quick and dense",
+      sourcePostId: "123",
+      offsetVector: { tempo: 1, weight: 1, steadiness: 0, reach: 1 },
+      specVersion: "test-v0",
+      mapVersion: "readings.map.v0-placeholder",
+      schemaVersion: "reading.v1",
+      provenance: "unverified",
+      supersedes: null,
+    });
+
+    const res = await fetch(`${baseUrl}/c/alice`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const html = await res.text();
+    expect(html).toContain("@alice");
+    expect(html).toContain("quick and dense");
+    expect(html).toContain("/i/canonical/alice.png");
+    expect(html).toContain("/i/instance/1.png");
   });
 
   it("400s on an invalid handle", async () => {
@@ -107,7 +136,38 @@ describe("GET /v/{instance_id}", () => {
     expect(res.status).toBe(404);
   });
 
-  it("returns everything needed to recompute the instance independently (§9.4)", async () => {
+  it("returns everything needed to recompute the instance independently, including the spec hash (§9.4, JSON on request)", async () => {
+    const instance = await store.insertInstance({
+      xUserId: null,
+      seedHandle: "alice",
+      readingCode: "hfwo" as any,
+      readingJson: { tempo: "hurried", weight: "firm", steadiness: "wavering", reach: "open" },
+      rationale: null,
+      sourcePostId: "123",
+      offsetVector: { tempo: 1, weight: 1, steadiness: 0, reach: 1 },
+      specVersion: "test-v0",
+      mapVersion: "readings.map.v0-placeholder",
+      schemaVersion: "reading.v1",
+      provenance: "unverified",
+      supersedes: null,
+    });
+
+    const res = await fetch(`${baseUrl}/v/${instance.id}`, JSON_ACCEPT);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toMatchObject({
+      seedHandle: "alice",
+      readingCode: "hfwo",
+      sourcePostId: "123",
+      specVersion: "test-v0",
+      mapVersion: "readings.map.v0-placeholder",
+      schemaVersion: "reading.v1",
+    });
+    expect(typeof body.specHash).toBe("string");
+    expect(body.specHash.length).toBeGreaterThan(0);
+  });
+
+  it("renders an HTML page by default", async () => {
     const instance = await store.insertInstance({
       xUserId: null,
       seedHandle: "alice",
@@ -125,15 +185,10 @@ describe("GET /v/{instance_id}", () => {
 
     const res = await fetch(`${baseUrl}/v/${instance.id}`);
     expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body).toMatchObject({
-      seedHandle: "alice",
-      readingCode: "hfwo",
-      sourcePostId: "123",
-      specVersion: "test-v0",
-      mapVersion: "readings.map.v0-placeholder",
-      schemaVersion: "reading.v1",
-    });
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const html = await res.text();
+    expect(html).toContain("hfwo");
+    expect(html).toContain("spec_hash");
   });
 });
 
@@ -166,6 +221,52 @@ describe("GET /i/canonical/{handle}.png", () => {
   it("400s on an invalid handle", async () => {
     const res = await fetch(`${baseUrl}/i/canonical/not a handle.png`);
     expect(res.status).toBe(400);
+  });
+});
+
+describe("provenance verification (§9.3)", () => {
+  it("mints and responds before verification resolves, then flips provenance to verified", async () => {
+    let resolveVerification!: (value: boolean) => void;
+    const verifyMention = vi.fn(() => new Promise<boolean>((resolve) => (resolveVerification = resolve)));
+    const xApiClient: XApiClient = { verifyMention };
+    await server.close();
+    await boot({ xApiClient, agentHandle: "grok" });
+
+    const res = await fetch(`${baseUrl}/s/alice/hfwo/123`);
+    expect(res.status).toBe(200);
+
+    // The response already completed, but verifyMention's promise is still
+    // pending — the mint route never awaited it.
+    let instances = await store.listInstancesForHandle("alice");
+    expect(instances[0].provenance).toBe("unverified");
+
+    resolveVerification(true);
+    await vi.waitFor(async () => {
+      instances = await store.listInstancesForHandle("alice");
+      expect(instances[0].provenance).toBe("verified");
+    });
+
+    expect(verifyMention).toHaveBeenCalledWith({ postId: "123", handle: "alice", agentHandle: "grok" });
+  });
+
+  it("leaves provenance unverified when the X API can't confirm the mention", async () => {
+    const xApiClient: XApiClient = { verifyMention: vi.fn(async () => false) };
+    await server.close();
+    await boot({ xApiClient, agentHandle: "grok" });
+
+    await fetch(`${baseUrl}/s/alice/hfwo/123`);
+    await vi.waitFor(async () => {
+      expect(xApiClient.verifyMention).toHaveBeenCalled();
+    });
+    const instances = await store.listInstancesForHandle("alice");
+    expect(instances[0].provenance).toBe("unverified");
+  });
+
+  it("skips verification entirely when no xApiClient is configured", async () => {
+    const res = await fetch(`${baseUrl}/s/alice/hfwo/123`);
+    expect(res.status).toBe(200);
+    const instances = await store.listInstancesForHandle("alice");
+    expect(instances[0].provenance).toBe("unverified");
   });
 });
 

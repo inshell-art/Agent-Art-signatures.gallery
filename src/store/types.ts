@@ -59,4 +59,13 @@ export interface Store {
   listInstancesForHandle(seedHandle: string): Promise<Instance[]>;
 
   getInstanceById(id: string): Promise<Instance | null>;
+
+  /**
+   * Handoff §9.3: async, post-mint provenance verification. This is a
+   * narrow, sanctioned exception to "append-only" (§7, §12.4) — it flips a
+   * trust *status* on an existing row, never the generative content
+   * (reading, offset vector, rendered bytes) that makes an instance
+   * forgeable if mutated. Never deletes the row either way.
+   */
+  updateProvenance(instanceId: string, provenance: Provenance): Promise<void>;
 }

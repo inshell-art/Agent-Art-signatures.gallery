@@ -13,7 +13,9 @@
  * that aesthetic decision for whoever supplies "the algorithm" (§5).
  */
 
+import { createHash } from "node:crypto";
 import { applyOffsets, ENVELOPE as OFFSET_ENVELOPE } from "./algorithm/offsets.js";
+import { canonicalJson } from "./algorithm/hash.js";
 import { DEFAULT_SETTINGS, SPECIFICATION_VERSION } from "./algorithm/settings.js";
 import { renderSvgForText } from "./algorithm/svg.js";
 
@@ -26,6 +28,16 @@ export type Envelope = Record<string, { min: number; max: number }>;
 export const SPEC_VERSION: string = `personal-field-${SPECIFICATION_VERSION}`;
 
 export const ENVELOPE: Envelope = OFFSET_ENVELOPE;
+
+/**
+ * "The published spec hash" (handoff §9.4) — a content hash of the exact
+ * settings that determine every rendered byte, so a stranger can confirm
+ * they're recomputing against the same published algorithm, not just a
+ * same-numbered one.
+ */
+export const SPEC_HASH: string = createHash("sha256")
+  .update(canonicalJson({ ...DEFAULT_SETTINGS, input: { ...DEFAULT_SETTINGS.input, pattern: DEFAULT_SETTINGS.input.pattern.source } }))
+  .digest("hex");
 
 const HANDLE_PATTERN = DEFAULT_SETTINGS.input.pattern;
 

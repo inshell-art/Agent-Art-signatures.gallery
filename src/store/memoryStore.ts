@@ -7,7 +7,7 @@
  * contract, this file is not.
  */
 
-import type { Account, Instance, NewInstance, Store } from "./types.js";
+import type { Account, Instance, NewInstance, Provenance, Store } from "./types.js";
 
 export class MemoryStore implements Store {
   private accounts = new Map<string, Account>(); // keyed by xUserId
@@ -57,5 +57,10 @@ export class MemoryStore implements Store {
 
   async getInstanceById(id: string): Promise<Instance | null> {
     return this.instances.find((i) => i.id === id) ?? null;
+  }
+
+  async updateProvenance(instanceId: string, provenance: Provenance): Promise<void> {
+    const instance = this.instances.find((i) => i.id === instanceId);
+    if (instance) instance.provenance = provenance;
   }
 }

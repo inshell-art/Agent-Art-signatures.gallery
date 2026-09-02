@@ -1,7 +1,12 @@
 -- Data model — handoff §7.
 --
--- Append-only. No UPDATE, no DELETE on instances. Corrections are new rows
--- with a `supersedes` pointer, not edits to an existing row.
+-- Append-only. No UPDATE, no DELETE on instances, with one narrow exception:
+-- `provenance` transitions once from 'unverified' to 'verified' after async
+-- post-mint verification (handoff §9.3). That's a trust status, not
+-- generative content, so mutating it doesn't create the forgery risk
+-- append-only exists to prevent. Every other column, and any real
+-- correction, follows the append-only rule: new rows with a `supersedes`
+-- pointer, never edits.
 
 CREATE TABLE accounts (
     -- Primary key. Numeric X account ID, never the handle. Handles get

@@ -66,15 +66,31 @@ Stack: TypeScript / Node.
   credentials); `pendingClaims.ts` binds callback `state` to its PKCE
   verifier with a 5-minute TTL. Binds `x_user_id` (never the handle
   string) and freezes `seed_handle` on first claim only, per §10.
+- [`src/verification/`](./src/verification/) — async, post-mint provenance
+  verification (§9.3). `xApiClient.ts` is a real client against X API v2
+  (app-only bearer auth; untested against the live API here, same caveat as
+  the OAuth client — needs a registered app's credentials); `verify.ts` is
+  the fire-and-forget call the mint route makes *after* responding, so a
+  slow or down X API can never delay the card unfurl. Flips an instance's
+  `provenance` from `unverified` to `verified` — the one column the
+  append-only data model (§7) allows to change post-insert, since it's a
+  trust status, not generative content (see the note in `schema.sql`).
+  Skipped entirely if no `xApiClient`/`agentHandle` is configured.
+- [`src/api/pages.ts`](./src/api/pages.ts) — HTML templates for `/c/{handle}`
+  (cluster: canonical + every instance, reading code, rationale, provenance)
+  and `/v/{id}` (verification: every field §9.4 requires, including the new
+  `spec_hash`). `algorithm.SPEC_HASH` (in `algorithm.ts`) is a content hash
+  of the exact settings that determine every rendered byte — what §9.4
+  calls "the published spec hash."
 - [`src/api/`](./src/api/) — HTTP API (§9), now end-to-end:
   `GET /s/{handle}/{code}/{post_id}` (mint or fetch, idempotent,
   rate-limited — validates, checks idempotency, derives the offset vector,
-  renders, persists, rasterizes, stores SVG+PNG), `GET /c/{handle}`
-  (cluster listing plus a canonical image URL), `GET /v/{id}` (verification
-  data), `GET /i/instance/{id}.png` and `GET /i/canonical/{handle}.png`
-  (serve the stored/lazily-rendered PNGs), `GET /claim/start` +
-  `GET /claim/callback` (OAuth claim flow, 501 if no `oauthClient` is
-  configured).
+  renders, persists, rasterizes, stores SVG+PNG, kicks off provenance
+  verification), `GET /c/{handle}` and `GET /v/{id}` (HTML by default, JSON
+  when the request sends `Accept: application/json`), `GET /i/instance/{id}.png`
+  and `GET /i/canonical/{handle}.png` (serve the stored/lazily-rendered
+  PNGs), `GET /claim/start` + `GET /claim/callback` (OAuth claim flow, 501
+  if no `oauthClient` is configured).
 
 ```bash
 npm install

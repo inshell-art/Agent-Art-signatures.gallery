@@ -1,6 +1,6 @@
 /**
- * HTTP API — handoff §9, plus rate limiting (§9.1) and X OAuth claiming
- * (§10).
+ * HTTP API — handoff §9 (including async provenance verification, §9.3),
+ * plus rate limiting (§9.1) and X OAuth claiming (§10).
  *
  * Built on node:http rather than a framework — the route count doesn't
  * justify one yet. Swap freely once the surface grows.
@@ -15,7 +15,10 @@ import { NotImplementedError, ValidationError } from "../errors.js";
 import { rasterizeSvgToPng } from "../raster.js";
 import { RateLimiter } from "../rateLimit.js";
 import type { Store } from "../store/types.js";
+import type { XApiClient } from "../verification/xApiClient.js";
+import { verifyAndRecordProvenance } from "../verification/verify.js";
 import { canonicalAssetKey, HANDLE_PATTERN, instanceAssetKey, mintOrFetchInstance } from "./mint.js";
+import { renderClusterPage, renderVerifyPage } from "./pages.js";
 
 const MINT_PATTERN = /^\/s\/([^/]+)\/([^/]+)\/([^/]+)\/?$/;
 const CLUSTER_PATTERN = /^\/c\/([^/]+)\/?$/;
@@ -29,6 +32,9 @@ const MINT_WINDOW_MS = 10 * 60 * 1000;
 
 export interface AppOptions {
   oauthClient?: XOAuthClient;
+  /** Enables async provenance verification (§9.3) when both are set. */
+  xApiClient?: XApiClient;
+  agentHandle?: string;
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -39,6 +45,11 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 function sendHtml(res: ServerResponse, status: number, html: string): void {
   res.writeHead(status, { "Content-Type": "text/html; charset=utf-8" });
   res.end(html);
+}
+
+/** Content negotiation for /c and /v: JSON only on explicit request, HTML by default. */
+function wantsJson(req: IncomingMessage): boolean {
+  return (req.headers.accept ?? "").includes("application/json");
 }
 
 function requestBaseUrl(req: IncomingMessage): string {
@@ -62,13 +73,24 @@ async function handleMint(
   handle: string,
   code: string,
   postId: string,
+  options: AppOptions,
 ) {
   if (!perHandleLimiter.tryConsume(handle) || !perIpLimiter.tryConsume(clientIp(req))) {
     sendJson(res, 429, { error: "rate limit exceeded" });
     return;
   }
 
-  const { instance } = await mintOrFetchInstance(store, assetStore, { handle, code, postId });
+  const { instance, isNew } = await mintOrFetchInstance(store, assetStore, { handle, code, postId });
+
+  // §9.3: async, post-mint, never awaited before the card response.
+  if (isNew && options.xApiClient && options.agentHandle) {
+    verifyAndRecordProvenance(store, options.xApiClient, instance.id, instance.seedHandle, instance.sourcePostId, options.agentHandle).catch(
+      () => {
+        // Best-effort: a failed check just leaves provenance 'unverified',
+        // which is the safe default it was inserted with.
+      },
+    );
+  }
 
   const ogImage = `${requestBaseUrl(req)}/i/instance/${instance.id}.png`;
   const html = `<!doctype html>
@@ -91,26 +113,37 @@ async function handleCluster(store: Store, req: IncomingMessage, res: ServerResp
   }
   const instances = await store.listInstancesForHandle(handle);
   const canonicalImage = `${requestBaseUrl(req)}/i/canonical/${encodeURIComponent(handle)}.png`;
-  sendJson(res, 200, { handle, canonical: { image: canonicalImage }, instances });
+
+  if (wantsJson(req)) {
+    sendJson(res, 200, { handle, canonical: { image: canonicalImage }, instances });
+    return;
+  }
+  sendHtml(res, 200, renderClusterPage(handle, canonicalImage, instances));
 }
 
-async function handleVerify(store: Store, res: ServerResponse, id: string) {
+async function handleVerify(store: Store, req: IncomingMessage, res: ServerResponse, id: string) {
   const instance = await store.getInstanceById(id);
   if (!instance) {
     sendJson(res, 404, { error: "instance not found" });
     return;
   }
-  // Per §9.4: everything needed to recompute the instance independently.
-  sendJson(res, 200, {
-    seedHandle: instance.seedHandle,
-    reading: instance.readingJson,
-    readingCode: instance.readingCode,
-    sourcePostId: instance.sourcePostId,
-    offsetVector: instance.offsetVector,
-    specVersion: instance.specVersion,
-    mapVersion: instance.mapVersion,
-    schemaVersion: instance.schemaVersion,
-  });
+
+  if (wantsJson(req)) {
+    // Per §9.4: everything needed to recompute the instance independently.
+    sendJson(res, 200, {
+      seedHandle: instance.seedHandle,
+      reading: instance.readingJson,
+      readingCode: instance.readingCode,
+      sourcePostId: instance.sourcePostId,
+      offsetVector: instance.offsetVector,
+      specVersion: instance.specVersion,
+      mapVersion: instance.mapVersion,
+      schemaVersion: instance.schemaVersion,
+      specHash: algorithm.SPEC_HASH,
+    });
+    return;
+  }
+  sendHtml(res, 200, renderVerifyPage(instance, algorithm.SPEC_HASH));
 }
 
 async function handleInstanceImage(assetStore: AssetStore, res: ServerResponse, id: string) {
@@ -202,6 +235,7 @@ export function createApp(store: Store, assetStore: AssetStore, options: AppOpti
           decodeURIComponent(handle),
           decodeURIComponent(code),
           decodeURIComponent(postId),
+          options,
         );
         return;
       }
@@ -214,7 +248,7 @@ export function createApp(store: Store, assetStore: AssetStore, options: AppOpti
 
       const verifyMatch = url.pathname.match(VERIFY_PATTERN);
       if (verifyMatch) {
-        await handleVerify(store, res, decodeURIComponent(verifyMatch[1]));
+        await handleVerify(store, req, res, decodeURIComponent(verifyMatch[1]));
         return;
       }
 
