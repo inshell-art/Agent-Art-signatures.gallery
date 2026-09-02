@@ -96,4 +96,13 @@ Stack: TypeScript / Node.
 npm install
 npm test        # vitest
 npm run typecheck
+npm run dev      # http://localhost:3000, in-memory Store/AssetStore, hot reload
+npm run build && npm start   # compiled, same in-memory backing
 ```
+
+`npm run dev` ([`src/main.ts`](./src/main.ts)) needs no database or credentials to
+try the full mint -> render -> rasterize -> serve pipeline; data resets on
+restart. Set `X_CLIENT_ID`/`X_CLIENT_SECRET`/`X_REDIRECT_URI` to enable
+`/claim/*`, or `X_BEARER_TOKEN`/`AGENT_HANDLE` to enable provenance
+verification — both stay off (claiming 501s, instances stay `unverified`)
+without them.
