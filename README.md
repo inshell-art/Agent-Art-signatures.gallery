@@ -66,11 +66,11 @@ Stack: TypeScript / Node.
   credentials); `pendingClaims.ts` binds callback `state` to its PKCE
   verifier with a 5-minute TTL. Binds `x_user_id` (never the handle
   string) and freezes `seed_handle` on first claim only, per §10.
-- [`src/verification/`](./src/verification/) — async, post-mint provenance
+- [`src/verification/`](./src/verification/) — async, post-issue provenance
   verification (§9.3). `xApiClient.ts` is a real client against X API v2
   (app-only bearer auth; untested against the live API here, same caveat as
   the OAuth client — needs a registered app's credentials); `verify.ts` is
-  the fire-and-forget call the mint route makes *after* responding, so a
+  the fire-and-forget call the issue route makes *after* responding, so a
   slow or down X API can never delay the card unfurl. Flips an instance's
   `provenance` from `unverified` to `verified` — the one column the
   append-only data model (§7) allows to change post-insert, since it's a
@@ -83,7 +83,7 @@ Stack: TypeScript / Node.
   of the exact settings that determine every rendered byte — what §9.4
   calls "the published spec hash."
 - [`src/api/`](./src/api/) — HTTP API (§9), now end-to-end:
-  `GET /s/{handle}/{code}/{post_id}` (mint or fetch, idempotent,
+  `GET /s/{handle}/{code}/{post_id}` (issue or fetch, idempotent,
   rate-limited — validates, checks idempotency, derives the offset vector,
   renders, persists, rasterizes, stores SVG+PNG, kicks off provenance
   verification), `GET /c/{handle}` and `GET /v/{id}` (HTML by default, JSON
@@ -101,7 +101,7 @@ npm run build && npm start   # compiled, same in-memory backing
 ```
 
 `npm run dev` ([`src/main.ts`](./src/main.ts)) needs no database or credentials to
-try the full mint -> render -> rasterize -> serve pipeline; data resets on
+try the full issue -> render -> rasterize -> serve pipeline; data resets on
 restart. Set `X_CLIENT_ID`/`X_CLIENT_SECRET`/`X_REDIRECT_URI` to enable
 `/claim/*`, or `X_BEARER_TOKEN`/`AGENT_HANDLE` to enable provenance
 verification — both stay off (claiming 501s, instances stay `unverified`)

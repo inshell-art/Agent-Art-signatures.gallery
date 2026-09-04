@@ -1,6 +1,6 @@
 /**
- * Async, post-mint provenance check (handoff §9.3). Called fire-and-forget
- * from the mint route — never awaited before the card response, so a slow
+ * Async, post-issue provenance check (handoff §9.3). Called fire-and-forget
+ * from the issue route — never awaited before the card response, so a slow
  * or down X API can't cause the unfurl to time out.
  */
 

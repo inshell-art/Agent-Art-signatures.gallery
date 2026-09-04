@@ -34,7 +34,7 @@ describe("GET /s/{handle}/{code}/{post_id}", () => {
     expect(res.status).toBe(400);
   });
 
-  it("mints a new instance: renders, rasterizes, persists, and serves an og:image", async () => {
+  it("issues a new instance: renders, rasterizes, persists, and serves an og:image", async () => {
     const res = await fetch(`${baseUrl}/s/alice/hfwo/123`);
     expect(res.status).toBe(200);
     const html = await res.text();
@@ -50,7 +50,7 @@ describe("GET /s/{handle}/{code}/{post_id}", () => {
     expect(imageRes.headers.get("content-type")).toBe("image/png");
   });
 
-  it("is idempotent: a pre-existing instance for (handle, post_id) is served, not re-minted", async () => {
+  it("is idempotent: a pre-existing instance for (handle, post_id) is served, not re-issued", async () => {
     await store.insertInstance({
       xUserId: null,
       seedHandle: "alice",
@@ -74,7 +74,7 @@ describe("GET /s/{handle}/{code}/{post_id}", () => {
   });
 
   it("429s once the per-handle rate limit is exceeded", async () => {
-    // Distinct post_ids so each request is a distinct (would-be) mint, not
+    // Distinct post_ids so each request is a distinct (would-be) issue, not
     // an idempotent re-fetch.
     const requests = Array.from({ length: 31 }, (_, i) => fetch(`${baseUrl}/s/bob/hfwo/${i}`));
     const results = await Promise.all(requests);
@@ -225,7 +225,7 @@ describe("GET /i/canonical/{handle}.png", () => {
 });
 
 describe("provenance verification (§9.3)", () => {
-  it("mints and responds before verification resolves, then flips provenance to verified", async () => {
+  it("issues and responds before verification resolves, then flips provenance to verified", async () => {
     let resolveVerification!: (value: boolean) => void;
     const verifyMention = vi.fn(() => new Promise<boolean>((resolve) => (resolveVerification = resolve)));
     const xApiClient: XApiClient = { verifyMention };
@@ -236,7 +236,7 @@ describe("provenance verification (§9.3)", () => {
     expect(res.status).toBe(200);
 
     // The response already completed, but verifyMention's promise is still
-    // pending — the mint route never awaited it.
+    // pending — the issue route never awaited it.
     let instances = await store.listInstancesForHandle("alice");
     expect(instances[0].provenance).toBe("unverified");
 

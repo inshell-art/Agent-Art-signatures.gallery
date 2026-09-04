@@ -2,7 +2,7 @@
 --
 -- Append-only. No UPDATE, no DELETE on instances, with one narrow exception:
 -- `provenance` transitions once from 'unverified' to 'verified' after async
--- post-mint verification (handoff §9.3). That's a trust status, not
+-- post-issue verification (handoff §9.3). That's a trust status, not
 -- generative content, so mutating it doesn't create the forgery risk
 -- append-only exists to prevent. Every other column, and any real
 -- correction, follows the append-only rule: new rows with a `supersedes`
@@ -67,7 +67,7 @@ CREATE TABLE instances (
 );
 
 -- Idempotency key (handoff §7, §9.1, §12.6): a re-fetch by X's crawler must
--- return the existing instance, never mint a duplicate. Scoped by handle
+-- return the existing instance, never issue a duplicate. Scoped by handle
 -- rather than x_user_id since unclaimed handles must also be idempotent.
 CREATE UNIQUE INDEX instances_idempotency_key
     ON instances (seed_handle, source_post_id);

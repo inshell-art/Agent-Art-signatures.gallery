@@ -1,5 +1,5 @@
 /**
- * GET /s/{handle}/{code}/{post_id} — mint or fetch instance (handoff §9.1).
+ * GET /s/{handle}/{code}/{post_id} — issue or fetch instance (handoff §9.1).
  *
  * Full pipeline: validate, idempotency lookup, map+jitter+envelope assert,
  * render, insert, rasterize, store SVG+PNG.
@@ -27,18 +27,18 @@ const POST_ID_PATTERN = /^\d+$/;
 // Bumped when the reading vocabulary (reading.ts) changes shape.
 const SCHEMA_VERSION = "reading.v1";
 
-export interface MintParams {
+export interface IssueParams {
   handle: string;
   code: string;
   postId: string;
 }
 
-export interface MintResult {
+export interface IssueResult {
   instance: Instance;
   isNew: boolean;
 }
 
-export function validateMintParams(params: MintParams): { handle: string; code: ReadingCode; postId: string } {
+export function validateIssueParams(params: IssueParams): { handle: string; code: ReadingCode; postId: string } {
   if (!HANDLE_PATTERN.test(params.handle)) {
     throw new ValidationError(`invalid handle "${params.handle}"`);
   }
@@ -53,16 +53,16 @@ export function validateMintParams(params: MintParams): { handle: string; code: 
   return { handle: params.handle, code: parseReadingCode(params.code), postId: params.postId };
 }
 
-export async function mintOrFetchInstance(
+export async function issueOrFetchInstance(
   store: Store,
   assetStore: AssetStore,
-  rawParams: MintParams,
+  rawParams: IssueParams,
   rationale: string | null = null,
-): Promise<MintResult> {
-  const { handle, code, postId } = validateMintParams(rawParams);
+): Promise<IssueResult> {
+  const { handle, code, postId } = validateIssueParams(rawParams);
 
   // Idempotency: X's crawler will re-fetch the card URL; a re-fetch must
-  // return the existing instance, never mint a duplicate (§7, §9.1, §12.6).
+  // return the existing instance, never issue a duplicate (§7, §9.1, §12.6).
   const existing = await store.findInstanceByIdempotencyKey(handle, postId);
   if (existing) {
     return { instance: existing, isNew: false };

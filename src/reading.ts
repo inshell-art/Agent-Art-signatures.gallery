@@ -69,7 +69,7 @@ export function isValidReadingCode(code: string): code is ReadingCode {
 /**
  * Parse and validate a URL-supplied code. Per §4.4, an out-of-vocabulary
  * reading is a failed read, not a novel value — callers should turn this
- * into an HTTP 400 and mint nothing.
+ * into an HTTP 400 and issue nothing.
  */
 export function parseReadingCode(code: string): ReadingCode {
   if (!isValidReadingCode(code)) {

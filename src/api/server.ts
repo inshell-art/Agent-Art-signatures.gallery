@@ -17,18 +17,18 @@ import { RateLimiter } from "../rateLimit.js";
 import type { Store } from "../store/types.js";
 import type { XApiClient } from "../verification/xApiClient.js";
 import { verifyAndRecordProvenance } from "../verification/verify.js";
-import { canonicalAssetKey, HANDLE_PATTERN, instanceAssetKey, mintOrFetchInstance } from "./mint.js";
+import { canonicalAssetKey, HANDLE_PATTERN, instanceAssetKey, issueOrFetchInstance } from "./issue.js";
 import { renderClusterPage, renderVerifyPage } from "./pages.js";
 
-const MINT_PATTERN = /^\/s\/([^/]+)\/([^/]+)\/([^/]+)\/?$/;
+const ISSUE_PATTERN = /^\/s\/([^/]+)\/([^/]+)\/([^/]+)\/?$/;
 const CLUSTER_PATTERN = /^\/c\/([^/]+)\/?$/;
 const VERIFY_PATTERN = /^\/v\/([^/]+)\/?$/;
 const INSTANCE_IMAGE_PATTERN = /^\/i\/instance\/([^/]+)\.png$/;
 const CANONICAL_IMAGE_PATTERN = /^\/i\/canonical\/([^/]+)\.png$/;
 
 // Handoff §9.1: "Rate-limit per handle and per source IP."
-const MINT_LIMIT = 30;
-const MINT_WINDOW_MS = 10 * 60 * 1000;
+const ISSUE_LIMIT = 30;
+const ISSUE_WINDOW_MS = 10 * 60 * 1000;
 
 export interface AppOptions {
   oauthClient?: XOAuthClient;
@@ -63,7 +63,7 @@ function clientIp(req: IncomingMessage): string {
   return req.socket.remoteAddress ?? "unknown";
 }
 
-async function handleMint(
+async function handleIssue(
   store: Store,
   assetStore: AssetStore,
   perHandleLimiter: RateLimiter,
@@ -80,9 +80,9 @@ async function handleMint(
     return;
   }
 
-  const { instance, isNew } = await mintOrFetchInstance(store, assetStore, { handle, code, postId });
+  const { instance, isNew } = await issueOrFetchInstance(store, assetStore, { handle, code, postId });
 
-  // §9.3: async, post-mint, never awaited before the card response.
+  // §9.3: async, post-issue, never awaited before the card response.
   if (isNew && options.xApiClient && options.agentHandle) {
     verifyAndRecordProvenance(store, options.xApiClient, instance.id, instance.seedHandle, instance.sourcePostId, options.agentHandle).catch(
       () => {
@@ -158,7 +158,7 @@ async function handleInstanceImage(assetStore: AssetStore, res: ServerResponse, 
 
 /**
  * The canonical is a pure function of handle (§6), so it's cached
- * lazily on first request rather than minted like an instance — nothing
+ * lazily on first request rather than issued like an instance — nothing
  * to record in the append-only instances table for it.
  */
 async function handleCanonicalImage(assetStore: AssetStore, res: ServerResponse, handle: string) {
@@ -214,18 +214,18 @@ async function handleClaimCallback(
 }
 
 export function createApp(store: Store, assetStore: AssetStore, options: AppOptions = {}) {
-  const perHandleLimiter = new RateLimiter(MINT_LIMIT, MINT_WINDOW_MS);
-  const perIpLimiter = new RateLimiter(MINT_LIMIT, MINT_WINDOW_MS);
+  const perHandleLimiter = new RateLimiter(ISSUE_LIMIT, ISSUE_WINDOW_MS);
+  const perIpLimiter = new RateLimiter(ISSUE_LIMIT, ISSUE_WINDOW_MS);
   const pendingClaims = new PendingClaims();
 
   return async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? "/", "http://localhost");
 
     try {
-      const mintMatch = url.pathname.match(MINT_PATTERN);
-      if (mintMatch) {
-        const [, handle, code, postId] = mintMatch;
-        await handleMint(
+      const issueMatch = url.pathname.match(ISSUE_PATTERN);
+      if (issueMatch) {
+        const [, handle, code, postId] = issueMatch;
+        await handleIssue(
           store,
           assetStore,
           perHandleLimiter,
