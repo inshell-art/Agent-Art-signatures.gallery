@@ -74,3 +74,48 @@ CREATE UNIQUE INDEX instances_idempotency_key
 
 CREATE INDEX instances_by_handle_sequence
     ON instances (seed_handle, sequence);
+
+-- -------------------------------------------------------------------------
+-- V1 additive model. The legacy tables above remain available read-only for
+-- controlled cutover; no legacy instance is reinterpreted as a V1 signature.
+
+CREATE TABLE x_accounts (
+    x_user_id             TEXT PRIMARY KEY CHECK (x_user_id ~ '^(0|[1-9][0-9]*)$'),
+    public_account_id     TEXT NOT NULL UNIQUE CHECK (public_account_id ~ '^xa1_[a-z2-7]{26}$'),
+    current_handle        TEXT NOT NULL CHECK (current_handle ~ '^[A-Za-z0-9_]{1,15}$'),
+    handle_normalized     TEXT NOT NULL CHECK (handle_normalized ~ '^[a-z0-9_]{1,15}$'),
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_authenticated_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE signatures (
+    signature_id          TEXT PRIMARY KEY CHECK (signature_id ~ '^sg1_[a-z2-7]{52}$'),
+    x_user_id             TEXT NOT NULL REFERENCES x_accounts (x_user_id),
+    handle_at_claim       TEXT NOT NULL CHECK (handle_at_claim ~ '^[A-Za-z0-9_]{1,15}$'),
+    handle_normalized     TEXT NOT NULL CHECK (handle_normalized ~ '^[a-z0-9_]{1,15}$'),
+    gr0k_raw              INTEGER NOT NULL CHECK (gr0k_raw BETWEEN 0 AND 1000000),
+    gr0k_scale            INTEGER NOT NULL CHECK (gr0k_scale = 1000000),
+    renderer_version      TEXT NOT NULL,
+    svg_sha256            TEXT NOT NULL CHECK (svg_sha256 ~ '^[0-9a-f]{64}$'),
+    svg_storage_key       TEXT NOT NULL,
+    card_renderer_version TEXT NOT NULL,
+    png_sha256            TEXT NOT NULL CHECK (png_sha256 ~ '^[0-9a-f]{64}$'),
+    card_storage_key      TEXT NOT NULL,
+    claim_method          TEXT NOT NULL CHECK (claim_method = 'x_oauth_v1'),
+    x_authenticated_at    TIMESTAMPTZ NOT NULL,
+    claimed_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (x_user_id, handle_normalized, gr0k_raw, gr0k_scale, renderer_version)
+);
+
+CREATE INDEX signatures_by_owner_claimed_at
+    ON signatures (x_user_id, claimed_at DESC);
+
+CREATE OR REPLACE FUNCTION reject_signature_update() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION 'V1 signatures are immutable';
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER signatures_are_immutable
+    BEFORE UPDATE ON signatures
+    FOR EACH ROW EXECUTE FUNCTION reject_signature_update();

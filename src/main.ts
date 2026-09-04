@@ -1,42 +1,51 @@
-/**
- * Local dev entrypoint. Wires the placeholder in-memory Store/AssetStore
- * (no database needed) and starts the HTTP API. OAuth claiming and
- * provenance verification stay off unless their env vars are set, since
- * both need real X app credentials.
- */
-
-import { MemoryAssetStore } from "./assets/memoryAssetStore.js";
-import { RealXOAuthClient, type XOAuthClient } from "./claim/xOAuthClient.js";
 import { startServer, type AppOptions } from "./api/server.js";
-import { MemoryStore } from "./store/memoryStore.js";
-import { RealXApiClient, type XApiClient } from "./verification/xApiClient.js";
+import { RealXOAuthClient } from "./claim/xOAuthClient.js";
+import { MemoryArtifactStore } from "./v1/artifacts.js";
+import { MemoryAuthState } from "./v1/authState.js";
+import { seedDevelopmentFixtures } from "./v1/fixtures.js";
+import { DEV_CARD_RENDERER_VERSION, DEV_RENDERER_VERSION, developmentFixtureRenderer, RendererRegistry } from "./v1/renderer.js";
+import { MemorySignatureStore } from "./v1/store.js";
 
-const PORT = Number(process.env.PORT ?? 3000);
+const port = Number(process.env.PORT ?? 3000);
+const fixtureMode = process.env.DEV_FIXTURES !== "0" && process.env.NODE_ENV !== "production";
+const activeRendererVersion = process.env.ACTIVE_RENDERER_VERSION ?? DEV_RENDERER_VERSION;
 
-const store = new MemoryStore();
-const assetStore = new MemoryAssetStore();
+if (process.env.NODE_ENV === "production") {
+  const required = ["APP_ORIGIN", "SESSION_SECRET", "DATABASE_URL", "X_OAUTH_CLIENT_ID", "X_OAUTH_REDIRECT_URI", "ARTIFACT_STORAGE_CONFIG", "RATE_LIMIT_STORE_CONFIG"] as const;
+  const missing = required.filter((key) => !process.env[key]);
+  if (missing.length > 0) throw new Error(`Production startup refused: missing required configuration keys: ${missing.join(", ")}.`);
+  if (!process.env.APP_ORIGIN?.startsWith("https://")) throw new Error("Production startup refused: APP_ORIGIN must use HTTPS.");
+  if ((process.env.SESSION_SECRET?.length ?? 0) < 32) throw new Error("Production startup refused: SESSION_SECRET must contain at least 32 characters.");
+  if (activeRendererVersion === DEV_RENDERER_VERSION) throw new Error("Production startup refused: an approved ACTIVE_RENDERER_VERSION is required.");
+  throw new Error("Production startup refused: durable database, artifact, session, and rate-limit adapters are not installed yet.");
+}
 
-const options: AppOptions = {};
+const options: AppOptions = {
+  fixtureMode,
+  activeRendererVersion,
+  cardRendererVersion: process.env.CARD_RENDERER_VERSION ?? DEV_CARD_RENDERER_VERSION,
+  publicOrigin: process.env.APP_ORIGIN ?? `http://localhost:${port}`,
+  identityDailyCallLimit: Number(process.env.X_IDENTITY_DAILY_CALL_LIMIT ?? 500),
+};
 
-if (process.env.X_CLIENT_ID && process.env.X_REDIRECT_URI) {
-  const oauthClient: XOAuthClient = new RealXOAuthClient({
-    clientId: process.env.X_CLIENT_ID,
-    clientSecret: process.env.X_CLIENT_SECRET,
-    redirectUri: process.env.X_REDIRECT_URI,
+const oauthClientId = process.env.X_OAUTH_CLIENT_ID ?? process.env.X_CLIENT_ID;
+const oauthRedirectUri = process.env.X_OAUTH_REDIRECT_URI ?? process.env.X_REDIRECT_URI;
+const oauthClientSecret = process.env.X_OAUTH_CLIENT_SECRET ?? process.env.X_CLIENT_SECRET;
+if (oauthClientId && oauthRedirectUri) {
+  options.oauthClient = new RealXOAuthClient({
+    clientId: oauthClientId,
+    clientSecret: oauthClientSecret,
+    redirectUri: oauthRedirectUri,
   });
-  options.oauthClient = oauthClient;
-} else {
-  console.log("X_CLIENT_ID/X_REDIRECT_URI not set — /claim/start and /claim/callback will 501");
 }
 
-if (process.env.X_BEARER_TOKEN && process.env.AGENT_HANDLE) {
-  const xApiClient: XApiClient = new RealXApiClient({ bearerToken: process.env.X_BEARER_TOKEN });
-  options.xApiClient = xApiClient;
-  options.agentHandle = process.env.AGENT_HANDLE;
-} else {
-  console.log("X_BEARER_TOKEN/AGENT_HANDLE not set — new instances will stay 'unverified'");
+const store = new MemorySignatureStore();
+const artifacts = new MemoryArtifactStore();
+const auth = new MemoryAuthState();
+const renderers = new RendererRegistry([developmentFixtureRenderer]);
+if (fixtureMode) {
+  await seedDevelopmentFixtures({ store, artifacts, renderers, cardRendererVersion: options.cardRendererVersion ?? DEV_CARD_RENDERER_VERSION }, auth);
 }
-
-startServer(store, assetStore, PORT, options);
-console.log(`signatures.gallery listening on http://localhost:${PORT}`);
-console.log("Store and AssetStore are in-memory — data resets on restart (schema.sql/Store interface are the real data model).");
+startServer({ store, artifacts, auth, renderers }, port, options);
+console.log(`signatures.gallery V1 listening on http://localhost:${port}`);
+if (fixtureMode) console.log("Development fixtures are enabled; no fixture record is production provenance.");

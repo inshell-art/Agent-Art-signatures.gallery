@@ -1,315 +1,159 @@
 import type { AddressInfo } from "node:net";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MemoryAssetStore } from "../assets/memoryAssetStore.js";
-import type { XOAuthClient, XUser } from "../claim/xOAuthClient.js";
-import { MemoryStore } from "../store/memoryStore.js";
-import type { XApiClient } from "../verification/xApiClient.js";
-import { startServer, type AppOptions } from "./server.js";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { MemoryArtifactStore } from "../v1/artifacts.js";
+import { MemoryAuthState } from "../v1/authState.js";
+import { seedDevelopmentFixtures } from "../v1/fixtures.js";
+import { DEV_CARD_RENDERER_VERSION, DEV_RENDERER_VERSION, developmentFixtureRenderer, RendererRegistry } from "../v1/renderer.js";
+import { MemorySignatureStore } from "../v1/store.js";
+import { startServer } from "./server.js";
 
 let server: ReturnType<typeof startServer>;
-let store: MemoryStore;
-let assetStore: MemoryAssetStore;
+let store: MemorySignatureStore;
 let baseUrl: string;
 
-async function boot(options: AppOptions = {}) {
-  store = new MemoryStore();
-  assetStore = new MemoryAssetStore();
-  server = startServer(store, assetStore, 0, options);
-  await new Promise<void>((resolve) => server.once("listening", resolve));
-  const { port } = server.address() as AddressInfo;
-  baseUrl = `http://localhost:${port}`;
+async function boot(seed = false) {
+  store = new MemorySignatureStore();
+  const artifacts = new MemoryArtifactStore();
+  const auth = new MemoryAuthState();
+  const renderers = new RendererRegistry([developmentFixtureRenderer]);
+  if (seed) await seedDevelopmentFixtures({ store, artifacts, renderers, cardRendererVersion: DEV_CARD_RENDERER_VERSION }, auth);
+  server = startServer({ store, artifacts, auth, renderers }, 0, { fixtureMode: true, activeRendererVersion: DEV_RENDERER_VERSION });
+  await new Promise<void>((resolve, reject) => { server.once("listening", resolve); server.once("error", reject); });
+  baseUrl = `http://localhost:${(server.address() as AddressInfo).port}`;
+}
+
+function closeServer(): Promise<void> {
+  return new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+}
+
+function post(path: string, body: URLSearchParams, cookie?: string) {
+  return fetch(`${baseUrl}${path}`, {
+    method: "POST",
+    redirect: "manual",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      Origin: baseUrl,
+      "Sec-Fetch-Site": "same-origin",
+      ...(cookie ? { Cookie: cookie } : {}),
+    },
+    body,
+  });
 }
 
 beforeEach(() => boot());
-afterEach(() => server.close());
+afterEach(() => closeServer());
 
-describe("GET /s/{handle}/{code}/{post_id}", () => {
-  it("400s on an invalid handle", async () => {
-    const res = await fetch(`${baseUrl}/s/not a handle/hfwo/123`);
-    expect(res.status).toBe(400);
+describe("V1 previews", () => {
+  it("serves the system-aware theme control under the site CSP", async () => {
+    const page = await fetch(`${baseUrl}/`);
+    const html = await page.text();
+    expect(html).toContain('data-theme-value="auto"');
+    expect(html).toContain('data-theme-value="light"');
+    expect(html).toContain('data-theme-value="dark"');
+    expect(html).toContain('<script src="/assets/theme.js"></script>');
+    expect(page.headers.get("content-security-policy")).toContain("script-src 'self'");
+
+    const script = await fetch(`${baseUrl}/assets/theme.js`);
+    expect(script.status).toBe(200);
+    expect(script.headers.get("content-type")).toContain("text/javascript");
+    expect(await script.text()).toContain("signatures-gallery-theme");
+    const css = await fetch(`${baseUrl}/assets/site.css`);
+    expect(await css.text()).toContain("prefers-color-scheme:dark");
   });
 
-  it("400s on an out-of-vocabulary reading code (§4.4: failed read, not a novel value)", async () => {
-    const res = await fetch(`${baseUrl}/s/alice/zzzz/123`);
-    expect(res.status).toBe(400);
+  it("canonicalizes handle and fixed-point gr0k without creating a signature", async () => {
+    const response = await fetch(`${baseUrl}/s/%40Alice/0.5`, { redirect: "manual" });
+    expect(response.status).toBe(308);
+    expect(response.headers.get("location")).toBe("/s/alice/0.500000");
+    expect(await store.listSignaturesForAccount("1234567890123456789")).toEqual([]);
   });
 
-  it("issues a new instance: renders, rasterizes, persists, and serves an og:image", async () => {
-    const res = await fetch(`${baseUrl}/s/alice/hfwo/123`);
-    expect(res.status).toBe(200);
-    const html = await res.text();
-    expect(html).toContain('og:image" content="http://localhost');
-    expect(html).toContain("/i/instance/1.png");
-
-    const instances = await store.listInstancesForHandle("alice");
-    expect(instances).toHaveLength(1);
-    expect(instances[0].readingCode).toBe("hfwo");
-
-    const imageRes = await fetch(`${baseUrl}/i/instance/${instances[0].id}.png`);
-    expect(imageRes.status).toBe(200);
-    expect(imageRes.headers.get("content-type")).toBe("image/png");
+  it("renders canonical previews and card metadata without persistence", async () => {
+    const response = await fetch(`${baseUrl}/s/alice/0.371924`);
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain("Unclaimed preview");
+    expect(html).toContain("sg-renderer-dev-fixture");
+    expect(html).toContain("twitter:card");
+    expect(await store.listSignaturesForAccount("1234567890123456789")).toEqual([]);
   });
 
-  it("is idempotent: a pre-existing instance for (handle, post_id) is served, not re-issued", async () => {
-    await store.insertInstance({
-      xUserId: null,
-      seedHandle: "alice",
-      readingCode: "hfwo" as any,
-      readingJson: { tempo: "hurried", weight: "firm", steadiness: "wavering", reach: "open" },
-      rationale: "quick and dense",
-      sourcePostId: "123",
-      offsetVector: { tempo: 1, weight: 1, steadiness: 0, reach: 1 },
-      specVersion: "test-v0",
-      mapVersion: "readings.map.v0-placeholder",
-      schemaVersion: "reading.v1",
-      provenance: "unverified",
-      supersedes: null,
-    });
-
-    const res = await fetch(`${baseUrl}/s/alice/hfwo/123`);
-    expect(res.status).toBe(200);
-    const html = await res.text();
-    expect(html).toContain("quick and dense");
-    expect(html).toContain(`/i/instance/1.png`);
+  it("supports side-effect-free HEAD and immutable render assets", async () => {
+    const head = await fetch(`${baseUrl}/s/alice/0.371924`, { method: "HEAD" });
+    expect(head.status).toBe(200);
+    expect(await head.text()).toBe("");
+    const svg = await fetch(`${baseUrl}/renders/${DEV_RENDERER_VERSION}/alice/0.371924.svg`);
+    expect(svg.status).toBe(200);
+    expect(svg.headers.get("cache-control")).toContain("immutable");
+    expect(await svg.text()).toContain("<svg");
+    expect(await store.listSignaturesForAccount("1234567890123456789")).toEqual([]);
   });
 
-  it("429s once the per-handle rate limit is exceeded", async () => {
-    // Distinct post_ids so each request is a distinct (would-be) issue, not
-    // an idempotent re-fetch.
-    const requests = Array.from({ length: 31 }, (_, i) => fetch(`${baseUrl}/s/bob/hfwo/${i}`));
-    const results = await Promise.all(requests);
-    const statuses = results.map((r) => r.status);
-    expect(statuses).toContain(429);
-    expect(statuses.filter((s) => s !== 429).every((s) => s === 200)).toBe(true);
+  it("rejects invalid decimal grammar and encoded slash handles", async () => {
+    expect((await fetch(`${baseUrl}/s/alice/1e-3`)).status).toBe(400);
+    expect((await fetch(`${baseUrl}/s/alice%2Fbob/0.500000`)).status).toBe(400);
+  });
+
+  it("retires the legacy routes with 410", async () => {
+    expect((await fetch(`${baseUrl}/s/alice/hfwo/123`)).status).toBe(410);
+    expect((await fetch(`${baseUrl}/c/alice`)).status).toBe(410);
+    expect((await fetch(`${baseUrl}/v/1`)).status).toBe(410);
   });
 });
 
-const JSON_ACCEPT = { headers: { Accept: "application/json" } };
-
-describe("GET /c/{handle}", () => {
-  it("lists instances ordered by sequence, with a canonical image URL (JSON on request)", async () => {
-    const res = await fetch(`${baseUrl}/c/alice`, JSON_ACCEPT);
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body).toEqual({
-      handle: "alice",
-      canonical: { image: `${baseUrl}/i/canonical/alice.png` },
-      instances: [],
-    });
+describe("fixture account and claim flow", () => {
+  it("shows seeded fixture signatures only after fixture login", async () => {
+    await closeServer();
+    await boot(true);
+    expect((await fetch(`${baseUrl}/me`)).status).toBe(401);
+    const login = await post("/dev/login", new URLSearchParams());
+    expect(login.status).toBe(303);
+    const cookie = login.headers.get("set-cookie")!.split(";")[0];
+    const collection = await fetch(`${baseUrl}/me`, { headers: { Cookie: cookie } });
+    expect(collection.status).toBe(200);
+    const html = await collection.text();
+    expect(html).toContain("Private account collection");
+    expect((html.match(/class="signature-card"/g) ?? [])).toHaveLength(3);
   });
 
-  it("renders an HTML page by default", async () => {
-    await store.insertInstance({
-      xUserId: null,
-      seedHandle: "alice",
-      readingCode: "hfwo" as any,
-      readingJson: { tempo: "hurried", weight: "firm", steadiness: "wavering", reach: "open" },
-      rationale: "quick and dense",
-      sourcePostId: "123",
-      offsetVector: { tempo: 1, weight: 1, steadiness: 0, reach: 1 },
-      specVersion: "test-v0",
-      mapVersion: "readings.map.v0-placeholder",
-      schemaVersion: "reading.v1",
-      provenance: "unverified",
-      supersedes: null,
-    });
-
-    const res = await fetch(`${baseUrl}/c/alice`);
-    expect(res.status).toBe(200);
-    expect(res.headers.get("content-type")).toContain("text/html");
-    const html = await res.text();
-    expect(html).toContain("@alice");
-    expect(html).toContain("quick and dense");
-    expect(html).toContain("/i/canonical/alice.png");
-    expect(html).toContain("/i/instance/1.png");
+  it("allows the local fixture flow without external X authentication", async () => {
+    const response = await fetch(`${baseUrl}/auth/x/start`, { method: "POST", redirect: "manual", body: new URLSearchParams({ purpose: "claim", handle: "alice", gr0k: "0.5" }) });
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toContain("/claim/review");
   });
 
-  it("400s on an invalid handle", async () => {
-    const res = await fetch(`${baseUrl}/c/not a handle`);
-    expect(res.status).toBe(400);
-  });
-});
-
-describe("GET /v/{instance_id}", () => {
-  it("404s for an unknown instance", async () => {
-    const res = await fetch(`${baseUrl}/v/999`);
-    expect(res.status).toBe(404);
-  });
-
-  it("returns everything needed to recompute the instance independently, including the spec hash (§9.4, JSON on request)", async () => {
-    const instance = await store.insertInstance({
-      xUserId: null,
-      seedHandle: "alice",
-      readingCode: "hfwo" as any,
-      readingJson: { tempo: "hurried", weight: "firm", steadiness: "wavering", reach: "open" },
-      rationale: null,
-      sourcePostId: "123",
-      offsetVector: { tempo: 1, weight: 1, steadiness: 0, reach: 1 },
-      specVersion: "test-v0",
-      mapVersion: "readings.map.v0-placeholder",
-      schemaVersion: "reading.v1",
-      provenance: "unverified",
-      supersedes: null,
-    });
-
-    const res = await fetch(`${baseUrl}/v/${instance.id}`, JSON_ACCEPT);
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body).toMatchObject({
-      seedHandle: "alice",
-      readingCode: "hfwo",
-      sourcePostId: "123",
-      specVersion: "test-v0",
-      mapVersion: "readings.map.v0-placeholder",
-      schemaVersion: "reading.v1",
-    });
-    expect(typeof body.specHash).toBe("string");
-    expect(body.specHash.length).toBeGreaterThan(0);
+  it("creates nothing at OAuth callback or review and only claims on final POST", async () => {
+    const start = await post("/auth/x/start", new URLSearchParams({ purpose: "claim", handle: "alice", gr0k: "0.500000" }));
+    expect(start.status).toBe(303);
+    const cookie = start.headers.get("set-cookie")!.split(";")[0];
+    const reviewPath = start.headers.get("location")!;
+    expect(await store.listSignaturesForAccount("1234567890123456789")).toHaveLength(0);
+    const review = await fetch(`${baseUrl}${reviewPath}`, { headers: { Cookie: cookie } });
+    expect(review.status).toBe(200);
+    const html = await review.text();
+    const flow = html.match(/name="flow" value="([^"]+)"/)![1];
+    const csrf = html.match(/name="csrf" value="([^"]+)"/)![1];
+    expect(await store.listSignaturesForAccount("1234567890123456789")).toHaveLength(0);
+    const claim = await post("/api/v1/signatures", new URLSearchParams({ flow, csrf }), cookie);
+    expect(claim.status).toBe(303);
+    const signatures = await store.listSignaturesForAccount("1234567890123456789");
+    expect(signatures).toHaveLength(1);
+    expect(claim.headers.get("location")).toBe(`/signatures/${signatures[0].signatureId}`);
   });
 
-  it("renders an HTML page by default", async () => {
-    const instance = await store.insertInstance({
-      xUserId: null,
-      seedHandle: "alice",
-      readingCode: "hfwo" as any,
-      readingJson: { tempo: "hurried", weight: "firm", steadiness: "wavering", reach: "open" },
-      rationale: null,
-      sourcePostId: "123",
-      offsetVector: { tempo: 1, weight: 1, steadiness: 0, reach: 1 },
-      specVersion: "test-v0",
-      mapVersion: "readings.map.v0-placeholder",
-      schemaVersion: "reading.v1",
-      provenance: "unverified",
-      supersedes: null,
-    });
-
-    const res = await fetch(`${baseUrl}/v/${instance.id}`);
-    expect(res.status).toBe(200);
-    expect(res.headers.get("content-type")).toContain("text/html");
-    const html = await res.text();
-    expect(html).toContain("hfwo");
-    expect(html).toContain("spec_hash");
-  });
-});
-
-describe("GET /i/instance/{id}.png", () => {
-  it("404s when no asset has been stored for that id", async () => {
-    const res = await fetch(`${baseUrl}/i/instance/999.png`);
-    expect(res.status).toBe(404);
-  });
-
-  it("serves the stored PNG bytes", async () => {
-    const png = Buffer.from([137, 80, 78, 71]); // PNG magic bytes
-    await assetStore.putPng("instance:1", png);
-    const res = await fetch(`${baseUrl}/i/instance/1.png`);
-    expect(res.status).toBe(200);
-    expect(res.headers.get("content-type")).toBe("image/png");
-    expect(Buffer.from(await res.arrayBuffer())).toEqual(png);
-  });
-});
-
-describe("GET /i/canonical/{handle}.png", () => {
-  it("renders and caches the canonical mark on first request", async () => {
-    const res = await fetch(`${baseUrl}/i/canonical/alice.png`);
-    expect(res.status).toBe(200);
-    expect(res.headers.get("content-type")).toBe("image/png");
-    const png = Buffer.from(await res.arrayBuffer());
-    expect(png.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
-    expect(await assetStore.getPng("canonical:alice")).toEqual(png);
-  });
-
-  it("400s on an invalid handle", async () => {
-    const res = await fetch(`${baseUrl}/i/canonical/not a handle.png`);
-    expect(res.status).toBe(400);
-  });
-});
-
-describe("provenance verification (§9.3)", () => {
-  it("issues and responds before verification resolves, then flips provenance to verified", async () => {
-    let resolveVerification!: (value: boolean) => void;
-    const verifyMention = vi.fn(() => new Promise<boolean>((resolve) => (resolveVerification = resolve)));
-    const xApiClient: XApiClient = { verifyMention };
-    await server.close();
-    await boot({ xApiClient, agentHandle: "grok" });
-
-    const res = await fetch(`${baseUrl}/s/alice/hfwo/123`);
-    expect(res.status).toBe(200);
-
-    // The response already completed, but verifyMention's promise is still
-    // pending — the issue route never awaited it.
-    let instances = await store.listInstancesForHandle("alice");
-    expect(instances[0].provenance).toBe("unverified");
-
-    resolveVerification(true);
-    await vi.waitFor(async () => {
-      instances = await store.listInstancesForHandle("alice");
-      expect(instances[0].provenance).toBe("verified");
-    });
-
-    expect(verifyMention).toHaveBeenCalledWith({ postId: "123", handle: "alice", agentHandle: "grok" });
-  });
-
-  it("leaves provenance unverified when the X API can't confirm the mention", async () => {
-    const xApiClient: XApiClient = { verifyMention: vi.fn(async () => false) };
-    await server.close();
-    await boot({ xApiClient, agentHandle: "grok" });
-
-    await fetch(`${baseUrl}/s/alice/hfwo/123`);
-    await vi.waitFor(async () => {
-      expect(xApiClient.verifyMention).toHaveBeenCalled();
-    });
-    const instances = await store.listInstancesForHandle("alice");
-    expect(instances[0].provenance).toBe("unverified");
-  });
-
-  it("skips verification entirely when no xApiClient is configured", async () => {
-    const res = await fetch(`${baseUrl}/s/alice/hfwo/123`);
-    expect(res.status).toBe(200);
-    const instances = await store.listInstancesForHandle("alice");
-    expect(instances[0].provenance).toBe("unverified");
-  });
-});
-
-describe("GET /claim/start and /claim/callback", () => {
-  it("501s when no oauth client is configured", async () => {
-    const res = await fetch(`${baseUrl}/claim/start`, { redirect: "manual" });
-    expect(res.status).toBe(501);
-  });
-
-  it("redirects to the authorize URL, then binds the account on callback", async () => {
-    const mockClient: XOAuthClient = {
-      getAuthorizeUrl: vi.fn((state) => `https://twitter.com/i/oauth2/authorize?state=${state}`),
-      exchangeCode: vi.fn(async () => "mock-access-token"),
-      getUser: vi.fn(async (): Promise<XUser> => ({ id: "999", username: "alice" })),
-    };
-    await server.close();
-    await boot({ oauthClient: mockClient });
-
-    const startRes = await fetch(`${baseUrl}/claim/start`, { redirect: "manual" });
-    expect(startRes.status).toBe(302);
-    const location = new URL(startRes.headers.get("location")!);
-    const state = location.searchParams.get("state")!;
-    expect(state).toBeTruthy();
-
-    const callbackRes = await fetch(`${baseUrl}/claim/callback?code=abc&state=${state}`);
-    expect(callbackRes.status).toBe(200);
-    const body = await callbackRes.json();
-    expect(body).toEqual({ xUserId: "999", seedHandle: "alice", currentHandle: "alice" });
-
-    const account = await store.getAccountByXUserId("999");
-    expect(account?.seedHandle).toBe("alice");
-  });
-
-  it("400s on a callback with an unknown state", async () => {
-    const mockClient: XOAuthClient = {
-      getAuthorizeUrl: vi.fn(() => "https://example.com"),
-      exchangeCode: vi.fn(async () => "token"),
-      getUser: vi.fn(async (): Promise<XUser> => ({ id: "1", username: "x" })),
-    };
-    await server.close();
-    await boot({ oauthClient: mockClient });
-
-    const res = await fetch(`${baseUrl}/claim/callback?code=abc&state=forged`);
-    expect(res.status).toBe(400);
+  it("serves a stable permalink and immutable claimed artifacts", async () => {
+    await closeServer();
+    await boot(true);
+    const login = await post("/dev/login", new URLSearchParams());
+    const cookie = login.headers.get("set-cookie")!.split(";")[0];
+    const signatures = await store.listSignaturesForAccount("1234567890123456789");
+    const signature = signatures[0];
+    const page = await fetch(`${baseUrl}/signatures/${signature.signatureId}`);
+    expect(page.status).toBe(200);
+    expect(await page.text()).toContain("Claimed via X");
+    const svg = await fetch(`${baseUrl}/artifacts/${signature.signatureId}.svg`);
+    expect(svg.status).toBe(200);
+    expect(svg.headers.get("cache-control")).toContain("immutable");
+    expect(cookie).toContain("sg_dev_session=");
   });
 });
