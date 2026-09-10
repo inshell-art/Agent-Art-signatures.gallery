@@ -1,5 +1,5 @@
 import { collectionPage, homePage, mintEntryPage, signInRequiredPage, type CollectionMintView, type MintEntryStage, type SignatureView } from "./pages.js";
-import { DEV_CARD_RENDERER_VERSION, DEV_RENDERER_VERSION, developmentFixtureRenderer } from "./renderer.js";
+import { CARD_RENDERER_VERSION, RENDERER_VERSION, formalSignatureRenderer } from "./renderer.js";
 import { GR0K_SCALE } from "./input.js";
 import { MINT_STATE_LABELS } from "../v2/model.js";
 import { COLLECTION_STATE_FIXTURES } from "./collectionStateCatalog.js";
@@ -7,8 +7,8 @@ import { COLLECTION_STATE_FIXTURES } from "./collectionStateCatalog.js";
 export { COLLECTION_STATE_FIXTURES } from "./collectionStateCatalog.js";
 
 const fixtureSignature: SignatureView = {
-  signatureId: `sg1_${"c".repeat(52)}`, handleAtClaim: "alice", gr0kRaw: 371924,
-  rendererVersion: DEV_RENDERER_VERSION, cardRendererVersion: DEV_CARD_RENDERER_VERSION,
+  signatureId: `sg1_${"c".repeat(52)}`, handleAtClaim: "alice", gr0kRaw: 37,
+  rendererVersion: RENDERER_VERSION, cardRendererVersion: CARD_RENDERER_VERSION,
   svgSha256: "0".repeat(64), pngSha256: "0".repeat(64), publicAccountId: "xa1_ui_fixture_only",
   xAuthenticatedAt: new Date("2026-09-01T10:00:00Z"), claimedAt: new Date("2026-09-01T10:01:00Z"),
 };
@@ -59,6 +59,6 @@ export function collectionStatePage(key: string, publicOrigin: string, view = "c
 let artwork: Buffer | undefined;
 export function collectionStateArtwork(): Buffer {
   // Fixed literal/input only. No arbitrary render endpoint and no artifact persistence.
-  artwork ??= Buffer.from(developmentFixtureRenderer.render({ handleNormalized: fixtureSignature.handleAtClaim, gr0kRaw: fixtureSignature.gr0kRaw, gr0kScale: GR0K_SCALE, rendererVersion: DEV_RENDERER_VERSION }).svgUtf8);
+  artwork ??= Buffer.from(formalSignatureRenderer.render({ handle: fixtureSignature.handleAtClaim, gr0kRaw: fixtureSignature.gr0kRaw, gr0kScale: GR0K_SCALE, rendererVersion: RENDERER_VERSION }).svgUtf8);
   return artwork;
 }

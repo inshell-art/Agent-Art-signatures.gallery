@@ -6,7 +6,7 @@ import { SITE_CSS } from "./siteCss.js";
 const signature: SignatureView = {
   signatureId: `sg1_${"c".repeat(52)}`,
   handleAtClaim: "old_handle",
-  gr0kRaw: 371924,
+  gr0kRaw: 37,
   rendererVersion: "artwork/1",
   svgSha256: "d".repeat(64),
   pngSha256: "e".repeat(64),
@@ -139,7 +139,7 @@ describe("minimal My Collection", () => {
     expect(html).toContain(`src="/artifacts/${signature.signatureId}.svg"`);
     expect(html).not.toContain(`src="/artifacts/${signature.signatureId}.png"`);
     expect(html).toContain("@old_handle");
-    expect(html).toContain("gr0k 0.371924");
+    expect(html).toContain("gr0k 37");
     expect(html).toContain("2026-09-01");
   });
 

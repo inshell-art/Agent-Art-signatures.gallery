@@ -4,7 +4,7 @@ import { SITE_CSS } from "./siteCss.js";
 
 const preview = {
   handle: "alice",
-  gr0kRaw: 371924,
+  gr0kRaw: 37,
   rendererVersion: "artwork/1",
   previewSvgSha256: "a".repeat(64),
   imageUrl: "/artifacts/preview.png",
@@ -111,7 +111,7 @@ describe("minimal authentication pages", () => {
     const form = formFor(html, "/auth/x/start");
     expect(form).toContain('<input type="hidden" name="purpose" value="claim">');
     expect(form).toContain('<input type="hidden" name="handle" value="alice">');
-    expect(form).toContain('<input type="hidden" name="gr0k" value="0.371924">');
+    expect(form).toContain('<input type="hidden" name="gr0k" value="37">');
     expect(form).toContain('name="claim_intent" value="claim-on-return-v1"');
     expect(form).toContain('name="renderer_version" value="artwork/1"');
     expect(form).toContain(`name="preview_sha256" value="${preview.previewSvgSha256}"`);
@@ -156,7 +156,7 @@ describe("minimal authentication pages", () => {
     expect(visible).toMatch(/withdraw the claim before minting begins/i);
     expect(visible).toMatch(/public/i);
     expect(visible).toMatch(/does not mint a token/i);
-    expect(html).toContain('href="/s/alice/0.371924#claim"');
+    expect(html).toContain('href="/s/alice/37#claim"');
   });
 
   it("puts local identity limits in the distinct DEV overlay before an approval or claim", () => {

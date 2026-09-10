@@ -117,7 +117,7 @@ if (verifyOnly) {
 } else {
   console.log("Rehearsing one Bob claim using emulated OAuth, a real local wallet proof, and real Anvil mint/transfer transactions. No external network or real funds.");
   assert.equal((await request("/api/local/wallet", {}, false)).status, 401, "Local wallet info must require a signed-in session");
-  const gr0k = `0.${String(randomInt(1, 1_000_000)).padStart(6, "0")}`;
+  const gr0k = String(randomInt(1, 101));
   const preview = await (await request(`/s/bob/${gr0k}`)).text();
   const form = preview.match(/<form[^>]*action="\/auth\/x\/start"[^>]*>[\s\S]*?<\/form>/)?.[0];
   assert(form, "Preview must expose the combined sign-in-and-claim form");

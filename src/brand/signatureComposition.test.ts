@@ -1,8 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { GR0K_SCALE, normalizeHandleValue } from "../v1/input.js";
-import { developmentFixtureRenderer } from "../v1/renderer.js";
-import { DEFAULT_SETTINGS } from "../algorithm/settings.js";
-import { renderSvgForText } from "../algorithm/svg.js";
+import { formalSignatureRenderer } from "../v1/renderer.js";
+import { renderTextSvg } from "../algorithmV1/index.js";
 import { SLOGAN_SHAPE_LOCK } from "./fixtures/sloganShapeLock.v1.js";
 import type { TextRenderInput, SignatureTextRenderer } from "../v1/renderer.js";
 import {
@@ -34,7 +33,7 @@ function fixtureRenderer(pathOverride?: (input: TextRenderInput) => string): Sig
 const SOURCE: SignatureCompositionSource = {
   id: "brand-line-v1",
   displayText: "Read by an Agent. Claimed by YOU.",
-  gr0kRaw: 500_000,
+  gr0kRaw: 22,
 };
 
 function compileFixture() {
@@ -70,21 +69,36 @@ describe("signature composition adapter", () => {
   });
 
   it.each(["What_shape_do_you_go_by?", "What_Shape_Do_You_Go_By?"])("matches the algorithm's exact path for %s", (literal) => {
-    const capture = captureSignatureComposition({ ...SOURCE, displayText: literal }, developmentFixtureRenderer);
-    const direct = renderSvgForText(literal, DEFAULT_SETTINGS).svg.match(/<path d="([^"]+)"/)![1];
+    const capture = captureSignatureComposition({ ...SOURCE, displayText: literal }, formalSignatureRenderer);
+    const direct = renderTextSvg(literal, 22).match(/<path d="([^"]+)"/)![1];
     expect(capture.glyphs[0].rendererInput).toBe(literal);
     expect(capture.glyphs[0].drawing.d).toBe(direct);
     expect(capture.glyphs[0].drawing.d).not.toBe(SLOGAN_SHAPE_LOCK.glyphs[0].drawing.d);
   });
 
-  it("restores historical lowercase locks read-only, without treating them as literal captures", () => {
-    const restored = restoreSignatureCompositionSnapshot(SLOGAN_SHAPE_LOCK);
-    expect(restored.schema).toBe("signature-composition/1");
-    expect(restored).toEqual(SLOGAN_SHAPE_LOCK);
-    expect(describeSignatureComposition(restored, presentationFor(1)).schema).toBe("signature-composition/1");
-    expect(() => restoreSignatureCompositionSnapshot({ ...SLOGAN_SHAPE_LOCK, schema: "signature-composition/2" })).toThrow("canonical tokenization");
-    const literal = captureSignatureComposition(SLOGAN_SHAPE_LOCK, developmentFixtureRenderer);
-    expect(() => assertSignatureShapeLock(literal, SLOGAN_SHAPE_LOCK.verifiedShapeLock)).toThrow("missing");
+  it("rejects retired scalar-based snapshots instead of relabeling their geometry as formal v1.0.0", () => {
+    expect(() => restoreSignatureCompositionSnapshot(SLOGAN_SHAPE_LOCK)).toThrow("gr0kRaw");
+    expect(() => captureSignatureComposition(SLOGAN_SHAPE_LOCK, formalSignatureRenderer)).toThrow("gr0kRaw");
+  });
+
+  it.each([0, 101, 0.5, 500_000, NaN, Infinity])("rejects an invalid formal seed %s", gr0kRaw => {
+    expect(() => captureSignatureComposition({ ...SOURCE, gr0kRaw }, formalSignatureRenderer)).toThrow("integer from 1 through 100");
+  });
+
+  it("locks the canonical viewport rather than the 1080px export dimensions", () => {
+    const capture = captureSignatureComposition({ ...SOURCE, displayText: "Alice" }, formalSignatureRenderer);
+    expect(capture.glyphs[0]).toMatchObject({ width: 420, height: 420 });
+    const rendered = formalSignatureRenderer.renderText({ text: "Alice", gr0kRaw: 22, gr0kScale: 1, rendererVersion: formalSignatureRenderer.version });
+    expect(rendered).toMatchObject({ width: 1080, height: 1080 });
+  });
+
+  it("keeps long presentation text at the reference segment width, with a wider locked canvas", () => {
+    const capture = captureSignatureComposition({ ...SOURCE, displayText: "What_shape_do_you_go_by?" }, formalSignatureRenderer);
+    const glyph = capture.glyphs[0];
+    expect(glyph.width).toBeCloseTo(120 + 23 * 300 / 14);
+    expect(glyph.height).toBe(420);
+    const snapshot = createSignatureCompositionSnapshot({ ...capture, shapeLockSchema: "signature-shape-lock/1", verifiedShapeLock: capture.proposedShapeLock });
+    expect(restoreSignatureCompositionSnapshot(snapshot).glyphs[0]).toEqual(glyph);
   });
 
   it("tokenizes presentation copy and preserves case while tokenizing every word", () => {
@@ -120,7 +134,7 @@ describe("signature composition adapter", () => {
     expect(renderer.renderText).toHaveBeenCalledTimes(1);
     expect(renderer.renderText).toHaveBeenCalledWith({
       text: rendererInput,
-      gr0kRaw: 500_000,
+      gr0kRaw: 22,
       gr0kScale: GR0K_SCALE,
       rendererVersion: renderer.version,
     });
@@ -185,7 +199,7 @@ describe("signature composition adapter", () => {
     expect(renderer.renderText.mock.calls.map(([input]) => input)).toEqual(
       ["Read", "by", "an", "Agent", "Claimed", "YOU"].map((text) => ({
         text,
-        gr0kRaw: 500_000,
+        gr0kRaw: 22,
         gr0kScale: GR0K_SCALE,
         rendererVersion: "renderer-test-1",
       })),
@@ -243,7 +257,7 @@ describe("signature composition adapter", () => {
     expect(description).toMatchObject({
       id: "brand-line-v1",
       rendererVersion: "renderer-test-1",
-      gr0kRaw: 500_000,
+      gr0kRaw: 22,
       viewBox: "0 0 1200 360",
       width: 1_200,
       height: 360,
@@ -311,9 +325,9 @@ describe("signature composition adapter", () => {
       width: 420,
       height: 420,
     }));
-    const capture = captureSignatureComposition({ id: "stroke-v1", displayText: "Line", gr0kRaw: 0 }, renderer);
+    const capture = captureSignatureComposition({ id: "stroke-v1", displayText: "Line", gr0kRaw: 1 }, renderer);
     const compiled = compileSignatureComposition(
-      { id: "stroke-v1", displayText: "Line", gr0kRaw: 0, shapeLock: capture.proposedShapeLock },
+      { id: "stroke-v1", displayText: "Line", gr0kRaw: 1, shapeLock: capture.proposedShapeLock },
       renderer,
     );
     const svg = renderSignatureCompositionSvg(compiled, {
@@ -355,7 +369,7 @@ describe("signature composition adapter", () => {
     ["noncanonical display copy", (snapshot: any) => { snapshot.displayText = ` ${snapshot.displayText}`; }, "canonical whitespace"],
     ["changed token mapping", (snapshot: any) => { snapshot.tokens[0].rendererInput = "other"; }, "canonical tokenization"],
     ["duplicate glyph", (snapshot: any) => { snapshot.glyphs[1].rendererInput = snapshot.glyphs[0].rendererInput; }, "duplicate"],
-    ["invalid dimensions", (snapshot: any) => { snapshot.glyphs[0].width = 0; }, "integer from 1"],
+    ["invalid dimensions", (snapshot: any) => { snapshot.glyphs[0].width = 0; }, "positive finite dimension"],
     ["invalid SVG hash", (snapshot: any) => { snapshot.glyphs[0].svgSha256 = "abc"; }, "lowercase SHA-256"],
     ["drawing/hash drift", (snapshot: any) => { snapshot.glyphs[0].drawing.d = "M 0 0 L 99 99"; }, "shape hash"],
     ["unsafe path data", (snapshot: any) => { snapshot.glyphs[0].drawing.d = 'M 0 0" onload="alert(1)'; }, "safe SVG path data"],
@@ -380,7 +394,7 @@ describe("signature composition adapter", () => {
       width: 420,
       height: 420,
     }));
-    const source = { id: "stroke-snapshot", displayText: "Line", gr0kRaw: 500_000 } as const;
+    const source = { id: "stroke-snapshot", displayText: "Line", gr0kRaw: 22 } as const;
     const captured = captureSignatureComposition(source, renderer);
     const compiled = compileSignatureComposition({ ...source, shapeLock: captured.proposedShapeLock }, renderer);
     const snapshot: any = JSON.parse(JSON.stringify(createSignatureCompositionSnapshot(compiled)));

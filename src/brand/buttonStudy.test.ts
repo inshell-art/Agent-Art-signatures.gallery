@@ -26,7 +26,7 @@ describe("button design study", () => {
     const html = buttonStudyPage();
     const study = html.match(/<article class="bst-page">([\s\S]*?)<\/article><\/main>/)![1];
     expect(study.match(/<img\b/g)).toHaveLength(1);
-    expect(study).toContain('/signatures/0.500000.svg"');
+    expect(study).toContain('/signatures/22.svg"');
     expect(study.match(/name="button-study-style"/g)).toHaveLength(4);
     expect(study.match(/aria-busy="true"/g)).toHaveLength(4);
     for (const button of study.match(/<button\b[^>]*>/g)!) expect(button).toContain('type="button"');

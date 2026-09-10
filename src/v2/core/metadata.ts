@@ -3,6 +3,8 @@ import canonicalize from "canonicalize";
 import { tokenUriHash, type Bytes32Hex } from "./mintAuthorization.js";
 import { deterministicUnixfsCid, parseCanonicalCidV1 } from "./ipfsCid.js";
 import { signatureDigestFromId } from "./signatureId.js";
+import { GR0K_MAX, GR0K_MIN, GR0K_SCALE } from "../../v1/input.js";
+export { GR0K_SCALE } from "../../v1/input.js";
 
 export const METADATA_VERSION = "sg-nft-metadata-1.0.0" as const;
 export const CLAIM_METHOD = "x_oauth_v1" as const;
@@ -10,11 +12,10 @@ export const CLAIM_METHOD_DISPLAY = "X OAuth" as const;
 export const TOKEN_DESCRIPTION = "A signature claimed through X authentication and minted in the Gallery of Signatures collection. In the intended workflow, gr0k is selected in a private Grok conversation; that private step is not independently verified.";
 export const V2_RENDERER_VERSION = "sg-renderer-1.0.0" as const;
 export const V2_CARD_RENDERER_VERSION = "sg-card-1.0.0" as const;
-export const GR0K_SCALE = 1_000_000 as const;
 
-const HASH_HEX = /^[0-9a-f]{64}$/;
-const NORMALIZED_HANDLE = /^[a-z0-9_]{1,15}$/;
-const PUBLIC_ACCOUNT_REF = /^xa1_[a-z2-7]+$/;
+const HASH_HEX = /^[0-9a-f]{64}$(?![\s\S])/;
+const ARTWORK_HANDLE = /^[A-Za-z0-9_]{1,15}$(?![\s\S])/;
+const PUBLIC_ACCOUNT_REF = /^xa1_[a-z2-7]+$(?![\s\S])/;
 
 export interface TokenMetadataInput {
   signatureId: string;
@@ -106,18 +107,16 @@ function truncateUtcMilliseconds(value: Date | string): string {
 }
 
 export function formatGr0k(raw: number, scale: number = GR0K_SCALE): string {
-  if (!Number.isSafeInteger(raw) || raw < 0 || raw > GR0K_SCALE || scale !== GR0K_SCALE) {
-    throw new Error("gr0k must use an integer raw value from 0 to 1000000 at scale 1000000.");
+  if (!Number.isSafeInteger(raw) || raw < GR0K_MIN || raw > GR0K_MAX || scale !== GR0K_SCALE) {
+    throw new Error("gr0k must use an integer raw value from 1 to 100 at scale 1 (an unscaled seed).");
   }
-  const whole = Math.floor(raw / GR0K_SCALE);
-  const fraction = (raw % GR0K_SCALE).toString(10).padStart(6, "0");
-  return `${whole}.${fraction}`;
+  return String(raw);
 }
 
 export function buildTokenMetadata(input: TokenMetadataInput): SignatureTokenMetadata {
   signatureDigestFromId(input.signatureId);
   if (!PUBLIC_ACCOUNT_REF.test(input.publicAccountId)) throw new Error("publicAccountId must be an opaque V1 xa1_ Base32 reference.");
-  if (!NORMALIZED_HANDLE.test(input.handleAtClaim)) throw new Error("handleAtClaim must be the frozen normalized V1 handle.");
+  if (!ARTWORK_HANDLE.test(input.handleAtClaim)) throw new Error("handleAtClaim must be the frozen case-sensitive artwork handle.");
   if (input.rendererVersion !== V2_RENDERER_VERSION || input.cardRendererVersion !== V2_CARD_RENDERER_VERSION) {
     throw new Error("metadata requires the frozen V2 renderer version constants.");
   }

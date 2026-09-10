@@ -8,10 +8,10 @@ import type { ArtifactStore } from "../v1/artifacts.js";
 import { finalizeClaim } from "../v1/claim.js";
 import { withdrawClaim } from "../v1/withdrawClaim.js";
 import { deriveSignatureId } from "../v1/identity.js";
-import { formatGr0k, GR0K_SCALE, InputError, normalizeHandleSegment, normalizeHandleValue, parseGr0kSegment, parseGr0kValue } from "../v1/input.js";
+import { formatGr0k, GR0K_SCALE, InputError, normalizeHandleSegment, normalizeHandleValue, validateRenderHandle, parseGr0kSegment, parseGr0kValue } from "../v1/input.js";
 import { DailyCircuitBreaker, SlidingWindowLimits } from "../v1/limits.js";
 import { aboutPage, collectionPage, errorPage, gonePage, homePage, localOAuthAuthorizePage, mintEntryPage, mintReviewPage, previewPage, signInRequiredPage, signaturePage, type GalleryCardView, type MintEntryStage, type SignatureMintView, type SignatureView, type PreviewPageParams } from "../v1/pages.js";
-import { DEV_CARD_RENDERER_VERSION, DEV_RENDERER_VERSION, RendererRegistry, RendererUnavailableError, renderCardPng, sha256Hex } from "../v1/renderer.js";
+import { CARD_RENDERER_VERSION, RENDERER_VERSION, RendererRegistry, RendererUnavailableError, renderCardPng, sha256Hex } from "../v1/renderer.js";
 import { RendererIntegrityError, type Signature, type SignatureStore } from "../v1/store.js";
 import { SITE_CSS } from "../v1/siteCss.js";
 import { FAVICON_CSP, FAVICON_SVG, FAVICON_VERSION } from "../brand/favicon.js";
@@ -45,8 +45,8 @@ const DEV_MINT_ADVANCE_PATTERN = /^\/dev\/v2\/signatures\/(sg1_[a-z2-7]{52})\/ad
 const IDENTITY_FRESH_MS = 15 * 60 * 1000;
 
 function claimPageHref(flow: OAuthFlow): string {
-  if (flow.purpose !== "claim" || flow.handleNormalized === null || flow.gr0kRaw === null) throw new Error("Missing claim destination.");
-  return `/s/${flow.handleNormalized}/${formatGr0k(flow.gr0kRaw)}?flow=${encodeURIComponent(flow.id)}#claim`;
+  if (flow.purpose !== "claim" || flow.handleAtClaim === null || flow.gr0kRaw === null) throw new Error("Missing claim destination.");
+  return `/s/${flow.handleAtClaim}/${formatGr0k(flow.gr0kRaw)}?flow=${encodeURIComponent(flow.id)}#claim`;
 }
 
 export interface AppDependencies {
@@ -245,10 +245,10 @@ function isFreshIdentity(session: BrowserSession): boolean {
   return !!session.identity && Date.now() - session.identity.authenticatedAt.getTime() <= IDENTITY_FRESH_MS;
 }
 
-function flowRender(deps: AppDependencies, flow: Pick<OAuthFlow, "handleNormalized" | "gr0kRaw" | "rendererVersion">) {
-  if (flow.handleNormalized === null || flow.gr0kRaw === null || flow.rendererVersion === null) throw new Error("Flow has no render input.");
+function flowRender(deps: AppDependencies, flow: Pick<OAuthFlow, "handleAtClaim" | "gr0kRaw" | "rendererVersion">) {
+  if (flow.handleAtClaim === null || flow.gr0kRaw === null || flow.rendererVersion === null) throw new Error("Flow has no render input.");
   return deps.renderers.get(flow.rendererVersion).render({
-    handleNormalized: flow.handleNormalized,
+    handle: flow.handleAtClaim,
     gr0kRaw: flow.gr0kRaw,
     gr0kScale: GR0K_SCALE,
     rendererVersion: flow.rendererVersion,
@@ -487,8 +487,8 @@ export function createApp(deps: AppDependencies, options: AppOptions = {}) {
     deps.auth.complete(flow);
     redirect(res, 303, `/signatures/${signatureId}`);
   };
-  const activeRendererVersion = options.activeRendererVersion ?? DEV_RENDERER_VERSION;
-  const cardRendererVersion = options.cardRendererVersion ?? DEV_CARD_RENDERER_VERSION;
+  const activeRendererVersion = options.activeRendererVersion ?? RENDERER_VERSION;
+  const cardRendererVersion = options.cardRendererVersion ?? CARD_RENDERER_VERSION;
   const limits = new SlidingWindowLimits();
   const identityBreaker = new DailyCircuitBreaker(options.identityDailyCallLimit ?? 500);
   let activeRenders = 0;
@@ -676,9 +676,9 @@ export function createApp(deps: AppDependencies, options: AppOptions = {}) {
           return;
         }
         const previewRenderer = deps.renderers.get(activeRendererVersion);
-        const previewSvgSha256 = sha256Hex(previewRenderer.render({ handleNormalized: handle.normalized, gr0kRaw: gr0k.raw, gr0kScale: GR0K_SCALE, rendererVersion: activeRendererVersion }).svgUtf8);
-        const imagePath = `/renders/${encodeURIComponent(activeRendererVersion)}/${handle.normalized}/${gr0k.canonical}.png`;
-        const params: PreviewPageParams = { handle: handle.normalized, gr0kRaw: gr0k.raw, rendererVersion: activeRendererVersion, previewSvgSha256, imageUrl: `${originFor(req, options)}${imagePath}`, fixtureMode, localOAuthMode, localChainRehearsal: options.localChainRehearsal };
+        const previewSvgSha256 = sha256Hex(previewRenderer.render({ handle: handle.renderHandle, gr0kRaw: gr0k.raw, gr0kScale: GR0K_SCALE, rendererVersion: activeRendererVersion }).svgUtf8);
+        const imagePath = `/renders/${encodeURIComponent(activeRendererVersion)}/${handle.renderHandle}/${gr0k.canonical}.png`;
+        const params: PreviewPageParams = { handle: handle.renderHandle, gr0kRaw: gr0k.raw, rendererVersion: activeRendererVersion, previewSvgSha256, imageUrl: `${originFor(req, options)}${imagePath}`, fixtureMode, localOAuthMode, localChainRehearsal: options.localChainRehearsal };
         // Private action state lives on the same artwork URL. Never put a bound
         // flow, identity or CSRF token in the publicly cached preview response.
         if (flowId !== null) {
@@ -689,11 +689,11 @@ export function createApp(deps: AppDependencies, options: AppOptions = {}) {
           if (!session?.identity || !isFreshIdentity(session)) {
             status = 401;
             params.notice = "Your sign-in session expired. Sign in again to continue here.";
-          } else if (!flow || flow.purpose !== "claim" || flow.handleNormalized !== handle.normalized || flow.gr0kRaw !== gr0k.raw || !flow.rendererVersion || flow.identity?.xUserId !== session.identity.xUserId || session.identity.handleNormalized !== handle.normalized) {
+          } else if (!flow || flow.purpose !== "claim" || flow.handleAtClaim !== handle.renderHandle || flow.handleNormalized !== handle.normalized || flow.gr0kRaw !== gr0k.raw || !flow.rendererVersion || flow.identity?.xUserId !== session.identity.xUserId || session.identity.handleNormalized !== handle.normalized) {
             status = 409;
             params.notice = "This claim session is no longer available for this signature. Sign in again to continue here.";
           } else {
-            const signatureId = deriveSignatureId({ xUserId: session.identity.xUserId, handleNormalized: handle.normalized, gr0kRaw: gr0k.raw, rendererVersion: flow.rendererVersion });
+            const signatureId = deriveSignatureId({ xUserId: session.identity.xUserId, handleAtClaim: handle.renderHandle, gr0kRaw: gr0k.raw, rendererVersion: flow.rendererVersion });
             const saved = await deps.store.getSignature(signatureId);
             if (deps.mint?.state.isSuppressed(signatureId)) {
               sendRemovedSignature(res, req, pathname, fixtureMode);
@@ -701,7 +701,7 @@ export function createApp(deps: AppDependencies, options: AppOptions = {}) {
             }
             params.rendererVersion = flow.rendererVersion;
             params.previewSvgSha256 = flow.previewSvgSha256 ?? undefined;
-            params.imageUrl = `${originFor(req, options)}/renders/${encodeURIComponent(flow.rendererVersion)}/${handle.normalized}/${gr0k.canonical}.png`;
+            params.imageUrl = `${originFor(req, options)}/renders/${encodeURIComponent(flow.rendererVersion)}/${handle.renderHandle}/${gr0k.canonical}.png`;
             if (saved) {
               res.setHeader("Vary", "Cookie");
               if (method === "HEAD") redirect(res, 303, `/signatures/${saved.signatureId}`);
@@ -744,16 +744,20 @@ export function createApp(deps: AppDependencies, options: AppOptions = {}) {
           return;
         }
         const version = decodeURIComponent(renderMatch[1]);
+        if (version === "sg-renderer-dev-fixture") {
+          sendError(res, req, pathname, 410, "RENDERER_RETIRED", "This pre-release artwork has been retired. Use a new Signature Algorithm v1.0.0 preview.", fixtureMode);
+          return;
+        }
         const handle = normalizeHandleSegment(renderMatch[2]);
         const gr0k = parseGr0kSegment(renderMatch[3]);
         if (!handle.isCanonical || !gr0k.isCanonical) {
-          redirect(res, 308, `/renders/${encodeURIComponent(version)}/${handle.normalized}/${gr0k.canonical}.${renderMatch[4]}`, "public, max-age=300");
+          redirect(res, 308, `/renders/${encodeURIComponent(version)}/${handle.renderHandle}/${gr0k.canonical}.${renderMatch[4]}`, "public, max-age=300");
           return;
         }
         activeRenders += 1;
         try {
           const renderer = deps.renderers.get(version);
-          const rendered = renderer.render({ handleNormalized: handle.normalized, gr0kRaw: gr0k.raw, gr0kScale: GR0K_SCALE, rendererVersion: version });
+          const rendered = renderer.render({ handle: handle.renderHandle, gr0kRaw: gr0k.raw, gr0kScale: GR0K_SCALE, rendererVersion: version });
           const body = renderMatch[4] === "svg" ? Buffer.from(rendered.svgUtf8) : await renderCardPng(rendered.svgUtf8);
           const etag = `"sha256-${sha256Hex(body)}"`;
           res.setHeader("ETag", etag);
@@ -830,7 +834,8 @@ export function createApp(deps: AppDependencies, options: AppOptions = {}) {
         }
         let claimInput: ClaimFlowInput | null = null;
         if (purpose === "claim") {
-          const handleNormalized = normalizeHandleValue(form.get("handle") ?? "");
+          const handleAtClaim = validateRenderHandle(form.get("handle") ?? "");
+          const handleNormalized = normalizeHandleValue(handleAtClaim);
           const gr0k = parseGr0kValue(form.get("gr0k") ?? "");
           // Bind consent to the displayed renderer and bytes, including a
           // cached preview from before an active-renderer change.
@@ -840,13 +845,13 @@ export function createApp(deps: AppDependencies, options: AppOptions = {}) {
             return;
           }
           const renderer = deps.renderers.get(rendererVersion);
-          const rendered = renderer.render({ handleNormalized, gr0kRaw: gr0k.raw, gr0kScale: GR0K_SCALE, rendererVersion });
+          const rendered = renderer.render({ handle: handleAtClaim, gr0kRaw: gr0k.raw, gr0kScale: GR0K_SCALE, rendererVersion });
           const previewSvgSha256 = sha256Hex(rendered.svgUtf8);
           if (claimIntent === CLAIM_ON_RETURN_INTENT && form.get("preview_sha256") !== previewSvgSha256) {
             sendError(res, req, pathname, 409, "PREVIEW_CHANGED", "The preview no longer matches this signature. Reload it before claiming.", fixtureMode);
             return;
           }
-          claimInput = { handleNormalized, gr0kRaw: gr0k.raw, rendererVersion, previewSvgSha256,
+          claimInput = { handleAtClaim, handleNormalized, gr0kRaw: gr0k.raw, rendererVersion, previewSvgSha256,
             ...(claimIntent === CLAIM_ON_RETURN_INTENT ? { claimIntent: CLAIM_ON_RETURN_INTENT } : {}) };
         }
         const verifier = generateCodeVerifier();

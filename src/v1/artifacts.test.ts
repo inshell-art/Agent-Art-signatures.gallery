@@ -3,7 +3,7 @@ import { ContentCoordinationError, MemoryContentCoordinator } from "../v2/conten
 import type { OAuthFlow } from "./authState.js";
 import { MemoryArtifactStore } from "./artifacts.js";
 import { finalizeClaim } from "./claim.js";
-import { DEV_CARD_RENDERER_VERSION, DEV_RENDERER_VERSION, developmentFixtureRenderer, RendererRegistry } from "./renderer.js";
+import { CARD_RENDERER_VERSION, RENDERER_VERSION, formalSignatureRenderer, RendererRegistry } from "./renderer.js";
 import type { SignatureStore } from "./store.js";
 
 class ManualClock {
@@ -68,9 +68,10 @@ describe("V1 artifact storage fencing", () => {
       stateDigest: "state",
       boundSessionIdDigest: "session",
       pkceVerifier: "",
+      handleAtClaim: "alice",
       handleNormalized: "alice",
-      gr0kRaw: 371_924,
-      rendererVersion: DEV_RENDERER_VERSION,
+      gr0kRaw: 37,
+      rendererVersion: RENDERER_VERSION,
       previewSvgSha256: null,
       status: "authenticated",
       identity: null,
@@ -79,7 +80,7 @@ describe("V1 artifact storage fencing", () => {
     };
 
     await expect(finalizeClaim(
-      { store, artifacts, renderers: new RendererRegistry([developmentFixtureRenderer]), cardRendererVersion: DEV_CARD_RENDERER_VERSION },
+      { store, artifacts, renderers: new RendererRegistry([formalSignatureRenderer]), cardRendererVersion: CARD_RENDERER_VERSION },
       flow,
       { xUserId: "1234567890123456789", username: "alice", handleNormalized: "alice", authenticatedAt: new Date("2026-09-04T12:00:00.000Z") },
     )).rejects.toThrow("simulated claim commit failure");

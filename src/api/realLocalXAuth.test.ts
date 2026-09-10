@@ -6,7 +6,7 @@ import { generateCodeChallenge } from "../claim/xOAuthClient.js";
 import { MemoryAuthState } from "../v1/authState.js";
 import { MemoryArtifactStore } from "../v1/artifacts.js";
 import { MemorySignatureStore } from "../v1/store.js";
-import { developmentFixtureRenderer, RendererRegistry } from "../v1/renderer.js";
+import { formalSignatureRenderer, RendererRegistry } from "../v1/renderer.js";
 import { loadMintConfig } from "../v2/config.js";
 import { MemoryMintStore } from "../v2/memoryStore.js";
 import { V2MintService } from "../v2/service.js";
@@ -46,7 +46,7 @@ beforeEach(async () => {
   store = new MemorySignatureStore();
   auth = new MemoryAuthState();
   artifacts = new MemoryArtifactStore();
-  renderers = new RendererRegistry([developmentFixtureRenderer]);
+  renderers = new RendererRegistry([formalSignatureRenderer]);
   const config = loadLocalAppConfig({ X_OAUTH_CLIENT_ID: "test-client", X_OAUTH_CLIENT_SECRET: "test-secret" }, ["--x-auth=real"]);
   mint = new V2MintService(loadMintConfig({}, true, config.appOrigin), new MemoryMintStore(), store, artifacts);
   options = { fixtureMode: true, localChainRehearsal: true, enforcePublicOrigin: true, publicOrigin: config.appOrigin, oauthClient: localXOAuthClient(config) };
@@ -84,7 +84,7 @@ function callback(start: Awaited<ReturnType<typeof begin>>, suffix = "&code=test
   return fetch(`${base}/auth/x/callback?state=${start.state}${suffix}`, { redirect: "manual", headers: { Cookie: cookie } });
 }
 async function claim() {
-  const started = await begin({ purpose: "claim", handle: "real_test", gr0k: "0.371924" });
+  const started = await begin({ purpose: "claim", handle: "real_test", gr0k: "37" });
   const authenticated = await callback(started);
   expect(authenticated.status).toBe(303);
   const cookie = cookieOf(authenticated);
@@ -96,7 +96,7 @@ async function claim() {
 }
 
 /** Read the real preview form: consent must originate in the displayed CTA. */
-async function claimFields(handle = "real_test", gr0k = "0.371924") {
+async function claimFields(handle = "real_test", gr0k = "37") {
   const html = await (await fetch(`${base}/s/${handle}/${gr0k}`)).text();
   const form = html.match(/<form[^>]*action="\/auth\/x\/start"[^>]*>[\s\S]*?<\/form>/)![0];
   expect(form).toContain("Claim with X");
@@ -107,6 +107,38 @@ async function claimFields(handle = "real_test", gr0k = "0.371924") {
 }
 
 describe("explicit sign-in-and-claim consent", () => {
+  it("freezes exact preview casing while authorizing through the same case-insensitive X account", async () => {
+    const ids = new Set<string>();
+    const hashes = new Set<string>();
+    for (const handle of ["real_test", "Real_Test", "REAL_TEST"]) {
+      const fields = await claimFields(handle, "22");
+      const response = await callback(await begin(fields));
+      expect(response.status).toBe(303);
+      const signatureId = response.headers.get("location")!.split("/").at(-1)!;
+      const saved = (await store.getSignature(signatureId))!;
+      expect(saved).toMatchObject({ handleAtClaim: handle, handleNormalized: "real_test", gr0kRaw: 22, gr0kScale: 1, svgSha256: fields.preview_sha256 });
+      expect(Buffer.from((await artifacts.get(saved.svgStorageKey))!).toString()).toContain(`>@${handle}</text>`);
+      expect((await store.getAccount(testUser.id))!.currentHandle).toBe("Real_Test");
+      ids.add(signatureId);
+      hashes.add(saved.svgSha256);
+      const metadata = await mint.previewMetadata(saved, (await store.getAccount(testUser.id))!);
+      const document = JSON.parse(metadata.canonicalJson);
+      expect(document.properties).toMatchObject({ handle_at_claim: handle, gr0k_raw: 22, gr0k_scale: 1 });
+    }
+    expect(ids.size).toBe(3);
+    expect(hashes.size).toBe(3);
+    expect(await store.listSignaturesForAccount(testUser.id)).toHaveLength(3);
+  });
+
+  it("rejects changing only the consented handle casing without a matching preview hash", async () => {
+    const fields = await claimFields("Real_Test", "22");
+    const response = await post("/auth/x/start", { ...fields, handle: "real_test" });
+    expect(response.status).toBe(409);
+    expect(await response.text()).toContain("PREVIEW_CHANGED");
+    expect(providerCalls).toEqual([]);
+    expect(await store.listClaimedSignatures(100)).toEqual([]);
+  });
+
   it("saves the exact work before OAuth returns, lists it in both galleries and never mints", async () => {
     const fields = await claimFields();
     const start = await begin(fields);
@@ -117,7 +149,7 @@ describe("explicit sign-in-and-claim consent", () => {
     expect(cookie).not.toBe(start.cookie);
     const saved = await store.listSignaturesForAccount(testUser.id);
     expect(saved).toHaveLength(1);
-    expect(saved[0]).toMatchObject({ handleNormalized: "real_test", gr0kRaw: 371924, rendererVersion: fields.renderer_version, svgSha256: fields.preview_sha256 });
+    expect(saved[0]).toMatchObject({ handleNormalized: "real_test", gr0kRaw: 37, rendererVersion: fields.renderer_version, svgSha256: fields.preview_sha256 });
     const path = response.headers.get("location")!;
     expect(path).toBe(`/signatures/${saved[0].signatureId}`);
     for (let repeat = 0; repeat < 2; repeat++) {
@@ -211,7 +243,7 @@ describe("explicit sign-in-and-claim consent", () => {
     if (scenario === "missing-digest") delete fields.preview_sha256;
     if (scenario === "changed-digest") fields.preview_sha256 = "0".repeat(64);
     if (scenario === "changed-handle") fields.handle = "someone_else";
-    if (scenario === "changed-gr0k") fields.gr0k = "0.820000";
+    if (scenario === "changed-gr0k") fields.gr0k = "82";
     expect([400, 409]).toContain((await post("/auth/x/start", fields)).status);
     expect(providerCalls).toHaveLength(0);
     expect(await store.listClaimedSignatures(20)).toHaveLength(0);
@@ -286,8 +318,8 @@ describe("explicit sign-in-and-claim consent", () => {
 
   it("does not claim altered renderer bytes after OAuth", async () => {
     const start = await begin(await claimFields());
-    const original = developmentFixtureRenderer.render.bind(developmentFixtureRenderer);
-    vi.spyOn(developmentFixtureRenderer, "render").mockImplementation(input => {
+    const original = formalSignatureRenderer.render.bind(formalSignatureRenderer);
+    vi.spyOn(formalSignatureRenderer, "render").mockImplementation(input => {
       const output = original(input);
       return { ...output, svgUtf8: Buffer.from(Buffer.from(output.svgUtf8).toString() + "<!-- changed -->") };
     });
@@ -412,7 +444,7 @@ describe("real X authentication in the local app", () => {
   });
 
   it("rejects the wrong X account for a claim", async () => {
-    const start = await begin({ purpose: "claim", handle: "alice", gr0k: "0.500000" });
+    const start = await begin({ purpose: "claim", handle: "alice", gr0k: "50" });
     const response = await callback(start);
     expect(response.status).toBe(403);
     expect(await response.text()).toContain("HANDLE_MISMATCH");
@@ -422,7 +454,7 @@ describe("real X authentication in the local app", () => {
   it("keeps legacy consent on the preview but sends native claim completion to the permanent page", async () => {
     const prepared = await claim();
     const target = new URL(prepared.returnPath, base);
-    expect(target.pathname).toBe("/s/real_test/0.371924");
+    expect(target.pathname).toBe("/s/real_test/37");
     expect(target.searchParams.get("flow")).toBe(prepared.flow);
     expect(target.hash).toBe("#claim");
     const response = await post("/api/v1/signatures", { flow: prepared.flow, csrf: prepared.csrf }, prepared.cookie);
@@ -443,7 +475,7 @@ describe("real X authentication in the local app", () => {
 
   it("never caches authenticated action state or lets a public ETag suppress it", async () => {
     const prepared = await claim();
-    const preview = await fetch(base + "/s/real_test/0.371924", { headers: { Cookie: prepared.cookie } });
+    const preview = await fetch(base + "/s/real_test/37", { headers: { Cookie: prepared.cookie } });
     const publicHtml = await preview.text();
     expect(preview.headers.get("cache-control")).toContain("public");
     expect(publicHtml).not.toContain(prepared.csrf);
@@ -460,14 +492,15 @@ describe("real X authentication in the local app", () => {
     expect(await store.listSignaturesForAccount(testUser.id)).toHaveLength(0);
   });
 
-  it.each(["anonymous", "other-browser", "other-handle", "other-gr0k", "duplicate-flow", "expired"])("does not expose confirmation for %s and recovers on the artwork page", async scenario => {
+  it.each(["anonymous", "other-browser", "other-handle", "other-case", "other-gr0k", "duplicate-flow", "expired"])("does not expose confirmation for %s and recovers on the artwork page", async scenario => {
     const prepared = await claim();
     let cookie = prepared.cookie;
     let path = prepared.returnPath;
     if (scenario === "anonymous") cookie = "";
     if (scenario === "other-browser") cookie = `sg_dev_session=${auth.getOrCreateSession(null).session.id}`;
     if (scenario === "other-handle") path = path.replace("real_test", "someone_else");
-    if (scenario === "other-gr0k") path = path.replace("0.371924", "0.371925");
+    if (scenario === "other-case") path = path.replace("real_test", "Real_Test");
+    if (scenario === "other-gr0k") path = path.replace("/37?", "/38?");
     if (scenario === "duplicate-flow") path = path.replace("#claim", `&flow=${prepared.flow}#claim`);
     if (scenario === "expired") auth.getSession(cookie.split("=")[1])!.identity!.authenticatedAt = new Date(0);
     const response = await fetch(base + path, { headers: { Cookie: cookie } });

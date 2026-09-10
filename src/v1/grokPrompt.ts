@@ -1,19 +1,19 @@
-import { normalizeHandleValue } from "./input.js";
+import { validateRenderHandle } from "./input.js";
 
 export const GROK_URL = "https://x.com/i/grok";
 
 /** Provisional participation copy, kept here for later replacement.
  * V1 handoff §6.2: the site supplies instructions, never the gr0k value. */
 export function grokPrompt(handle?: string, publicOrigin = "https://signatures.gallery"): string {
-  const normalized = handle === undefined ? undefined : normalizeHandleValue(handle);
+  const renderHandle = handle === undefined ? undefined : validateRenderHandle(handle);
   const origin = new URL(publicOrigin);
   if (!["http:", "https:"].includes(origin.protocol) || origin.username || origin.password
     || origin.pathname !== "/" || origin.search || origin.hash) throw new Error("The Grok handoff requires a plain HTTP(S) site origin.");
-  const account = normalized ? `@${normalized}` : "the X handle I provide";
-  const identify = normalized ? "" : "First, ask me for my X handle. Do not assume my identity or generate a preview link until I provide it. Use my handle without the @ prefix and in lowercase in place of HANDLE in the URL below.\n\n";
-  return `${identify}Review the recent public X posts by ${account}. Based on your reading, select one value called gr0k from 0.000000 through 1.000000. Treat gr0k as an environmental condition for the signature, not as a mood, score, probability, or judgment of the person. If you cannot access the posts, ask me for public post links or text instead of inventing a reading. Return this canonical URL using six decimal places, replacing GR0K with your selected value:
+  const account = renderHandle ? `@${renderHandle}` : "the X handle I provide";
+  const identify = renderHandle ? "" : "First, ask me for my X handle. Do not assume my identity or generate a preview link until I provide it. Use my handle without the @ prefix, preserving its exact uppercase and lowercase letters, in place of HANDLE in the URL below.\n\n";
+  return `${identify}Review the recent public X posts by ${account}. Based on your reading, select one integer seed called gr0k from 1 through 100. Treat gr0k as an environmental condition for the signature, not as a mood, score, probability, or judgment of the person. The formal Signature Algorithm v1.0.0 is case-sensitive: preserve the handle's exact uppercase and lowercase letters. If you cannot access the posts, ask me for public post links or text instead of inventing a reading. Return this canonical URL, replacing GR0K with your selected integer without decimals or leading zeros:
 
-${origin.origin}/s/${normalized ?? "HANDLE"}/GR0K
+${origin.origin}/s/${renderHandle ?? "HANDLE"}/GR0K
 
 After the link, guide me through these next steps in a short numbered list:
 1. Open the link to preview my signature.

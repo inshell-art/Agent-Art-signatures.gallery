@@ -221,13 +221,13 @@ contract GalleryOfSignaturesTest {
 
     function testCommittedEIP712GoldenFixture() public view {
         GalleryOfSignatures.MintAuthorization memory a = GalleryOfSignatures.MintAuthorization({
-            signatureDigest: SIGNATURE_DIGEST,
+            signatureDigest: 0x471fa25b1c5a83446abeee3ac702394c4cf3faa0251a5fbef9ab3a2090139206,
             walletBindingId: 0x1111111111111111111111111111111111111111111111111111111111111111,
             mintWallet: 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266,
             svgSha256: 0x937c1e9a625d65e3da278f631ab17dcf42917bcfd31ededd2d37476934891228,
             pngSha256: 0x431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460,
-            metadataSha256: 0x4fa2c7235aa7a4d3cb474aa681d80bafac383677a210cda49096439a87c86243,
-            tokenURIHash: 0x8fc8bbd1191efa2f11427e9f89189522238cae1d084d65172e6fcad9c48d6103,
+            metadataSha256: 0x8ffb1dc5633374864bb5ecaa53cfa02cefeee47b83c5c676d9c0cac8f152d070,
+            tokenURIHash: 0x5697cf5a90f4a1227b021c536b28ccf4e82d844ba10cc5cc27fd8530eb37faf5,
             authorizationId: 0x2222222222222222222222222222222222222222222222222222222222222222,
             validAfter: 1_788_534_000,
             deadline: 1_788_534_900,
@@ -245,7 +245,7 @@ contract GalleryOfSignaturesTest {
         );
 
         bytes32 structHash = gallery.authorizationStructHash(a);
-        _assertEq(structHash, 0x019e8a7f73ccbfed9df1e6ea60a5f185884e39f18328e9bda5d6c8a51176d676, "struct hash");
+        _assertEq(structHash, 0x3f7ea1beb9512ee49088fe7f1f014d981a8194db27f5732d4834826c4c742713, "struct hash");
 
         bytes32 domainSeparator =
             _domainSeparator("signatures.gallery", "2", 11_155_111, 0x5FbDB2315678afecb367f032d93F642f64180aa3);
@@ -254,10 +254,10 @@ contract GalleryOfSignaturesTest {
         );
 
         bytes32 digest = keccak256(abi.encodePacked(hex"1901", domainSeparator, structHash));
-        _assertEq(digest, 0x7b9417467fcc1c2f473c5eb1ad7bd9f050bde705c17058e0ae2583356d560df6, "digest");
+        _assertEq(digest, 0xa6dca39e75612b2ce4214e5830fc20516e12e4aa971fbd2f4f835512496e20c3, "digest");
 
         bytes memory signature =
-            hex"1b1529fab161df3983c71958a5c6866c741164760b0005b0930e5195f2f16ae673f717f8ccdc58833362da6ad77512d7198249f105328369f1759a9dbad6e0a41c";
+            hex"ced6034679b460d49ecf68a5ace3b56dc90c1d4d639c74b0fe52469f8815bb5425de9dfe89fe6831275692a982a21bbf9610edf6cb2ec27a30a846b7411e620e1b";
         (bytes32 r, bytes32 s, uint8 v) = _splitSignature(signature);
         _assertEq(uint256(signature.length), 65, "signature length");
         _assertTrue(v == 27 || v == 28, "canonical v");

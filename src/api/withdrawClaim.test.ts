@@ -6,7 +6,7 @@ import { formatGr0k } from "../v1/input.js";
 import { MemoryArtifactStore } from "../v1/artifacts.js";
 import { MemorySignatureStore, type Signature } from "../v1/store.js";
 import { seedDevelopmentFixtures } from "../v1/fixtures.js";
-import { DEV_CARD_RENDERER_VERSION, developmentFixtureRenderer, RendererRegistry } from "../v1/renderer.js";
+import { CARD_RENDERER_VERSION, formalSignatureRenderer, RendererRegistry } from "../v1/renderer.js";
 import { loadMintConfig } from "../v2/config.js";
 import { MemoryMintStore } from "../v2/memoryStore.js";
 import { V2MintService } from "../v2/service.js";
@@ -23,8 +23,8 @@ let queue: LocalMintRuntime, requireChainReady: ReturnType<typeof vi.fn<() => Pr
 let persist: ReturnType<typeof vi.fn<() => Promise<void>>>;
 beforeEach(async () => {
   store = new MemorySignatureStore(); auth = new MemoryAuthState(); artifacts = new MemoryArtifactStore();
-  const renderers = new RendererRegistry([developmentFixtureRenderer]);
-  await seedDevelopmentFixtures({ store, artifacts, renderers, cardRendererVersion: DEV_CARD_RENDERER_VERSION }, auth);
+  const renderers = new RendererRegistry([formalSignatureRenderer]);
+  await seedDevelopmentFixtures({ store, artifacts, renderers, cardRendererVersion: CARD_RENDERER_VERSION }, auth);
   signature = (await store.listSignaturesForAccount(claimant))[0];
   mint = new V2MintService(loadMintConfig({}, true, "http://localhost:3000"), new MemoryMintStore(), store, artifacts);
   requireChainReady = vi.fn(async () => {});
@@ -134,7 +134,7 @@ describe("claim withdrawal", () => {
     expect(await (await fetch(base + "/?tab=claimed")).text()).not.toContain(`href="/signatures/${signature.signatureId}"`);
     expect(await (await fetch(base + "/me", { headers: { Cookie: who.cookie } })).text()).not.toContain(`href="/signatures/${signature.signatureId}"`);
     for (const path of [`/signatures/${signature.signatureId}`, `/artifacts/${signature.signatureId}.svg`, `/artifacts/${signature.signatureId}.png`]) expect((await fetch(base + path)).status).toBe(404);
-    expect((await fetch(base + `/s/${signature.handleNormalized}/0.820000`)).status).toBe(200);
+    expect((await fetch(base + `/s/${signature.handleNormalized}/82`)).status).toBe(200);
     expect(auth.takeClaimNotice(who.session, signature.signatureId)).toBe(false);
     expect(mint.state.isSuppressed(signature.signatureId)).toBe(false);
   });
@@ -192,7 +192,7 @@ describe("claim withdrawal", () => {
         expect(html).toContain('name="confirm" value="withdraw"');
         expect(html).toContain('>Confirm withdrawal</span>');
         expect(html).toContain('type="button" data-withdraw-cancel hidden');
-        expect(html).toContain('id="withdraw-work">@alice · gr0k 0.820000');
+        expect(html).toContain('id="withdraw-work">@alice · gr0k 82');
         expect(html).toContain("This removes the claim from Claimed and My Collection.");
         expect(html).toContain('<summary>Withdraw claim</summary><p id="withdraw-description">This removes the claim from Claimed and My Collection. You can make a new claim later.</p><div data-withdraw-confirmation>');
         const confirmation = html.split("<div data-withdraw-confirmation>")[1]!.split("</details>")[0]!;

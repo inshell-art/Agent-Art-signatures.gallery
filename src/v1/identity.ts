@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { GR0K_SCALE } from "./input.js";
+import { GR0K_MAX, GR0K_MIN, GR0K_SCALE } from "./input.js";
 
 const SIGNATURE_DOMAIN = Buffer.from("signatures.gallery/signature", "utf8");
 const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
@@ -41,23 +41,24 @@ export function base32Rfc4648(bytes: Uint8Array): string {
 
 export interface SignatureIdentityInput {
   xUserId: string;
-  handleNormalized: string;
+  /** Exact, case-sensitive artwork input, without the display @ prefix. */
+  handleAtClaim: string;
   gr0kRaw: number;
   gr0kScale?: typeof GR0K_SCALE;
   rendererVersion: string;
 }
 
 export function signatureIdentityPayload(input: SignatureIdentityInput): Buffer {
-  if (!/^(?:0|[1-9]\d*)$/.test(input.xUserId)) throw new Error("x_user_id must be a canonical decimal string.");
-  if (!/^[a-z0-9_]{1,15}$/.test(input.handleNormalized)) throw new Error("handle must be normalized.");
+  if (typeof input.xUserId !== "string" || !/^(?:0|[1-9]\d*)$(?![\s\S])/.test(input.xUserId)) throw new Error("x_user_id must be a canonical decimal string.");
+  if (typeof input.handleAtClaim !== "string" || !/^[A-Za-z0-9_]{1,15}$(?![\s\S])/.test(input.handleAtClaim)) throw new Error("handleAtClaim must be the exact valid artwork handle.");
   const scale = input.gr0kScale ?? GR0K_SCALE;
-  if (!Number.isInteger(input.gr0kRaw) || input.gr0kRaw < 0 || input.gr0kRaw > GR0K_SCALE) throw new Error("invalid gr0k_raw.");
+  if (!Number.isInteger(input.gr0kRaw) || input.gr0kRaw < GR0K_MIN || input.gr0kRaw > GR0K_MAX) throw new Error("invalid gr0k_raw.");
   if (scale !== GR0K_SCALE) throw new Error("invalid gr0k_scale.");
   return Buffer.concat([
     Buffer.from([0x01]),
     sizedText(SIGNATURE_DOMAIN.toString("utf8")),
     sizedText(input.xUserId),
-    sizedText(input.handleNormalized),
+    sizedText(input.handleAtClaim),
     u32be(input.gr0kRaw),
     u32be(scale),
     sizedText(input.rendererVersion),

@@ -4,6 +4,7 @@ import { createPublicAccountId, deriveSignatureId } from "../v1/identity.js";
 import { GR0K_SCALE } from "../v1/input.js";
 import {
   RendererIntegrityError,
+  validateClaimRecordInput,
   type ClaimRecordInput,
   type Signature,
   type SignatureStore,
@@ -121,12 +122,13 @@ export class PostgresSignatureStore implements SignatureStore {
   }
 
   async claim(input: ClaimRecordInput): Promise<{ signature: Signature; account: XAccount; existing: boolean }> {
+    validateClaimRecordInput(input);
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
       // PostgreSQL text values reject NUL bytes, so use a canonical JSON tuple
       // rather than the in-memory store's private NUL-delimited map key.
-      const lockKey = JSON.stringify([input.xUserId, input.handleNormalized, input.gr0kRaw, GR0K_SCALE, input.rendererVersion]);
+      const lockKey = JSON.stringify([input.xUserId, input.handleAtClaim, input.gr0kRaw, GR0K_SCALE, input.rendererVersion]);
       // Serialize both account creation/update and exact-tuple idempotency.
       // Locking only the tuple leaves two first claims for the same X user able
       // to race on x_accounts' primary key.
@@ -135,9 +137,9 @@ export class PostgresSignatureStore implements SignatureStore {
 
       const existing = await client.query<SignatureRow>(
         `SELECT ${SIGNATURE_COLUMNS} FROM signatures
-         WHERE x_user_id = $1 AND handle_normalized = $2 AND gr0k_raw = $3
+         WHERE x_user_id = $1 AND handle_at_claim = $2 AND gr0k_raw = $3
            AND gr0k_scale = $4 AND renderer_version = $5`,
-        [input.xUserId, input.handleNormalized, input.gr0kRaw, GR0K_SCALE, input.rendererVersion],
+        [input.xUserId, input.handleAtClaim, input.gr0kRaw, GR0K_SCALE, input.rendererVersion],
       );
       if (existing.rowCount === 1) {
         const signature = signatureFromRow(existing.rows[0]!);
@@ -155,7 +157,7 @@ export class PostgresSignatureStore implements SignatureStore {
              SET current_handle = $2, handle_normalized = $3, last_authenticated_at = $4
            WHERE x_user_id = $1
            RETURNING ${ACCOUNT_COLUMNS}`,
-          [input.xUserId, input.handleAtClaim, input.handleNormalized, input.xAuthenticatedAt],
+          [input.xUserId, input.currentHandle ?? input.handleAtClaim, input.handleNormalized, input.xAuthenticatedAt],
         );
         if (updated.rowCount !== 1) throw new Error("Signature account index is corrupt.");
         await client.query("COMMIT");
@@ -179,7 +181,7 @@ export class PostgresSignatureStore implements SignatureStore {
             [
               input.xUserId,
               publicAccountId,
-              input.handleAtClaim,
+              input.currentHandle ?? input.handleAtClaim,
               input.handleNormalized,
               input.claimedAt ?? new Date(),
               input.xAuthenticatedAt,
@@ -196,13 +198,13 @@ export class PostgresSignatureStore implements SignatureStore {
              SET current_handle = $2, handle_normalized = $3, last_authenticated_at = $4
            WHERE x_user_id = $1
            RETURNING ${ACCOUNT_COLUMNS}`,
-          [input.xUserId, input.handleAtClaim, input.handleNormalized, input.xAuthenticatedAt],
+          [input.xUserId, input.currentHandle ?? input.handleAtClaim, input.handleNormalized, input.xAuthenticatedAt],
         );
       }
 
       const signatureId = deriveSignatureId({
         xUserId: input.xUserId,
-        handleNormalized: input.handleNormalized,
+        handleAtClaim: input.handleAtClaim,
         gr0kRaw: input.gr0kRaw,
         rendererVersion: input.rendererVersion,
       });

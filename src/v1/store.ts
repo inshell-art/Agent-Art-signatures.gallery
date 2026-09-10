@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createPublicAccountId, deriveSignatureId } from "./identity.js";
-import { GR0K_SCALE } from "./input.js";
+import { formatGr0k, GR0K_SCALE, normalizeHandleValue, validateRenderHandle } from "./input.js";
 
 export interface XAccount {
   xUserId: string;
@@ -34,6 +34,8 @@ export interface Signature {
 export interface ClaimRecordInput {
   xUserId: string;
   handleAtClaim: string;
+  /** Current OAuth spelling may differ in case from the frozen artwork input. */
+  currentHandle?: string;
   handleNormalized: string;
   gr0kRaw: number;
   rendererVersion: string;
@@ -68,8 +70,18 @@ export interface SignatureStore {
   updateExistingAccountLogin(xUserId: string, currentHandle: string, handleNormalized: string, authenticatedAt: Date): Promise<void>;
 }
 
-function tupleKey(input: Pick<ClaimRecordInput, "xUserId" | "handleNormalized" | "gr0kRaw" | "rendererVersion">): string {
-  return `${input.xUserId}\u0000${input.handleNormalized}\u0000${input.gr0kRaw}\u0000${GR0K_SCALE}\u0000${input.rendererVersion}`;
+function tupleKey(input: Pick<ClaimRecordInput, "xUserId" | "handleAtClaim" | "gr0kRaw" | "rendererVersion">): string {
+  return `${input.xUserId}\u0000${input.handleAtClaim}\u0000${input.gr0kRaw}\u0000${GR0K_SCALE}\u0000${input.rendererVersion}`;
+}
+
+export function validateClaimRecordInput(input: ClaimRecordInput): void {
+  if (validateRenderHandle(input.handleAtClaim) !== input.handleAtClaim || normalizeHandleValue(input.handleAtClaim) !== input.handleNormalized) {
+    throw new Error("Claim artwork handle must retain its exact case and match the normalized X handle.");
+  }
+  if (input.currentHandle !== undefined && (validateRenderHandle(input.currentHandle) !== input.currentHandle || normalizeHandleValue(input.currentHandle) !== input.handleNormalized)) {
+    throw new Error("Current OAuth handle must match the claimed X handle.");
+  }
+  formatGr0k(input.gr0kRaw);
 }
 
 export class MemorySignatureStore implements SignatureStore {
@@ -88,6 +100,7 @@ export class MemorySignatureStore implements SignatureStore {
   }
 
   async claim(input: ClaimRecordInput): Promise<{ signature: Signature; account: XAccount; existing: boolean }> {
+    validateClaimRecordInput(input);
     const key = tupleKey(input);
     const existingId = this.tuples.get(key);
     if (existingId) {
@@ -98,7 +111,7 @@ export class MemorySignatureStore implements SignatureStore {
       }
       const account = this.accounts.get(input.xUserId);
       if (!account) throw new Error("Signature account index is corrupt.");
-      const updatedAccount = { ...account, currentHandle: input.handleAtClaim, handleNormalized: input.handleNormalized, lastAuthenticatedAt: input.xAuthenticatedAt };
+      const updatedAccount = { ...account, currentHandle: input.currentHandle ?? input.handleAtClaim, handleNormalized: input.handleNormalized, lastAuthenticatedAt: input.xAuthenticatedAt };
       this.accounts.set(input.xUserId, updatedAccount);
       return { signature: existing, account: updatedAccount, existing: true };
     }
@@ -108,18 +121,18 @@ export class MemorySignatureStore implements SignatureStore {
     if (!account) {
       let publicAccountId = createPublicAccountId();
       while (this.publicAccountIds.has(publicAccountId)) publicAccountId = createPublicAccountId();
-      account = { xUserId: input.xUserId, publicAccountId, currentHandle: input.handleAtClaim, handleNormalized: input.handleNormalized, createdAt: now, lastAuthenticatedAt: input.xAuthenticatedAt };
+      account = { xUserId: input.xUserId, publicAccountId, currentHandle: input.currentHandle ?? input.handleAtClaim, handleNormalized: input.handleNormalized, createdAt: now, lastAuthenticatedAt: input.xAuthenticatedAt };
       this.publicAccountIds.add(publicAccountId);
     }
     const updatedAccount: XAccount = {
       ...account,
-      currentHandle: input.handleAtClaim,
+      currentHandle: input.currentHandle ?? input.handleAtClaim,
       handleNormalized: input.handleNormalized,
       lastAuthenticatedAt: input.xAuthenticatedAt,
     };
     const signatureId = deriveSignatureId({
       xUserId: input.xUserId,
-      handleNormalized: input.handleNormalized,
+      handleAtClaim: input.handleAtClaim,
       gr0kRaw: input.gr0kRaw,
       rendererVersion: input.rendererVersion,
     });

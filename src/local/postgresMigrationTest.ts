@@ -77,6 +77,7 @@ try {
     resolve(repoRoot, "src/store/migrations/002_v2_minting.sql"),
     resolve(repoRoot, "src/local/schema.sql"),
     resolve(repoRoot, "src/store/migrations/003_claim_withdrawal.sql"),
+    resolve(repoRoot, "src/store/migrations/004_formal_algorithm.sql"),
   ]) {
     run(binary("psql"), [...base, "-d", database, "-v", "ON_ERROR_STOP=1", "-f", file]);
   }
@@ -118,29 +119,29 @@ try {
     handleAtClaim: "alice",
     handleNormalized: "alice",
     gr0kRaw,
-    rendererVersion: "pg16-integration-test",
+    rendererVersion: "sg-renderer-1.0.0",
     svgSha256: "11".repeat(32),
     svgStorageKey: `sha256/${"11".repeat(32)}.svg`,
-    cardRendererVersion: "pg16-card-integration-test",
+    cardRendererVersion: "sg-card-1.0.0",
     pngSha256: "22".repeat(32),
     cardStorageKey: `sha256/${"22".repeat(32)}.png`,
     xAuthenticatedAt: claimedAt,
     claimedAt,
   });
   const concurrent = await Promise.all([
-    signatures.claim(input(111_111)),
-    signatures.claim(input(222_222)),
+    signatures.claim(input(11)),
+    signatures.claim(input(22)),
   ]);
   if (new Set(concurrent.map((entry) => entry.account.publicAccountId)).size !== 1) {
     throw new Error("Concurrent first claims did not converge on one PostgreSQL account.");
   }
-  const duplicate = await Promise.all([signatures.claim(input(333_333)), signatures.claim(input(333_333))]);
+  const duplicate = await Promise.all([signatures.claim(input(33)), signatures.claim(input(33))]);
   if (duplicate.filter((entry) => entry.existing).length !== 1) {
     throw new Error("Concurrent identical PostgreSQL claims were not idempotent.");
   }
 
   const artifactLedger = new PostgresArtifactLedger(pool);
-  await signatures.claim({ ...input(444_444), xUserId: "987654321", handleAtClaim: "bob", handleNormalized: "bob", claimedAt: new Date("2026-09-06T00:00:00Z") });
+  await signatures.claim({ ...input(44), xUserId: "987654321", handleAtClaim: "bob", handleNormalized: "bob", claimedAt: new Date("2026-09-06T00:00:00Z") });
   const allClaims = await signatures.listClaimedSignatures(100);
   const firstPage = await signatures.listClaimedSignatures(2);
   const secondPage = await signatures.listClaimedSignatures(2, firstPage[1]);
@@ -209,7 +210,7 @@ try {
   if (await signatures.getSignature(removable.signatureId)) throw new Error("Withdrawn claim remained in PostgreSQL.");
   const references = await pool.query("SELECT 1 FROM local_rehearsal.artifact_references WHERE signature_id = $1", [removable.signatureId]);
   if (references.rowCount) throw new Error("Withdrawn claim retained local artifact references.");
-  const freshClaim = await signatures.claim({ ...input(333_333), claimedAt: new Date() });
+  const freshClaim = await signatures.claim({ ...input(33), claimedAt: new Date() });
   if (freshClaim.existing || freshClaim.signature.claimInstanceId === originalInstance) throw new Error("A fresh claim reused the withdrawn database instance.");
   if (await signatures.withdraw(removable.signatureId, removable.xUserId, originalInstance)) throw new Error("An old withdrawal removed a new claim.");
 
@@ -231,9 +232,24 @@ try {
   try { await signatures.withdraw(removable.signatureId, removable.xUserId, freshClaim.signature.claimInstanceId); }
   catch { normalizedBlocked = true; }
   if (!normalizedBlocked || !await signatures.getSignature(removable.signatureId)) throw new Error("Normalized mint control did not block withdrawal.");
+  const caseVariants = await Promise.all([
+    signatures.claim({ ...input(22), handleAtClaim: "Alice", currentHandle: "ALIce" }),
+    signatures.claim({ ...input(22), handleAtClaim: "ALICE", currentHandle: "ALIce" }),
+  ]);
+  if (new Set([...caseVariants, concurrent[1]!].map(({ signature }) => signature.signatureId)).size !== 3
+      || new Set(caseVariants.map(({ account }) => account.publicAccountId)).size !== 1
+      || caseVariants.some(({ account }) => account.currentHandle !== "ALIce")) {
+    throw new Error("Exact-case artwork inputs did not remain distinct within the same X account.");
+  }
+  const uppercaseReplay = await signatures.claim({ ...input(22), handleAtClaim: "Alice", currentHandle: "alice" });
+  if (!uppercaseReplay.existing || uppercaseReplay.signature.handleAtClaim !== "Alice" || uppercaseReplay.account.currentHandle !== "alice") {
+    throw new Error("OAuth current spelling overwrote the frozen artwork handle.");
+  }
+  // Reapplying the migration must preserve valid formal records and indexes.
+  run(binary("psql"), [...base, "-d", database, "-v", "ON_ERROR_STOP=1", "-f", resolve(repoRoot, "src/store/migrations/004_formal_algorithm.sql")]);
   await pool.end();
   pool = null;
-  console.log(JSON.stringify({ migrated: true, repositoriesExercised: true, withdrawalExercised: true, ...result }, null, 2));
+  console.log(JSON.stringify({ migrated: true, repositoriesExercised: true, withdrawalExercised: true, caseSensitiveArtworkExercised: true, ...result }, null, 2));
 } catch (error) {
   if (existsSync(log)) console.error(readFileSync(log, "utf8"));
   throw error;

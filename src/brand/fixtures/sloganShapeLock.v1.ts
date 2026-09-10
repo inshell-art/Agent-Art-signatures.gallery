@@ -1,4 +1,3 @@
-import type { SignatureCompositionSnapshot } from "../signatureComposition.js";
 
 /**
  * Historical v1 test fixture; never used by homepage runtime.
@@ -45,4 +44,4 @@ export const SLOGAN_SHAPE_LOCK = {
   "verifiedShapeLock": {
     "what_shape_do_you_go_by?": "1e0fbf3d323d6ad18c352296288e95014854f6bc89828e6e031152f445f691e5"
   }
-} as const satisfies SignatureCompositionSnapshot;
+} as const;

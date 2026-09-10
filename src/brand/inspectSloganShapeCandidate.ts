@@ -6,10 +6,10 @@ import {
 } from "./signatureComposition.js";
 import { SLOGAN_COMPOSITION_SOURCE } from "./sloganCompositionSpec.js";
 import { SLOGAN_SHAPE_LOCK } from "./sloganShapeLock.js";
-import { developmentFixtureRenderer } from "../v1/renderer.js";
+import { formalSignatureRenderer } from "../v1/renderer.js";
 import { formatGr0k } from "../v1/input.js";
 
-const capture = captureSignatureComposition(SLOGAN_COMPOSITION_SOURCE, developmentFixtureRenderer);
+const capture = captureSignatureComposition(SLOGAN_COMPOSITION_SOURCE, formalSignatureRenderer);
 const candidate = createSignatureCompositionSnapshot({
   ...capture,
   shapeLockSchema: SIGNATURE_SHAPE_LOCK_SCHEMA,

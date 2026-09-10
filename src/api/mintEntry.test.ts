@@ -5,7 +5,7 @@ import { MemoryAuthState } from "../v1/authState.js";
 import { MemoryArtifactStore } from "../v1/artifacts.js";
 import { MemorySignatureStore } from "../v1/store.js";
 import { seedDevelopmentFixtures } from "../v1/fixtures.js";
-import { DEV_CARD_RENDERER_VERSION, DEV_RENDERER_VERSION, developmentFixtureRenderer, RendererRegistry } from "../v1/renderer.js";
+import { CARD_RENDERER_VERSION, RENDERER_VERSION, formalSignatureRenderer, RendererRegistry } from "../v1/renderer.js";
 import { loadMintConfig } from "../v2/config.js";
 import { MemoryMintStore } from "../v2/memoryStore.js";
 import { V2MintService } from "../v2/service.js";
@@ -24,12 +24,12 @@ beforeEach(async () => {
   store = new MemorySignatureStore();
   auth = new MemoryAuthState();
   const artifacts = new MemoryArtifactStore();
-  const renderers = new RendererRegistry([developmentFixtureRenderer]);
-  await seedDevelopmentFixtures({ store, artifacts, renderers, cardRendererVersion: DEV_CARD_RENDERER_VERSION }, auth);
+  const renderers = new RendererRegistry([formalSignatureRenderer]);
+  await seedDevelopmentFixtures({ store, artifacts, renderers, cardRendererVersion: CARD_RENDERER_VERSION }, auth);
   mint = new V2MintService(loadMintConfig({}, true, "http://localhost:3000"), new MemoryMintStore(), store, artifacts);
   signatureId = (await store.listSignaturesForAccount(claimant))[0].signatureId;
   mintPath = `/signatures/${signatureId}/mint`;
-  server = startServer({ store, auth, artifacts, renderers, mint }, 0, { fixtureMode: true, activeRendererVersion: DEV_RENDERER_VERSION });
+  server = startServer({ store, auth, artifacts, renderers, mint }, 0, { fixtureMode: true, activeRendererVersion: RENDERER_VERSION });
   await new Promise<void>((resolve, reject) => { server.once("listening", resolve); server.once("error", reject); });
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 });
@@ -125,7 +125,7 @@ describe("guided mint entry", () => {
     const duplicate = new URLSearchParams({ purpose: "account_login", return_to: mintPath });
     duplicate.append("return_to", mintPath);
     expect((await form("/auth/x/start", duplicate)).status).toBe(400);
-    expect((await form("/auth/x/start", new URLSearchParams({ purpose: "claim", handle: "alice", gr0k: "0.500000", return_to: mintPath }))).status).toBe(400);
+    expect((await form("/auth/x/start", new URLSearchParams({ purpose: "claim", handle: "alice", gr0k: "50", return_to: mintPath }))).status).toBe(400);
   });
 
   it("shows pending confirmation instead of soliciting another wallet or authorization", async () => {

@@ -35,7 +35,7 @@ const golden = JSON.parse(readFileSync(new URL("../../../contracts/fixtures/mint
   galleryAttestation: string;
 };
 const metadataGolden = JSON.parse(readFileSync(new URL("./fixtures/metadata-golden.json", import.meta.url), "utf8")) as {
-  source: { svgSha256: string; pngSha256: string };
+  source: { svgSha256: string; pngSha256: string; svgCid: string };
   metadataSha256: string;
   tokenURI: string;
   tokenURIHash: string;
@@ -151,7 +151,7 @@ describe("MintAuthorization EIP-712", () => {
   it("hashes the exact UTF-8 token URI", () => {
     const uri = golden.tokenURI;
     expect(tokenUriHash(uri)).toBe(authorization.tokenURIHash);
-    expect(tokenUriHash(uri.replace("puld", "pvld"))).not.toBe(authorization.tokenURIHash);
+    expect(tokenUriHash(`ipfs://${metadataGolden.source.svgCid}`)).not.toBe(authorization.tokenURIHash);
     expect(() => tokenUriHash(`${uri}/`)).toThrow(/lowercase Base32 CIDv1/);
   });
 

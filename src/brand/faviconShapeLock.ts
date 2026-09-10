@@ -1,15 +1,15 @@
 import type { SignatureCompositionSnapshot } from "./signatureComposition.js";
 
-/** Exact capital S at gr0k 0.500000, captured through the composition adapter.
- * Framing belongs to favicon.ts; these renderer coordinates must not be edited. */
+/** Exact authored text at integer seed 22, captured from the frozen formal
+ * Signature Algorithm v1.0.0. Framing is presentation only; geometry is locked. */
 export const FAVICON_SHAPE_LOCK = {
   "schema": "signature-composition/2",
-  "id": "agent-art-favicon-s-v1",
+  "id": "agent-art-favicon-s-v2",
   "displayText": "S",
-  "rendererVersion": "sg-renderer-dev-fixture",
-  "rendererApproved": false,
-  "gr0kRaw": 500000,
-  "gr0kScale": 1000000,
+  "rendererVersion": "sg-renderer-1.0.0",
+  "rendererApproved": true,
+  "gr0kRaw": 22,
+  "gr0kScale": 1,
   "tokens": [
     {
       "tokenIndex": 0,
@@ -25,21 +25,20 @@ export const FAVICON_SHAPE_LOCK = {
       "firstDisplayWord": "S",
       "width": 420,
       "height": 420,
-      "svgSha256": "50fd0495f5681bbcb59018581b568da2581cbf8538dd99f70948da63133ac9d6",
-      "sourcePathElementSha256": "58b443116bb57898806b9b3778fbe7417720d10573d0af84d11e98fcd9b32c9b",
-      "shapeSha256": "48f8f69a1e58e4ff5fdb5247fc9d75e19ec01b8a2f43d9099699d4a2066f97e8",
+      "svgSha256": "5daae273071ae1d618996145623a2cff5c3a4087737857e2c95550b5c78a19de",
+      "sourcePathElementSha256": "195f44304f7b58a0e053efefa98baad171ad0ffef12f6ade00a2b7b15c9d022b",
+      "shapeSha256": "44ae39147977c824a69d4600fe44e25387372f7706034054d82928afc02c37ed",
       "drawing": {
         "mode": "fill",
-        "d": "M173.28,196.69C188.77,194.16 237.45,198.25 248.28,196.69L246.72,186.82C238.93,188.20 189.56,184.09 171.72,186.82Z"
+        "d": "M170.97,196.61C261.36,216.29 184.12,174.02 245.97,196.61L249.03,182.95C161.50,171.98 252.96,201.30 174.03,182.95Z"
       }
     }
   ],
   "proposedShapeLock": {
-    "S": "48f8f69a1e58e4ff5fdb5247fc9d75e19ec01b8a2f43d9099699d4a2066f97e8"
+    "S": "44ae39147977c824a69d4600fe44e25387372f7706034054d82928afc02c37ed"
   },
   "shapeLockSchema": "signature-shape-lock/1",
   "verifiedShapeLock": {
-    "S": "48f8f69a1e58e4ff5fdb5247fc9d75e19ec01b8a2f43d9099699d4a2066f97e8"
+    "S": "44ae39147977c824a69d4600fe44e25387372f7706034054d82928afc02c37ed"
   }
 } as const satisfies SignatureCompositionSnapshot;
-

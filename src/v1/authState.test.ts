@@ -19,7 +19,7 @@ describe("MemoryAuthState", () => {
   it("binds combined consent only to claim flows and never upgrades a legacy form", () => {
     const auth = new MemoryAuthState();
     const session = auth.getOrCreateSession(null).session;
-    const input = { handleNormalized: "alice", gr0kRaw: 500000, rendererVersion: "test", previewSvgSha256: "a".repeat(64) };
+    const input = { handleAtClaim: "Alice", handleNormalized: "alice", gr0kRaw: 50, rendererVersion: "test", previewSvgSha256: "a".repeat(64) };
     const consent = { ...input, claimIntent: CLAIM_ON_RETURN_INTENT } as const;
     expect(auth.startFlow(session, "claim", consent, "verifier").flow).toMatchObject(consent);
     expect(auth.startFlow(session, "claim", input, "verifier").flow.claimIntent).toBeUndefined();

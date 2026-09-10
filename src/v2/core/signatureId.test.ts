@@ -14,8 +14,8 @@ import {
 
 const identity = {
   xUserId: "1234567890123456789",
-  handleNormalized: "alice",
-  gr0kRaw: 371924,
+  handleAtClaim: "Alice",
+  gr0kRaw: 22,
   rendererVersion: "sg-renderer-1.0.0",
 };
 
@@ -29,10 +29,11 @@ describe("V1 signature identity bridge", () => {
     expect(signatureIdFromDigest(digest)).toBe(SIGNATURE_ID_GOLDEN_VECTOR.signatureId);
   });
 
-  it("recomputes SHA-256 from the immutable V1 payload", () => {
+  it("recomputes SHA-256 from the case-sensitive formal algorithm payload", () => {
     const payload = signatureIdentityPayload(identity);
-    expect(Buffer.from(verifySignatureIdPayload(SIGNATURE_ID_GOLDEN_VECTOR.signatureId, payload)).toString("hex"))
-      .toBe(SIGNATURE_ID_GOLDEN_VECTOR.signatureDigest.slice(2));
+    const formalId = "sg1_i4p2ewy4lkbui2v65y5moarzjrgph6vaeunf7pxzvm5cbeatsida";
+    expect(Buffer.from(verifySignatureIdPayload(formalId, payload)).toString("hex"))
+      .toBe(createHash("sha256").update(payload).digest("hex"));
   });
 
   it("does not hash the displayed signature ID string", () => {

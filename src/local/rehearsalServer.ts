@@ -9,7 +9,7 @@ import { startServer, type AppOptions } from "../api/server.js";
 import { MemoryAuthState } from "../v1/authState.js";
 import { FileArtifactStore } from "../v1/fileArtifactStore.js";
 import { signatureIdentityPayload } from "../v1/identity.js";
-import { DEV_CARD_RENDERER_VERSION, DEV_RENDERER_VERSION, developmentFixtureRenderer, RendererRegistry, sha256Hex } from "../v1/renderer.js";
+import { CARD_RENDERER_VERSION, RENDERER_VERSION, formalSignatureRenderer, RendererRegistry, sha256Hex } from "../v1/renderer.js";
 import type { MintConfig } from "../v2/config.js";
 import { mintAuthorizationDigest, mintAuthorizationTypedData } from "../v2/core/mintAuthorization.js";
 import { signatureDigestHex } from "../v2/core/signatureId.js";
@@ -40,6 +40,7 @@ pool.on("error", () => console.error("Local PostgreSQL connection unavailable.")
 const durable = new LocalPostgresState(pool);
 const releaseWriter = await durable.acquireExclusiveWriter();
 await pool.query(readFileSync(new URL("../store/migrations/003_claim_withdrawal.sql", import.meta.url), "utf8"));
+await pool.query(readFileSync(new URL("../store/migrations/004_formal_algorithm.sql", import.meta.url), "utf8"));
 const mintState = await durable.loadMintStore();
 let indexer = await durable.loadIndexer();
 if (!indexer) throw new Error("No durable local indexer snapshot. Run npm run local:up.");
@@ -84,7 +85,7 @@ const reconciler = createLocalChainReconciler({
     const signature = await store.getSignature(authorization.signatureId);
     if (!signature) return false;
     const payload = signatureIdentityPayload({
-      xUserId: signature.xUserId, handleNormalized: signature.handleNormalized,
+      xUserId: signature.xUserId, handleAtClaim: signature.handleAtClaim,
       gr0kRaw: signature.gr0kRaw, gr0kScale: signature.gr0kScale, rendererVersion: signature.rendererVersion,
     });
     if (signatureDigestHex(signature.signatureId) !== "0x" + createHash("sha256").update(payload).digest("hex")) return false;
@@ -174,9 +175,9 @@ await queue.run(async () => {
   }
 });
 const wallet = new LocalTestWallet({ rpcUrl: runtime.rpcUrl, contract: config.contract, runtimeCodeHash: runtime.runtimeCodeHash, appOrigin, assertLocalGuard: assertChain });
-const server = startServer({ store, artifacts, auth: new MemoryAuthState(), renderers: new RendererRegistry([developmentFixtureRenderer]), mint }, port, {
-  fixtureMode: true, localChainRehearsal: true, activeRendererVersion: DEV_RENDERER_VERSION,
-  cardRendererVersion: DEV_CARD_RENDERER_VERSION, publicOrigin: appOrigin, runMintOperation, runClaimWithdrawalOperation, localWallet: wallet,
+const server = startServer({ store, artifacts, auth: new MemoryAuthState(), renderers: new RendererRegistry([formalSignatureRenderer]), mint }, port, {
+  fixtureMode: true, localChainRehearsal: true, activeRendererVersion: RENDERER_VERSION,
+  cardRendererVersion: CARD_RENDERER_VERSION, publicOrigin: appOrigin, runMintOperation, runClaimWithdrawalOperation, localWallet: wallet,
   oauthClient, identityDailyCallLimit: appConfig.identityDailyCallLimit, enforcePublicOrigin: true,
 });
 server.once("listening", () => {

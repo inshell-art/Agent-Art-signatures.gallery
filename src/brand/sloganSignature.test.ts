@@ -13,12 +13,12 @@ import {
 import { SLOGAN_SHAPE_LOCK } from "./sloganShapeLock.js";
 import { SLOGAN_COMPOSITION_SOURCE } from "./sloganCompositionSpec.js";
 import { OPEN_FLOW_QUESTION_MARK } from "./sloganQuestionMark.js";
-import { developmentFixtureRenderer } from "../v1/renderer.js";
+import { formalSignatureRenderer } from "../v1/renderer.js";
 
 const EXPECTED_INPUTS = [
   "What_shape_do_you_go_by?",
 ] as const;
-const EXPECTED_SHAPE_HASH = "142988f78977033590a0bd286f08e46392e99ef86e8da23aa80702304f883f4b";
+const EXPECTED_SHAPE_HASH = "cc0e4cea391e4f44e2d9f3fd4f4aeed8ad722ff40e9a8b2274c308ac24cd178f";
 const digest = (value: string) => createHash("sha256").update(value, "utf8").digest("hex");
 
 describe("shape-locked brand slogan composition", () => {
@@ -26,19 +26,19 @@ describe("shape-locked brand slogan composition", () => {
     expect(SLOGAN_DISPLAY_TEXT).toBe("What_shape_do_you_go_by?");
     expect(SLOGAN_DISPLAY_TEXT).toBe(SLOGAN_SHAPE_LOCK.displayText);
     expect(SLOGAN_DISPLAY_TEXT.match(/_/g)).toHaveLength(5);
-    expect(SLOGAN_SIGNATURE_VERSION).toBe("sg-slogan-composition-7.0.0");
+    expect(SLOGAN_SIGNATURE_VERSION).toBe("sg-slogan-composition-8.0.0");
     expect(SLOGAN_SIGNATURE_MANIFEST).toMatchObject({
       version: SLOGAN_SIGNATURE_VERSION,
-      compositionId: "agent-art-slogan-v7",
+      compositionId: "agent-art-slogan-v8",
       shapeLockSchema: "signature-shape-lock/1",
       displayText: "What_shape_do_you_go_by?",
       rendererInputs: EXPECTED_INPUTS,
       wordCount: 1,
       distinctGlyphCount: 1,
-      sourceRendererVersion: "sg-renderer-dev-fixture",
-      sourceRendererApproved: false,
-      sourceGr0kRaw: 500_000,
-      sourceGr0kScale: 1_000_000,
+      sourceRendererVersion: "sg-renderer-1.0.0",
+      sourceRendererApproved: true,
+      sourceGr0kRaw: 22,
+      sourceGr0kScale: 1,
       runtimeBoundary: "checked-in-shape-lock",
       punctuation: {
         id: "open-flow",
@@ -74,12 +74,12 @@ describe("shape-locked brand slogan composition", () => {
         ...SLOGAN_COMPOSITION_SOURCE,
         displayText: SLOGAN_SHAPE_LOCK.tokens[0].rendererInput,
       },
-      developmentFixtureRenderer,
+      formalSignatureRenderer,
     );
     expect(captured.glyphs[0].drawing).toEqual(SLOGAN_SHAPE_LOCK.glyphs[0].drawing);
     expect(captured.glyphs[0].svgSha256).toBe(SLOGAN_SHAPE_LOCK.glyphs[0].svgSha256);
     expect(captured.proposedShapeLock).toEqual(SLOGAN_SHAPE_LOCK.verifiedShapeLock);
-    const literal = captureSignatureComposition(SLOGAN_COMPOSITION_SOURCE, developmentFixtureRenderer);
+    const literal = captureSignatureComposition(SLOGAN_COMPOSITION_SOURCE, formalSignatureRenderer);
     expect(literal.schema).toBe("signature-composition/2");
     expect(literal.glyphs[0].rendererInput).toBe(SLOGAN_DISPLAY_TEXT);
     expect(literal.tokens).toEqual(SLOGAN_SHAPE_LOCK.tokens);
@@ -87,8 +87,8 @@ describe("shape-locked brand slogan composition", () => {
   });
 
   it.each([
-    ["desktop", SLOGAN_SIGNATURE_SVG, "35 145 370 100", 1_110, 300],
-    ["mobile", SLOGAN_SIGNATURE_MOBILE_SVG, "35 145 370 100", 1_110, 300],
+    ["desktop", SLOGAN_SIGNATURE_SVG, "35 145 562.8571428571429 120", 1_689, 360],
+    ["mobile", SLOGAN_SIGNATURE_MOBILE_SVG, "35 145 562.8571428571429 120", 1_689, 360],
   ] as const)("renders the %s layout as one intact phrase", (layout, svg, viewBox, width, height) => {
     expect(renderSloganSignatureSvg(layout)).toBe(svg);
     expect(svg).toContain(`<svg viewBox="${viewBox}"`);
@@ -102,7 +102,7 @@ describe("shape-locked brand slogan composition", () => {
     expect(svg).not.toContain("<rect");
     expect(svg).not.toMatch(/<text\b|font-family=/);
     expect(svg).toContain('class="slogan-signature-punctuation"');
-    expect(svg).toContain('transform="translate(373 169)"');
+    expect(svg).toContain('transform="translate(565.8571428571429 169)"');
     expect(svg).toContain(OPEN_FLOW_QUESTION_MARK.svgMarkup);
     expect(svg).not.toContain("<script");
     expect(svg).not.toMatch(/\b(?:href|src)=/);
@@ -138,8 +138,8 @@ describe("shape-locked brand slogan composition", () => {
     expect(SLOGAN_SIGNATURE_MANIFEST.layouts.mobile.placements).toHaveLength(1);
     expect(SLOGAN_SIGNATURE_MANIFEST.layouts.desktop.placements.every((placement) => placement.scale === 1)).toBe(true);
     expect(SLOGAN_SIGNATURE_MANIFEST.layouts.mobile.placements.every((placement) => placement.scale === 1)).toBe(true);
-    expect(SLOGAN_SIGNATURE_MANIFEST.layouts.desktop.viewBox).toBe("35 145 370 100");
-    expect(SLOGAN_SIGNATURE_MANIFEST.layouts.mobile.viewBox).toBe("35 145 370 100");
+    expect(SLOGAN_SIGNATURE_MANIFEST.layouts.desktop.viewBox).toBe("35 145 562.8571428571429 120");
+    expect(SLOGAN_SIGNATURE_MANIFEST.layouts.mobile.viewBox).toBe("35 145 562.8571428571429 120");
   });
 
   it("has a renderer-free runtime presentation module", () => {
@@ -150,7 +150,7 @@ describe("shape-locked brand slogan composition", () => {
   });
 
   it("matches frozen composite SVG hashes", () => {
-    expect(digest(SLOGAN_SIGNATURE_SVG)).toBe("7cb8550c8f14a0c3a7f3de24874a18b0bc21ba2716781d61e85e33871903afee");
-    expect(digest(SLOGAN_SIGNATURE_MOBILE_SVG)).toBe("7cb8550c8f14a0c3a7f3de24874a18b0bc21ba2716781d61e85e33871903afee");
+    expect(digest(SLOGAN_SIGNATURE_SVG)).toBe("c914e3aa9c71c28e7298693ae1fd7b78a533ff20597367640592c2b31d7a0e44");
+    expect(digest(SLOGAN_SIGNATURE_MOBILE_SVG)).toBe("c914e3aa9c71c28e7298693ae1fd7b78a533ff20597367640592c2b31d7a0e44");
   });
 });

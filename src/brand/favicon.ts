@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { DEFAULT_SETTINGS } from "../algorithm/settings.js";
+import { FORMAL_BACKGROUND, FORMAL_INK } from "../algorithmV1/index.js";
 import { FAVICON_SHAPE_LOCK } from "./faviconShapeLock.js";
 import { renderSignatureCompositionSvg, restoreSignatureCompositionSnapshot, type SignatureCompositionPresentation } from "./signatureComposition.js";
 
@@ -12,7 +12,9 @@ const presentation = {
   height: 64,
   placements: [{ tokenIndex: 0, translateX: 0, translateY: 0, scale: 1 }],
 } as const satisfies SignatureCompositionPresentation;
-const { background, ink } = DEFAULT_SETTINGS.canvas;
+// Frozen Signature Algorithm v1.0.0 artwork palette.
+const background = FORMAL_BACKGROUND;
+const ink = FORMAL_INK;
 const [x, y, width, height] = presentation.viewBox;
 const composed = renderSignatureCompositionSvg(composition, presentation);
 

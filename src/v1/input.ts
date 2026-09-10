@@ -1,4 +1,8 @@
-export const GR0K_SCALE = 1_000_000 as const;
+/** The formal algorithm uses an unscaled integer seed, not a decimal ratio. */
+export const GR0K_SCALE = 1 as const;
+export const GR0K_MIN = 1 as const;
+export const GR0K_MAX = 100 as const;
+export const GR0K_DEFAULT = 22 as const;
 
 export type InputErrorCode = "INVALID_HANDLE" | "INVALID_GR0K";
 
@@ -26,25 +30,33 @@ function asciiLowercase(value: string): string {
 
 export interface NormalizedHandle {
   normalized: string;
+  renderHandle: string;
   canonicalSegment: string;
   isCanonical: boolean;
 }
 
-export function normalizeHandleValue(value: string): string {
+/** Preserve spelling for the artwork; X-account comparison is separate. */
+export function validateRenderHandle(value: string): string {
   const withoutPrefix = value.startsWith("@") ? value.slice(1) : value;
-  if (!/^[A-Za-z0-9_]{1,15}$/.test(withoutPrefix)) {
+  if (!/^[A-Za-z0-9_]{1,15}$(?![\s\S])/.test(withoutPrefix)) {
     throw new InputError("INVALID_HANDLE", "Use an X handle with 1–15 letters, numbers, or underscores.");
   }
-  return asciiLowercase(withoutPrefix);
+  return withoutPrefix;
+}
+
+export function normalizeHandleValue(value: string): string {
+  return asciiLowercase(validateRenderHandle(value));
 }
 
 export function normalizeHandleSegment(segment: string): NormalizedHandle {
   const decoded = decodeOnce(segment, "INVALID_HANDLE", "Handle");
-  const normalized = normalizeHandleValue(decoded);
+  const renderHandle = validateRenderHandle(decoded);
+  const normalized = asciiLowercase(renderHandle);
   return {
     normalized,
-    canonicalSegment: normalized,
-    isCanonical: segment === normalized,
+    renderHandle,
+    canonicalSegment: renderHandle,
+    isCanonical: segment === renderHandle,
   };
 }
 
@@ -55,30 +67,21 @@ export interface ParsedGr0k {
 }
 
 export function formatGr0k(raw: number): string {
-  if (!Number.isInteger(raw) || raw < 0 || raw > GR0K_SCALE) {
-    throw new InputError("INVALID_GR0K", "gr0k must be between 0.000000 and 1.000000.");
+  if (!Number.isInteger(raw) || raw < GR0K_MIN || raw > GR0K_MAX) {
+    throw new InputError("INVALID_GR0K", "gr0k must be an integer from 1 through 100.");
   }
-  if (raw === GR0K_SCALE) return "1.000000";
-  return `0.${String(raw).padStart(6, "0")}`;
+  return String(raw);
 }
 
 export function parseGr0kValue(value: string): { raw: number; canonical: string } {
-  if (!/^(?:0(?:\.\d{1,6})?|1(?:\.0{1,6})?)$/.test(value)) {
+  if (!/^(?:[1-9]|[1-9][0-9]|100)$(?![\s\S])/.test(value)) {
     throw new InputError(
       "INVALID_GR0K",
-      "Use a decimal gr0k value from 0 through 1 with no more than six decimal places.",
+      "Use an integer gr0k seed from 1 through 100, without leading zeros or decimals.",
     );
   }
 
-  const [integerPart, fractionalPart = ""] = value.split(".");
-  let raw = integerPart === "1" ? GR0K_SCALE : 0;
-  if (integerPart === "0") {
-    const padded = fractionalPart.padEnd(6, "0");
-    for (let index = 0; index < padded.length; index += 1) {
-      raw = raw * 10 + (padded.charCodeAt(index) - 48);
-    }
-  }
-
+  const raw = Number(value);
   const canonical = formatGr0k(raw);
   return { raw, canonical };
 }

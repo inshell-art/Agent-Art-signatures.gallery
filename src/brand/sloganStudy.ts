@@ -1,4 +1,4 @@
-import { developmentFixtureRenderer } from "../v1/renderer.js";
+import { formalSignatureRenderer } from "../v1/renderer.js";
 import { SITE_FONT_PRELOAD } from "../v1/fonts.js";
 import { FAVICON_LINK } from "./favicon.js";
 import {
@@ -48,7 +48,8 @@ function candidateSvg(glyph: CapturedSignatureGlyph, mark: string): string {
   const paint = drawing.mode === "fill"
     ? 'fill="currentColor" stroke="none"'
     : `fill="none" stroke="currentColor" stroke-width="${drawing.strokeWidth}" stroke-linecap="${drawing.strokeLinecap}" stroke-linejoin="${drawing.strokeLinejoin}"`;
-  return `<svg viewBox="35 145 370 100" xmlns="http://www.w3.org/2000/svg" width="1110" height="300" aria-hidden="true"><g class="study-generated-shape"><path d="${drawing.d}" ${paint}/></g><g class="study-punctuation" transform="translate(373 169)">${mark}</g></svg>`;
+  const width = glyph.width - 50;
+  return `<svg viewBox="35 145 ${width} 120" xmlns="http://www.w3.org/2000/svg" width="${Math.round(width * 3)}" height="360" aria-hidden="true"><g class="study-generated-shape"><path d="${drawing.d}" ${paint}/></g><g class="study-punctuation" transform="translate(${glyph.width - 47} 169)">${mark}</g></svg>`;
 }
 
 function specimen(svg: string, label: string, extraClass = ""): string {
@@ -62,7 +63,7 @@ function caseStudy(): string {
     id: `slogan-study-case-${item.id}`,
     displayText: item.text,
     gr0kRaw: current.gr0kRaw,
-  }, developmentFixtureRenderer));
+  }, formalSignatureRenderer));
   const identical = captures[0].glyphs[0].shapeSha256 === captures[1].glyphs[0].shapeSha256;
   const rows = SLOGAN_CASE_STUDIES.map((item, index) => {
     const glyph = captures[index].glyphs[0];
@@ -88,13 +89,13 @@ export function sloganStudyPage(): string {
     const glyph = current.glyphs.find((candidate) => candidate.rendererInput === rendererInput) ?? captureSignatureComposition({
       id: `slogan-study-${item.id}`,
       displayText: rendererText,
-      gr0kRaw: 500_000,
-    }, developmentFixtureRenderer).glyphs[0];
+      gr0kRaw: 22,
+    }, formalSignatureRenderer).glyphs[0];
     const mark = OPEN_FLOW_QUESTION_MARK;
     return `<article class="study-copy-row" data-copy-id="${item.id}" data-renderer-input="${escapeHtml(glyph.rendererInput)}" data-shape-sha256="${glyph.shapeSha256}"><span class="study-kicker">${escapeHtml(item.label)}</span><h3>${escapeHtml(item.text)}</h3><p>${escapeHtml(item.rationale)}</p>${specimen(candidateSvg(glyph, mark.svgMarkup), rendererText)}<details><summary>Renderer input &amp; shape hash</summary><p class="study-technical"><code>${escapeHtml(glyph.rendererInput)}</code><br><code>${glyph.shapeSha256}</code></p></details></article>`;
   }).join("");
 
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>Slogan study · Signatures Gallery</title>${FAVICON_LINK}${SITE_FONT_PRELOAD}<link rel="stylesheet" href="/assets/site.css"><link rel="stylesheet" href="/dev/slogan-study.css"></head><body class="study-page"><main class="study-shell"><nav class="study-nav" aria-label="Study navigation"><a href="/">← Back to gallery</a><span>Local design study · approved pair on homepage</span></nav><header class="study-intro"><p class="study-kicker">Signatures Gallery / Language &amp; form</p><h1>A question, in its own hand.</h1><p>“${escapeHtml(current.displayText)}” with the Open flow question mark is now on the homepage, with its exact spelling preserved. These comparisons keep the selected shape lock intact.</p><div class="study-jump"><a href="#punctuation">01 · The question mark</a><a href="#language">02 · The words</a><a href="#letter-case">03 · Letter case</a></div></header><section class="study-section" id="punctuation" aria-labelledby="punctuation-title"><div class="study-section-heading"><span class="study-kicker">01 / Punctuation</span><h2 id="punctuation-title">A hook, a turn, a dot.</h2><p>Keep the unmistakable structure of a question mark. Borrow the curve’s changing stroke weight, soft turns, and tapered release. These are authored vector outlines, not font glyphs or generated letters.</p></div><details class="study-baseline"><summary>Compare the approved homepage artwork</summary>${specimen(SLOGAN_SIGNATURE_SVG, "Approved slogan with Open flow question mark")}</details>${marks}</section><section class="study-section" id="language" aria-labelledby="language-title"><div class="study-section-heading"><span class="study-kicker">02 / Language</span><h2 id="language-title">A handle is a name you go by.<br>It is not your whole identity.</h2><p>‘Name’ is defensible, but broad. The approved poetic direction keeps the personal invitation; the literal direction names the exact input. Each drawing below comes from its own words, using the same renderer and gr0k.</p></div>${copy}</section>${caseStudy()}<aside class="study-note"><h2>What stays true</h2><p>The artist defines the system; the handle supplies its structure; Grok supplies gr0k, a rendering condition—not an identity or reputation score. The question mark is a readable companion to the generative shape, never presented as renderer output.</p><p>The selected wording and Open flow question mark are now on the homepage. Further studies do not mutate the accepted shape lock. For this study, gr0k is held at <code>0.500000</code> · <code>sg-renderer-dev-fixture</code> (unapproved local renderer).</p></aside></main></body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>Slogan study · Signatures Gallery</title>${FAVICON_LINK}${SITE_FONT_PRELOAD}<link rel="stylesheet" href="/assets/site.css"><link rel="stylesheet" href="/dev/slogan-study.css"></head><body class="study-page"><main class="study-shell"><nav class="study-nav" aria-label="Study navigation"><a href="/">← Back to gallery</a><span>Local design study · approved pair on homepage</span></nav><header class="study-intro"><p class="study-kicker">Signatures Gallery / Language &amp; form</p><h1>A question, in its own hand.</h1><p>“${escapeHtml(current.displayText)}” with the Open flow question mark is now on the homepage, with its exact spelling preserved. These comparisons keep the selected shape lock intact.</p><div class="study-jump"><a href="#punctuation">01 · The question mark</a><a href="#language">02 · The words</a><a href="#letter-case">03 · Letter case</a></div></header><section class="study-section" id="punctuation" aria-labelledby="punctuation-title"><div class="study-section-heading"><span class="study-kicker">01 / Punctuation</span><h2 id="punctuation-title">A hook, a turn, a dot.</h2><p>Keep the unmistakable structure of a question mark. Borrow the curve’s changing stroke weight, soft turns, and tapered release. These are authored vector outlines, not font glyphs or generated letters.</p></div><details class="study-baseline"><summary>Compare the approved homepage artwork</summary>${specimen(SLOGAN_SIGNATURE_SVG, "Approved slogan with Open flow question mark")}</details>${marks}</section><section class="study-section" id="language" aria-labelledby="language-title"><div class="study-section-heading"><span class="study-kicker">02 / Language</span><h2 id="language-title">A handle is a name you go by.<br>It is not your whole identity.</h2><p>‘Name’ is defensible, but broad. The approved poetic direction keeps the personal invitation; the literal direction names the exact input. Each drawing below comes from its own words, using the same renderer and gr0k.</p></div>${copy}</section>${caseStudy()}<aside class="study-note"><h2>What stays true</h2><p>The artist defines the system; the handle supplies its structure; Grok supplies gr0k, a rendering condition—not an identity or reputation score. The question mark is a readable companion to the generative shape, never presented as renderer output.</p><p>The selected wording and Open flow question mark are now on the homepage. Further studies do not mutate the accepted shape lock. For this study, gr0k is held at <code>22</code> · <code>sg-renderer-1.0.0</code> (formal Signature Algorithm v1.0.0).</p></aside></main></body></html>`;
 }
 
 export const SLOGAN_STUDY_CSS = `

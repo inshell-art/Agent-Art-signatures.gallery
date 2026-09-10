@@ -4,7 +4,7 @@ import { MemoryArtifactStore } from "../v1/artifacts.js";
 import type { XOAuthClient } from "../claim/xOAuthClient.js";
 import { MemoryAuthState } from "../v1/authState.js";
 import { seedDevelopmentFixtures } from "../v1/fixtures.js";
-import { DEV_CARD_RENDERER_VERSION, DEV_RENDERER_VERSION, developmentFixtureRenderer, RendererRegistry } from "../v1/renderer.js";
+import { CARD_RENDERER_VERSION, RENDERER_VERSION, formalSignatureRenderer, RendererRegistry } from "../v1/renderer.js";
 import { MemorySignatureStore } from "../v1/store.js";
 import { errorPage } from "../v1/pages.js";
 import { xProfileLink } from "../v1/xProfile.js";
@@ -27,21 +27,21 @@ async function boot(seed = false, seedMint = false, mintEnabled = true, optionOv
   store = new MemorySignatureStore();
   const artifacts = new MemoryArtifactStore();
   auth = new MemoryAuthState();
-  const renderers = new RendererRegistry([developmentFixtureRenderer]);
-  if (seed) await seedDevelopmentFixtures({ store, artifacts, renderers, cardRendererVersion: DEV_CARD_RENDERER_VERSION }, auth);
+  const renderers = new RendererRegistry([formalSignatureRenderer]);
+  if (seed) await seedDevelopmentFixtures({ store, artifacts, renderers, cardRendererVersion: CARD_RENDERER_VERSION }, auth);
   if (seedMint) {
     const config = loadMintConfig({}, true, "http://localhost:3000");
     const state = new MemoryMintStore();
     mint = new V2MintService(config, state, store, artifacts);
     await seedV2DevelopmentFixtures(mint, store);
-    if (seedGallery) await seedGalleryDevelopmentFixtures({ store, artifacts, renderers, cardRendererVersion: DEV_CARD_RENDERER_VERSION }, auth, mint);
+    if (seedGallery) await seedGalleryDevelopmentFixtures({ store, artifacts, renderers, cardRendererVersion: CARD_RENDERER_VERSION }, auth, mint);
     if (!mintEnabled) {
       mint = new V2MintService(loadMintConfig({ MINT_FEATURE_ENABLED: "false" }, true, "http://localhost:3000"), state, store, artifacts);
     }
   } else {
     mint = undefined;
   }
-  server = startServer({ store, artifacts, auth, renderers, mint }, 0, { fixtureMode: true, activeRendererVersion: DEV_RENDERER_VERSION, ...optionOverrides });
+  server = startServer({ store, artifacts, auth, renderers, mint }, 0, { fixtureMode: true, activeRendererVersion: RENDERER_VERSION, ...optionOverrides });
   await new Promise<void>((resolve, reject) => { server.once("listening", resolve); server.once("error", reject); });
   baseUrl = `http://localhost:${(server.address() as AddressInfo).port}`;
 }
@@ -150,7 +150,7 @@ describe("V1 previews", () => {
   });
 
   it("preserves native same-origin form origins without accepting null or foreign origins", async () => {
-    const page = await fetch(`${baseUrl}/s/alice/0.371924`);
+    const page = await fetch(`${baseUrl}/s/alice/37`);
     expect(page.headers.get("referrer-policy")).toBe("same-origin");
     for (const origin of ["null", "https://example.com"]) {
       const response = await fetch(`${baseUrl}/auth/x/start`, {
@@ -247,21 +247,42 @@ describe("V1 previews", () => {
   it("shows the same public-handle fixtures and detail links in both tabs without claiming real participation", async () => {
     await closeServer();
     await boot(true, true, true, {}, true);
-    const claimed = await (await fetch(`${baseUrl}/?tab=claimed`)).text();
-    const minted = await (await fetch(`${baseUrl}/?tab=minted`)).text();
-    expect(claimed.match(/class="gallery-card"/g)).toHaveLength(14);
-    expect(minted.match(/class="gallery-card"/g)).toHaveLength(12);
-    for (const html of [claimed, minted]) {
-      expect(html).toContain('name="robots" content="noindex"');
-      expect(html).toContain("No participation or endorsement is implied.");
-      expect(html.match(/class="rehearsal-watermark"/g)).toHaveLength(1);
-      expect(html).not.toContain('>Fictional demo</small>');
-      expect(html).not.toContain("Claimed via X</small>");
+    const galleries: string[] = [];
+    for (const [tab, aliceCount] of [["claimed", 3], ["minted", 1]] as const) {
+      const expectedCount = GALLERY_DEVELOPMENT_FIXTURES.length + aliceCount;
+      const pages: string[] = [];
+      const seen: string[] = [];
+      let path: string | undefined = `/?tab=${tab}`;
+      for (let page = 0; path && page <= Math.ceil(expectedCount / 24); page++) {
+        const response: Response = await fetch(`${baseUrl}${path}`);
+        expect(response.status).toBe(200);
+        const html: string = await response.text();
+        const ids = [...html.matchAll(/class="gallery-card" href="\/signatures\/([^"]+)"/g)].map(match => match[1]);
+        expect(ids).toHaveLength(Math.min(24, expectedCount - seen.length));
+        seen.push(...ids);
+        pages.push(html);
+        expect(html).toContain('name="robots" content="noindex"');
+        expect(html).toContain("No participation or endorsement is implied.");
+        expect(html.match(/class="rehearsal-watermark"/g)).toHaveLength(1);
+        expect(html).not.toContain('>Fictional demo</small>');
+        expect(html).not.toContain("Claimed via X</small>");
+        // Changing tabs starts at that gallery's first page, not the current cursor.
+        expect(html).toContain('href="/?tab=claimed"');
+        expect(html).toContain('href="/?tab=minted"');
+        path = html.match(/class="gallery-more" rel="next" href="([^"]+)"/)?.[1].replaceAll("&amp;", "&");
+        if (path) expect(path).toContain(`/?tab=${tab}&after=`);
+      }
+      expect(path).toBeUndefined();
+      expect(pages).toHaveLength(Math.ceil(expectedCount / 24));
+      expect(seen).toHaveLength(expectedCount);
+      expect(new Set(seen).size).toBe(expectedCount);
+      galleries.push(pages.join("\n"));
     }
-    const claims = await store.listClaimedSignatures(100);
+    const claims = await store.listClaimedSignatures(GALLERY_DEVELOPMENT_FIXTURES.length + 3);
     for (const fixture of GALLERY_DEVELOPMENT_FIXTURES) {
-      const signature = claims.find(({ handleNormalized }) => handleNormalized === fixture.handle)!;
-      for (const html of [claimed, minted]) {
+      const signature = claims.find(({ handleAtClaim }) => handleAtClaim === fixture.handle)!;
+      expect(signature).toBeDefined();
+      for (const html of galleries) {
         expect(html).toContain(`<strong>${xProfileLink(fixture.handle)}</strong>`);
         expect(html).toContain(`class="gallery-card" href="/signatures/${signature.signatureId}"`);
         expect(html).toContain(`alt="Signature claimed as @${fixture.handle}"`);
@@ -271,14 +292,14 @@ describe("V1 previews", () => {
     const detail = await (await fetch(`${baseUrl}/signatures/${sample.signatureId}`)).text();
     expect(detail).toContain("The handle is used for demonstration only; no participation or endorsement is implied.");
     expect(detail).toContain("Development claim fixture");
-  });
+  }, 15_000); // Render the full 90-work SVG/PNG catalog, including under parallel-suite load.
 
   it("paginates all claims in stable order while filling pages past suppressed records", async () => {
     await closeServer();
     await boot(true, true);
     const template = (await store.listClaimedSignatures(1))[0];
-    for (let i = 0; i < 60; i++) {
-      await store.claim({ ...template, gr0kRaw: i, claimedAt: new Date("2026-09-06T00:00:00.000Z") });
+    for (let i = 1; i <= 60; i++) {
+      await store.claim({ ...template, xUserId: "99988", handleAtClaim: "pagination", handleNormalized: "pagination", gr0kRaw: i, claimedAt: new Date("2026-09-06T00:00:00.000Z") });
     }
     const ordered = await store.listClaimedSignatures(100);
     for (const signature of ordered.slice(0, 26)) mint!.state.suppress(signature.signatureId);
@@ -319,7 +340,7 @@ describe("V1 previews", () => {
   });
 
   it("preloads the self-hosted font on shared pages and the standalone design study", async () => {
-    for (const path of ["/", "/about", "/s/alice/0.371924", "/me", "/dev/slogan-study", "/not-a-page"]) {
+    for (const path of ["/", "/about", "/s/alice/37", "/me", "/dev/slogan-study", "/not-a-page"]) {
       const response = await fetch(`${baseUrl}${path}`);
       const html = await response.text();
       expect(html).toContain(SITE_FONT_PRELOAD);
@@ -369,17 +390,17 @@ describe("V1 previews", () => {
     expect(html).not.toContain("What_shape_is_your_name?");
     expect(html).not.toContain('class="hero-slogan"');
     expect(html).toContain('class="slogan-signature"');
-    expect(html).toContain('data-slogan-signature-version="sg-slogan-composition-7.0.0"');
+    expect(html).toContain('data-slogan-signature-version="sg-slogan-composition-8.0.0"');
     expect(html).toContain('data-shape-lock-schema="signature-shape-lock/1"');
-    expect(html).toContain('data-source-renderer="sg-renderer-dev-fixture"');
-    expect(html).toContain('data-source-gr0k="0.500000"');
+    expect(html).toContain('data-source-renderer="sg-renderer-1.0.0"');
+    expect(html).toContain('data-source-gr0k="22"');
     expect(html).toContain('class="slogan-signature-layout slogan-signature-desktop"');
     expect(html).toContain('class="slogan-signature-layout slogan-signature-mobile"');
     const slogan = html.match(/<figure class="slogan-signature"[\s\S]*?<\/figure>/)![0];
     expect(slogan.match(/<path\b/g)).toHaveLength(4);
     expect(slogan.match(/<circle\b/g)).toHaveLength(2);
     expect(html.match(/<g\b[^>]*class="slogan-signature-punctuation"[^>]*>/g)).toHaveLength(2);
-    expect(html.match(/transform="translate\(373 169\)"/g)).toHaveLength(2);
+    expect(html.match(/transform="translate\(565\.8571428571429 169\)"/g)).toHaveLength(2);
     expect(html).not.toMatch(/<text\b/);
     expect(html.match(/<g transform="translate\([^)]*\) scale\(1\)">/g)).toHaveLength(2);
     expect(html).not.toContain("matrix(");
@@ -462,7 +483,7 @@ describe("V1 previews", () => {
     const head = await fetch(`${baseUrl}/assets/slogan-tooltip.js`, { method: "HEAD" });
     expect(head.status).toBe(200);
     expect(await head.text()).toBe("");
-    const preview = await (await fetch(`${baseUrl}/s/alice/0.371924`)).text();
+    const preview = await (await fetch(`${baseUrl}/s/alice/37`)).text();
     expect(preview).not.toContain('src="/assets/slogan-tooltip.js"');
   });
 
@@ -541,7 +562,7 @@ describe("V1 previews", () => {
     expect(stylesheet).toMatch(/\.book-page footer\{[^}]*padding-inline:var\(--page-gutter\)/);
     expect(stylesheet.match(/(?:^|\})body\{([^}]*)\}/)?.[1]).not.toContain("max-width");
 
-    for (const path of ["/s/alice/0.371924", "/me", "/not-found"]) {
+    for (const path of ["/s/alice/37", "/me", "/not-found"]) {
       const otherHtml = await (await fetch(`${baseUrl}${path}`)).text();
       expect(otherHtml).toContain('</head><body class="book-page"><main>');
       expect(otherHtml).toMatch(/class="auth-sheet(?: collection-sheet)?"/);
@@ -574,42 +595,61 @@ describe("V1 previews", () => {
     expect(stylesheet).toMatch(/\.gallery-card-copy small\{[^}]*color:var\(--muted\)/);
 
     // Artwork keeps its own paper; only the surrounding page surface is shared.
-    expect(lightPalette).toContain("--art-paper:#f2ead6;");
-    expect(darkPalette).toContain("--art-paper:#f2ead6;");
+    expect(lightPalette).toContain("--art-paper:#f4e7c7;");
+    expect(darkPalette).toContain("--art-paper:#f4e7c7;");
     expect(stylesheet).toMatch(/\.gallery-card img\{[^}]*background:var\(--art-paper\)/);
   });
 
-  it("canonicalizes handle and fixed-point gr0k without creating a signature", async () => {
-    const response = await fetch(`${baseUrl}/s/%40Alice/0.5`, { redirect: "manual" });
+  it("removes the @ prefix without lowercasing artwork or creating a signature", async () => {
+    const response = await fetch(`${baseUrl}/s/%40Alice/50`, { redirect: "manual" });
     expect(response.status).toBe(308);
-    expect(response.headers.get("location")).toBe("/s/alice/0.500000");
+    expect(response.headers.get("location")).toBe("/s/Alice/50");
     expect(await store.listSignaturesForAccount("1234567890123456789")).toEqual([]);
   });
 
   it("renders canonical previews and card metadata without persistence", async () => {
-    const response = await fetch(`${baseUrl}/s/alice/0.371924`);
+    const response = await fetch(`${baseUrl}/s/alice/37`);
     expect(response.status).toBe(200);
     const html = await response.text();
     expect(html).toContain('<span class="signature-tag">Unclaimed</span>');
-    expect(html).toContain("sg-renderer-dev-fixture");
+    expect(html).toContain("sg-renderer-1.0.0");
     expect(html).toContain("twitter:card");
     expect(await store.listSignaturesForAccount("1234567890123456789")).toEqual([]);
   });
 
   it("supports side-effect-free HEAD and immutable render assets", async () => {
-    const head = await fetch(`${baseUrl}/s/alice/0.371924`, { method: "HEAD" });
+    const head = await fetch(`${baseUrl}/s/alice/37`, { method: "HEAD" });
     expect(head.status).toBe(200);
     expect(await head.text()).toBe("");
-    const svg = await fetch(`${baseUrl}/renders/${DEV_RENDERER_VERSION}/alice/0.371924.svg`);
+    const svg = await fetch(`${baseUrl}/renders/${RENDERER_VERSION}/alice/37.svg`);
     expect(svg.status).toBe(200);
     expect(svg.headers.get("cache-control")).toContain("immutable");
     expect(await svg.text()).toContain("<svg");
     expect(await store.listSignaturesForAccount("1234567890123456789")).toEqual([]);
   });
 
-  it("rejects invalid decimal grammar and encoded slash handles", async () => {
+  it("rejects obsolete decimals, invalid seeds and encoded slash handles", async () => {
+    for (const seed of ["0.371924", "0", "101", "01", "22.0", "22%0A"]) {
+      expect((await fetch(`${baseUrl}/s/alice/${seed}`)).status).toBe(400);
+    }
     expect((await fetch(`${baseUrl}/s/alice/1e-3`)).status).toBe(400);
-    expect((await fetch(`${baseUrl}/s/alice%2Fbob/0.500000`)).status).toBe(400);
+    expect((await fetch(`${baseUrl}/s/alice%2Fbob/50`)).status).toBe(400);
+  });
+
+  it("serves case-distinct formal previews without aliases to the retired renderer", async () => {
+    const upper = await fetch(`${baseUrl}/renders/${RENDERER_VERSION}/Alice/22.svg`, { redirect: "manual" });
+    const lower = await fetch(`${baseUrl}/renders/${RENDERER_VERSION}/alice/22.svg`, { redirect: "manual" });
+    expect(upper.status).toBe(200);
+    expect(lower.status).toBe(200);
+    const upperSvg = await upper.text();
+    const lowerSvg = await lower.text();
+    expect(upperSvg).not.toBe(lowerSvg);
+    expect(upperSvg).toContain(">@Alice</text>");
+    expect(lowerSvg).toContain(">@alice</text>");
+    expect(upperSvg).toContain('width="1080" height="1080"');
+    expect((await fetch(`${baseUrl}/renders/sg-renderer-dev-fixture/alice/22.svg`)).status).toBe(410);
+    expect((await fetch(`${baseUrl}/renders/sg-renderer-dev-fixture/alice/0.371924.png`)).status).toBe(410);
+    expect(await store.listClaimedSignatures(100)).toEqual([]);
   });
 
   it("retires the legacy routes with 410", async () => {
@@ -738,7 +778,7 @@ describe("fixture account and claim flow", () => {
     expect(empty).toContain("data-grok-handoff");
     expect(empty).not.toContain('class="collection-card"');
     expect(await store.listSignaturesForAccount("5550000000000000001")).toHaveLength(0);
-    const preview = await (await fetch(`${baseUrl}/s/newcomer/0.371924`)).text();
+    const preview = await (await fetch(`${baseUrl}/s/newcomer/37`)).text();
     const form = preview.match(/<form[^>]*action="\/auth\/x\/start"[^>]*>[\s\S]*?<\/form>/)![0];
     const fields = new URLSearchParams([...form.matchAll(/name="([^"]+)" value="([^"]*)"/g)].map(m => [m[1], m[2]]));
     expect(fields.get("claim_intent")).toBe("claim-on-return-v1");
@@ -757,7 +797,7 @@ describe("fixture account and claim flow", () => {
   });
 
   it("shows an unmistakable local provider consent step without contacting X", async () => {
-    const started = await beginLocalOAuth(new URLSearchParams({ purpose: "claim", handle: "alice", gr0k: "0.5" }));
+    const started = await beginLocalOAuth(new URLSearchParams({ purpose: "claim", handle: "alice", gr0k: "50" }));
     const consent = await fetch(`${baseUrl}${started.authorizationPath}`, { headers: { Cookie: started.cookie } });
     expect(consent.status).toBe(200);
     const html = await consent.text();
@@ -795,12 +835,12 @@ describe("fixture account and claim flow", () => {
     expect(homeHtml).not.toContain('class="gallery-index"');
     expect(homeHtml).not.toContain("REHEARSAL · ANVIL 31337");
     await assertHeaderless(home, "Repo-local Anvil chain, not Ethereum mainnet or Sepolia.", true);
-    await assertHeaderless(await fetch(`${baseUrl}/s/alice/0.371924`), "does not contact X or prove control of an X account.", true);
+    await assertHeaderless(await fetch(`${baseUrl}/s/alice/37`), "does not contact X or prove control of an X account.", true);
     await assertHeaderless(await fetch(`${baseUrl}/me`), "Local rehearsal. No X account was authenticated.", true);
     await assertHeaderless(await fetch(`${baseUrl}/not-found`), undefined, true);
     await assertHeaderless(await fetch(`${baseUrl}/c/retired`), undefined, true);
 
-    const started = await beginLocalOAuth(new URLSearchParams({ purpose: "claim", handle: "alice", gr0k: "0.500000" }));
+    const started = await beginLocalOAuth(new URLSearchParams({ purpose: "claim", handle: "alice", gr0k: "50" }));
     await assertHeaderless(await fetch(`${baseUrl}${started.authorizationPath}`, { headers: { Cookie: started.cookie } }), "does not open X, contact X, or prove control", true);
     const callback = await finishLocalOAuth(await decideLocalOAuth(started));
     const cookie = responseCookie(callback);
@@ -811,10 +851,10 @@ describe("fixture account and claim flow", () => {
   });
 
   it("keeps legacy forms non-claiming at OAuth callback until final POST", async () => {
-    await fetch(`${baseUrl}/s/alice/0.500000`);
+    await fetch(`${baseUrl}/s/alice/50`);
     const signedIn = await localLogin();
     expect(await (await fetch(`${baseUrl}/`, { headers: { Cookie: signedIn.cookie } })).text()).not.toContain('class="gallery-card"');
-    const started = await beginLocalOAuth(new URLSearchParams({ purpose: "claim", handle: "alice", gr0k: "0.500000" }));
+    const started = await beginLocalOAuth(new URLSearchParams({ purpose: "claim", handle: "alice", gr0k: "50" }));
     const callback = await finishLocalOAuth(await decideLocalOAuth(started));
     expect(callback.status).toBe(303);
     const cookie = responseCookie(callback);
@@ -835,7 +875,7 @@ describe("fixture account and claim flow", () => {
     const signatures = await store.listSignaturesForAccount("1234567890123456789");
     expect(signatures).toHaveLength(1);
     expect(claim.headers.get("location")).toBe(`/signatures/${signatures[0].signatureId}`);
-    expect(new URL(reviewPath, baseUrl).pathname).toBe("/s/alice/0.500000");
+    expect(new URL(reviewPath, baseUrl).pathname).toBe("/s/alice/50");
     const completed = await (await fetch(`${baseUrl}${reviewPath}`, { headers: { Cookie: cookie } })).text();
     expect(completed).toContain('data-signature-status="claimed"');
     expect(completed).toContain(`/signatures/${signatures[0].signatureId}`);
@@ -902,7 +942,7 @@ describe("fixture account and claim flow", () => {
   });
 
   it("enforces selected-account matching for a claim", async () => {
-    const started = await beginLocalOAuth(new URLSearchParams({ purpose: "claim", handle: "alice", gr0k: "0.500000" }));
+    const started = await beginLocalOAuth(new URLSearchParams({ purpose: "claim", handle: "alice", gr0k: "50" }));
     const callback = await finishLocalOAuth(await decideLocalOAuth(started, "approve", "bob"));
     expect(callback.status).toBe(403);
     const html = await callback.text();
@@ -912,7 +952,7 @@ describe("fixture account and claim flow", () => {
   });
 
   it("expires local identity before claim review and offers local refresh", async () => {
-    const started = await beginLocalOAuth(new URLSearchParams({ purpose: "claim", handle: "alice", gr0k: "0.500000" }));
+    const started = await beginLocalOAuth(new URLSearchParams({ purpose: "claim", handle: "alice", gr0k: "50" }));
     const callback = await finishLocalOAuth(await decideLocalOAuth(started));
     const cookie = responseCookie(callback);
     const sessionId = cookie.slice(cookie.indexOf("=") + 1);
@@ -960,7 +1000,7 @@ describe("fixture account and claim flow", () => {
     const signIn = await (await fetch(`${baseUrl}/me`)).text();
     expect(signIn).toContain("Sign in with X");
     expect(signIn).not.toContain("Use local OAuth emulator");
-    const preview = await (await fetch(`${baseUrl}/s/alice/0.500000`)).text();
+    const preview = await (await fetch(`${baseUrl}/s/alice/50`)).text();
     expect(preview).toContain("<span>Claim with X</span>");
     expect(preview).not.toContain("Rehearse local claim");
     const started = await post("/auth/x/start", new URLSearchParams({ purpose: "account_login" }));

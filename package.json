@@ -4,9 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "renderer:verify": "node --import tsx scripts/verify-renderer-lock.mjs",
+    "prebuild": "npm run renderer:verify",
     "build": "tsc -p tsconfig.build.json",
+    "predev": "npm run renderer:verify",
     "dev": "tsx watch src/main.ts",
     "start": "node dist/main.js",
+    "pretest": "npm run renderer:verify",
     "test": "vitest run",
     "test:v2": "vitest run src/v2 src/api/server.test.ts",
     "test:contract": "cd contracts && forge test --offline",
@@ -18,6 +22,7 @@
     "local:status": "node --import tsx src/local/rehearsalCli.ts status",
     "local:verify": "node --import tsx src/local/rehearsalCli.ts verify",
     "local:test": "node --import tsx src/local/interactiveRehearsalTest.ts",
+    "prelocal:serve": "npm run renderer:verify",
     "local:serve": "node --env-file-if-exists=.env.local --import tsx src/local/rehearsalServer.ts",
     "local:serve:x": "npm run local:serve -- --x-auth=real",
     "local:serve:emulator": "npm run local:serve -- --x-auth=emulator",
@@ -42,7 +47,7 @@
     "ipfs-unixfs-importer": "^17.1.0",
     "multiformats": "^14.0.5",
     "pg": "^8.23.0",
-    "sharp": "^0.35.4",
+    "sharp": "0.35.4",
     "undici": "7.29.1",
     "viem": "^2.56.3"
   }

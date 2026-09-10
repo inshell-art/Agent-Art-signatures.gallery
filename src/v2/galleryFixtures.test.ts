@@ -4,12 +4,13 @@ import { MemoryArtifactStore } from "../v1/artifacts.js";
 import { MemoryAuthState } from "../v1/authState.js";
 import type { ClaimRuntime } from "../v1/claim.js";
 import { fixtureIdentity, seedDevelopmentFixtures } from "../v1/fixtures.js";
-import { DEV_CARD_RENDERER_VERSION, developmentFixtureRenderer, RendererRegistry, sha256Hex } from "../v1/renderer.js";
+import { CARD_RENDERER_VERSION, formalSignatureRenderer, RendererRegistry, sha256Hex } from "../v1/renderer.js";
 import { MemorySignatureStore } from "../v1/store.js";
 import { loadMintConfig } from "./config.js";
 import { seedV2DevelopmentFixtures } from "./fixtures.js";
 import { GALLERY_DEVELOPMENT_FIXTURES, seedGalleryDevelopmentFixtures } from "./galleryFixtures.js";
 import { MemoryMintStore } from "./memoryStore.js";
+import { PROTOTYPE_PRESET_HANDLES, PROTOTYPE_PRESET_SOURCE_URL, VALID_PROTOTYPE_PRESET_HANDLES } from "./prototypePresetHandles.js";
 import { V2MintService } from "./service.js";
 
 function runtime(options: { fixtureMode?: boolean; enabled?: boolean } = {}) {
@@ -19,8 +20,8 @@ function runtime(options: { fixtureMode?: boolean; enabled?: boolean } = {}) {
   const claimRuntime: ClaimRuntime = {
     store: signatures,
     artifacts,
-    renderers: new RendererRegistry([developmentFixtureRenderer]),
-    cardRendererVersion: DEV_CARD_RENDERER_VERSION,
+    renderers: new RendererRegistry([formalSignatureRenderer]),
+    cardRendererVersion: CARD_RENDERER_VERSION,
   };
   const state = new MemoryMintStore();
   const config = { ...loadMintConfig({}, true, "http://localhost:3000"), ...options };
@@ -43,18 +44,38 @@ async function seededRuntime() {
 }
 
 describe("rich development gallery fixtures", () => {
-  it("covers eleven source-linked public handles with fictional gr0k values without replacing Alice", () => {
-    expect(GALLERY_DEVELOPMENT_FIXTURES).toHaveLength(11);
-    expect(new Set(GALLERY_DEVELOPMENT_FIXTURES.map(({ handle }) => handle)).size).toBe(11);
+  it("preserves all 80 prototype presets verbatim, including case, digits and underscores", () => {
+    expect(PROTOTYPE_PRESET_HANDLES).toHaveLength(80);
+    // Digest of JSON.stringify(presets) read from the pinned upstream release.
+    expect(sha256Hex(Buffer.from(JSON.stringify(PROTOTYPE_PRESET_HANDLES))))
+      .toBe("7ba5dd133d1600a73d486cf278c0cffa40f98a222d5dc6f8e838ddf4c6098f85");
+    expect(PROTOTYPE_PRESET_HANDLES).toEqual(expect.arrayContaining([
+      "grok", "MegaDeFi", "92digitalArt", "ALCrego_", "Naminami89493534", "WaruPanofficial1",
+    ]));
+    expect(PROTOTYPE_PRESET_SOURCE_URL).toContain("1e1dab4ec093261006feb7879c109413c0b3ac6d");
+    expect(VALID_PROTOTYPE_PRESET_HANDLES).toHaveLength(77);
+    expect(PROTOTYPE_PRESET_HANDLES.filter(handle => !VALID_PROTOTYPE_PRESET_HANDLES.includes(handle)))
+      .toEqual(["Naminami89493534", "leizhang48284509", "WaruPanofficial1"]);
+  });
+
+  it("merges 87 source-linked handles without replacing existing samples or duplicating accounts", () => {
+    expect(GALLERY_DEVELOPMENT_FIXTURES).toHaveLength(87);
+    expect(new Set(GALLERY_DEVELOPMENT_FIXTURES.map(({ handle }) => handle.toLowerCase())).size).toBe(87);
     expect(new Set(GALLERY_DEVELOPMENT_FIXTURES.map(({ gr0kRaw }) => gr0kRaw)).size).toBe(11);
+    expect(GALLERY_DEVELOPMENT_FIXTURES.find(({ handle }) => handle === "tylerxhobbs")?.gr0kRaw).toBe(45);
+    expect(GALLERY_DEVELOPMENT_FIXTURES.slice(11)).toHaveLength(76);
+    expect(GALLERY_DEVELOPMENT_FIXTURES.slice(11).every(({ gr0kRaw, sourceUrl }) =>
+      gr0kRaw === 22 && sourceUrl === PROTOTYPE_PRESET_SOURCE_URL)).toBe(true);
+    expect(GALLERY_DEVELOPMENT_FIXTURES.map(({ handle }) => handle))
+      .toEqual(expect.arrayContaining([...VALID_PROTOTYPE_PRESET_HANDLES]));
     expect(GALLERY_DEVELOPMENT_FIXTURES.map(({ handle }) => handle)).not.toContain("alice");
-    expect(GALLERY_DEVELOPMENT_FIXTURES.map(({ gr0kRaw }) => gr0kRaw)).toEqual(expect.arrayContaining([0, 1_000_000]));
+    expect(GALLERY_DEVELOPMENT_FIXTURES.map(({ gr0kRaw }) => gr0kRaw)).toEqual(expect.arrayContaining([1, 100]));
     for (const fixture of GALLERY_DEVELOPMENT_FIXTURES) {
-      expect(fixture.handle).toMatch(/^[a-z0-9_]{1,15}$/);
+      expect(fixture.handle).toMatch(/^[A-Za-z0-9_]{1,15}$/);
       expect(new URL(fixture.sourceUrl).protocol).toBe("https:");
       expect(Number.isSafeInteger(fixture.gr0kRaw)).toBe(true);
-      expect(fixture.gr0kRaw).toBeGreaterThanOrEqual(0);
-      expect(fixture.gr0kRaw).toBeLessThanOrEqual(1_000_000);
+      expect(fixture.gr0kRaw).toBeGreaterThanOrEqual(1);
+      expect(fixture.gr0kRaw).toBeLessThanOrEqual(100);
     }
   });
 
@@ -63,23 +84,23 @@ describe("rich development gallery fixtures", () => {
     await seedGalleryDevelopmentFixtures(app.claimRuntime, app.auth, app.service);
     const claimed = await app.signatures.listClaimedSignatures(100);
     const minted = app.state.listGallery();
-    expect(claimed).toHaveLength(14);
-    expect(minted).toHaveLength(12);
+    expect(claimed).toHaveLength(90);
+    expect(minted).toHaveLength(88);
     const claimedIds = new Set(claimed.map(({ signatureId }) => signatureId));
     for (const entry of minted) expect(claimedIds.has(entry.signatureId)).toBe(true);
     for (const fixture of GALLERY_DEVELOPMENT_FIXTURES) {
-      const matches = claimed.filter(({ handleNormalized }) => handleNormalized === fixture.handle);
+      const matches = claimed.filter(({ handleAtClaim }) => handleAtClaim === fixture.handle);
       expect(matches).toHaveLength(1);
       expect(matches[0].xUserId).toBe(fixtureIdentity(fixture.handle).xUserId);
       expect(minted.filter(({ signatureId }) => signatureId === matches[0].signatureId)).toHaveLength(1);
     }
-  });
+  }, 15_000); // Full catalog rasterization needs headroom under parallel-suite load.
 
-  it("populates twelve finalized cards backed by distinct, decodable artifacts and matching frozen metadata", async () => {
+  it("populates 88 finalized cards backed by distinct, decodable artifacts and case-preserving metadata", async () => {
     const app = await seededRuntime();
     await seedGalleryDevelopmentFixtures(app.claimRuntime, app.auth, app.service);
     const gallery = app.state.listGallery();
-    expect(gallery).toHaveLength(12);
+    expect(gallery).toHaveLength(88);
     const svgHashes = new Set<string>();
     const pngHashes = new Set<string>();
     const metadataHashes = new Set<string>();
@@ -114,7 +135,7 @@ describe("rich development gallery fixtures", () => {
         properties: {
           signature_id: signature.signatureId,
           account_ref: account.publicAccountId,
-          handle_at_claim: signature.handleNormalized,
+          handle_at_claim: signature.handleAtClaim,
           gr0k_raw: signature.gr0kRaw,
           svg_sha256: signature.svgSha256,
           png_sha256: signature.pngSha256,
@@ -123,22 +144,24 @@ describe("rich development gallery fixtures", () => {
           fixture: true,
         },
       });
-      handles.add(signature.handleNormalized);
+      handles.add(signature.handleAtClaim);
       svgHashes.add(signature.svgSha256);
       pngHashes.add(signature.pngSha256);
       metadataHashes.add(metadata.metadataSha256);
     }
 
     expect(handles).toEqual(new Set(["alice", ...GALLERY_DEVELOPMENT_FIXTURES.map(({ handle }) => handle)]));
-    expect(svgHashes.size).toBe(12);
-    expect(pngHashes.size).toBe(12);
-    expect(metadataHashes.size).toBe(12);
+    expect(svgHashes.size).toBe(88);
+    expect(pngHashes.size).toBe(88);
+    expect(metadataHashes.size).toBe(88);
     for (const fixture of GALLERY_DEVELOPMENT_FIXTURES) {
       const claims = await app.signatures.listSignaturesForAccount(fixtureIdentity(fixture.handle).xUserId);
       expect(claims).toHaveLength(1);
-      expect(claims[0]).toMatchObject({ handleNormalized: fixture.handle, gr0kRaw: fixture.gr0kRaw });
+      expect(claims[0]).toMatchObject({
+        handleAtClaim: fixture.handle, handleNormalized: fixture.handle.toLowerCase(), gr0kRaw: fixture.gr0kRaw,
+      });
     }
-  });
+  }, 15_000);
 
   it("preserves Alice's three existing claims and their distinct rehearsal states", async () => {
     const app = await seededRuntime();
@@ -153,7 +176,7 @@ describe("rich development gallery fixtures", () => {
     expect(await app.signatures.listSignaturesForAccount(xUserId)).toEqual(claimsBefore);
     expect(await app.signatures.getAccount(xUserId)).toEqual(accountBefore);
     expect(claimsBefore.map(({ signatureId }) => app.state.getProjection(signatureId))).toEqual(projectionsBefore);
-  });
+  }, 15_000);
 
   it("can be repeated without duplicating claims, mints, metadata or overwriting later holder changes", async () => {
     const app = await seededRuntime();
@@ -174,7 +197,7 @@ describe("rich development gallery fixtures", () => {
     for (const claims of claimsBefore) {
       expect(await app.signatures.listSignaturesForAccount(claims[0].xUserId)).toEqual(claims);
     }
-  });
+  }, 15_000);
 
   it.each([
     { fixtureMode: false, enabled: true },

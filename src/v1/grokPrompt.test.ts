@@ -5,16 +5,17 @@ import { collectionPage, errorPage, homePage, signInRequiredPage } from "./pages
 import { SITE_CSS } from "./siteCss.js";
 
 describe("private Grok handoff", () => {
-  it("uses the V1 contract with a canonical account handle and six-place scalar", () => {
+  it("uses the formal v1.0.0 contract with an exact-case handle and integer seed", () => {
     const prompt = grokPrompt("@Alice_Studio");
-    expect(prompt).toContain("recent public X posts by @alice_studio");
-    expect(prompt).toContain("0.000000 through 1.000000");
+    expect(prompt).toContain("recent public X posts by @Alice_Studio");
+    expect(prompt).toContain("integer seed called gr0k from 1 through 100");
     expect(prompt).toContain("environmental condition");
     expect(prompt).toContain("not as a mood, score, probability, or judgment");
     expect(prompt).toContain("instead of inventing a reading");
-    expect(prompt).toContain("using six decimal places");
-    expect(prompt).toContain("https://signatures.gallery/s/alice_studio/GR0K");
-    expect(prompt).not.toContain("0.371924");
+    expect(prompt).toContain("without decimals or leading zeros");
+    expect(prompt).toContain("case-sensitive");
+    expect(prompt).toContain("https://signatures.gallery/s/Alice_Studio/GR0K");
+    expect(prompt).not.toContain("37");
   });
 
   it("carries the entire claim handoff into Grok beside the returned preview URL", () => {
@@ -30,7 +31,7 @@ describe("private Grok handoff", () => {
     expect(prompt).toMatch(/(?:preview|signing in)[^\n]*(?:no claim|does not|do not|not claim)/i);
     expect(prompt).toMatch(/wallet[^\n]*(?:only|not needed)[^\n]*mint/i);
     expect(prompt).toMatch(/(?:cannot|not) independently verif/i);
-    expect(prompt).not.toContain("signatures.gallery/s/Alice_Studio");
+    expect(prompt).not.toContain("signatures.gallery/s/alice_studio");
   });
 
   it.each(["http://127.0.0.1:3000", "https://staging.signatures.gallery"])("returns a preview on the configured site %s", (origin) => {
@@ -49,9 +50,11 @@ describe("private Grok handoff", () => {
     const prompt = grokPrompt(undefined, "http://127.0.0.1:3000");
     expect(prompt).toContain("First, ask me for my X handle.");
     expect(prompt).toContain("Do not assume my identity or generate a preview link until I provide it.");
+    expect(prompt).toContain("preserving its exact uppercase and lowercase letters");
+    expect(prompt).not.toContain("in lowercase");
     expect(prompt).toContain("http://127.0.0.1:3000/s/HANDLE/GR0K");
     expect(prompt).toContain("http://127.0.0.1:3000/me");
-    expect(prompt).not.toMatch(/@alice|@newcomer|undefined|0\.371924/);
+    expect(prompt).not.toMatch(/@alice|@newcomer|undefined|0\.37/);
     expect(() => grokPrompt(undefined, "javascript:bad")).toThrow();
   });
 
@@ -109,7 +112,7 @@ describe("private Grok handoff", () => {
   it("labels the local sample as a fixture, never an Agent reading", () => {
     const html = collectionPage({ currentHandle: "newcomer", signatures: [], csrfToken: "token", fixtureMode: true, mintEnabled: false, mintChainId: "31337", publicOrigin: "http://127.0.0.1:3000" });
     expect(html).toContain("http://127.0.0.1:3000/s/newcomer/GR0K");
-    expect(html).toContain('href="/s/newcomer/0.371924"');
+    expect(html).toContain('href="/s/newcomer/37"');
     expect(html.slice(html.indexOf('<aside class="rehearsal-watermark"'))).toContain("This gr0k is a fixture value, not an Agent’s reading.");
     expect(html.match(/<main>[\s\S]*?<\/main>/)![0]).not.toContain("Use a local sample instead");
     expect(html).toContain("Use a local sample instead →</a>");
@@ -153,7 +156,7 @@ describe("shared blank-state participation pattern", () => {
   });
 
   it("does not insert participation over populated galleries, private collections, or errors", () => {
-    const claim = { signatureId: `sg1_${"a".repeat(52)}`, handleAtClaim: "alice", gr0kRaw: 371924, claimedAt: new Date("2026-08-01T00:00:00Z") };
+    const claim = { signatureId: `sg1_${"a".repeat(52)}`, handleAtClaim: "alice", gr0kRaw: 37, claimedAt: new Date("2026-08-01T00:00:00Z") };
     const minted = { ...claim, finalizedAt: claim.claimedAt, mintWallet: `0x${"1".repeat(40)}`, currentTokenHolder: `0x${"1".repeat(40)}` };
     for (const html of [homePage(false, [claim]), homePage(false, [minted], null, false, "minted"), errorPage(404, "NOT_FOUND", "Not found")]) {
       expect(html).not.toContain("data-grok-handoff");

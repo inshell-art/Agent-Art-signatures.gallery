@@ -173,16 +173,16 @@ function fixtureMetadataDocument(input: {
   localChainRehearsal?: true;
 }) {
   const { signature, account, svgCid, pngCid } = input;
-  const gr0k = `${Math.floor(signature.gr0kRaw / 1_000_000)}.${(signature.gr0kRaw % 1_000_000).toString().padStart(6, "0")}`;
+  const gr0k = String(signature.gr0kRaw);
   return {
-    name: `@${signature.handleNormalized} — Signature — gr0k ${gr0k}`,
+    name: `@${signature.handleAtClaim} — Signature — gr0k ${gr0k}`,
     description: input.localChainRehearsal
-      ? "A local Anvil rehearsal token with development artwork. IPFS identifiers are computed locally and not published or pinned. It is not a public Ethereum mint or production provenance record."
+      ? "A local Anvil rehearsal token using Signature Algorithm v1.0.0. IPFS identifiers are computed locally and not published or pinned. It is not a public Ethereum mint or production provenance record."
       : "A development-rehearsal signature. It is not an Ethereum mint or production provenance record.",
     image: `ipfs://${svgCid}`,
     external_url: `${input.publicArtifactOrigin}/signatures/${signature.signatureId}`,
     attributes: [
-      { trait_type: "Handle at Claim", value: `@${signature.handleNormalized}` },
+      { trait_type: "Handle at Claim", value: `@${signature.handleAtClaim}` },
       { trait_type: "gr0k", value: gr0k },
       { trait_type: "Renderer", value: signature.rendererVersion },
       { trait_type: "Claim Method", value: "X OAuth" },
@@ -191,7 +191,7 @@ function fixtureMetadataDocument(input: {
       metadata_version: "sg-nft-metadata-1.0.0",
       signature_id: signature.signatureId,
       account_ref: account.publicAccountId,
-      handle_at_claim: signature.handleNormalized,
+      handle_at_claim: signature.handleAtClaim,
       gr0k_raw: signature.gr0kRaw,
       gr0k_scale: signature.gr0kScale,
       renderer_version: signature.rendererVersion,
@@ -438,11 +438,11 @@ export class V2MintService {
     let metadataCid: string;
     let tokenUri: string;
     let uriHash: Hex;
-    if (signature.rendererVersion === V2_RENDERER_VERSION && signature.cardRendererVersion === V2_CARD_RENDERER_VERSION) {
+    if (!this.config.fixtureMode && !this.config.localChainRehearsal && signature.rendererVersion === V2_RENDERER_VERSION && signature.cardRendererVersion === V2_CARD_RENDERER_VERSION) {
       const prepared = await prepareTokenMetadata({
         signatureId: signature.signatureId,
         publicAccountId: account.publicAccountId,
-        handleAtClaim: signature.handleNormalized,
+        handleAtClaim: signature.handleAtClaim,
         gr0kRaw: signature.gr0kRaw,
         gr0kScale: signature.gr0kScale,
         rendererVersion: V2_RENDERER_VERSION,
@@ -538,7 +538,7 @@ export class V2MintService {
       const digest = signatureDigestHex(signature.signatureId);
       const payload = signatureIdentityPayload({
         xUserId: signature.xUserId,
-        handleNormalized: signature.handleNormalized,
+        handleAtClaim: signature.handleAtClaim,
         gr0kRaw: signature.gr0kRaw,
         gr0kScale: signature.gr0kScale,
         rendererVersion: signature.rendererVersion,

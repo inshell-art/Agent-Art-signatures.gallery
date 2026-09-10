@@ -7,7 +7,7 @@ import type { LocalTestWallet } from "../local/wallet.js";
 import { MemoryArtifactStore } from "../v1/artifacts.js";
 import { MemoryAuthState, type BrowserSession } from "../v1/authState.js";
 import { fixtureIdentity, seedDevelopmentFixtures } from "../v1/fixtures.js";
-import { DEV_CARD_RENDERER_VERSION, developmentFixtureRenderer, RendererRegistry } from "../v1/renderer.js";
+import { CARD_RENDERER_VERSION, formalSignatureRenderer, RendererRegistry } from "../v1/renderer.js";
 import { MemorySignatureStore } from "../v1/store.js";
 import { loadMintConfig, type MintConfig } from "../v2/config.js";
 import { mintAuthorizationTypedData, signatureTokenId } from "../v2/core/index.js";
@@ -61,8 +61,8 @@ async function runtime() {
   const store = new MemorySignatureStore();
   const artifacts = new MemoryArtifactStore();
   const auth = new MemoryAuthState();
-  const renderers = new RendererRegistry([developmentFixtureRenderer]);
-  await seedDevelopmentFixtures({ store, artifacts, renderers, cardRendererVersion: DEV_CARD_RENDERER_VERSION }, auth);
+  const renderers = new RendererRegistry([formalSignatureRenderer]);
+  await seedDevelopmentFixtures({ store, artifacts, renderers, cardRendererVersion: CARD_RENDERER_VERSION }, auth);
   const state = new MemoryMintStore();
   const config: MintConfig = {
     ...loadMintConfig({}, true, ORIGIN),

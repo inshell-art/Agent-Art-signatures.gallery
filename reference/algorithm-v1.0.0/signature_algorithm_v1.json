@@ -1,0 +1,105 @@
+{
+  "algorithm": {
+    "id": "signature-field",
+    "version": "1.0.0",
+    "input": {
+      "handle": "^[A-Za-z0-9_]{1,15}$",
+      "gr0k_raw": [1, 100]
+    },
+    "output": {
+      "format": "SVG",
+      "default_size": [1080, 1080],
+      "size_inputs": ["output_width", "output_height"]
+    }
+  },
+  "random": {
+    "namespace": "signature-field",
+    "scheme": "sha256-labeled-u53"
+  },
+  "canvas": {
+    "width": 420,
+    "height": 420,
+    "background": "#f4e7c7",
+    "ink": "#000000",
+    "text_x": 210,
+    "text_y": 399,
+    "text_size_px": 10,
+    "text_weight": 200
+  },
+  "output_sizing": {
+    "canonical_design_space": [420, 420],
+    "canonical_geometry_is_never_recalculated": true,
+    "square_output": "keep viewBox 0 0 420 420 and change only SVG width and height",
+    "non_square_output": "uniformly scale and center the canonical curve on a full-size background",
+    "uniform_scale_formula": "min(output_width / 420, output_height / 420)",
+    "offset_x_formula": "(output_width - 420 * scale) / 2",
+    "offset_y_formula": "(output_height - 420 * scale) / 2",
+    "handle_text_position": "output center X and 95% of output height",
+    "handle_text_size": "canonical text size multiplied by uniform scale",
+    "stretching": false
+  },
+  "external_text_curve_reuse": {
+    "changes_signature_input_contract": false,
+    "activation": "character_count > 15",
+    "reference_character_count": 15,
+    "reference_curve_span": 300,
+    "reference_segment_width_formula": "300 / (15 - 1)",
+    "reference_segment_width": 21.428571428571427,
+    "extended_curve_span_formula": "reference_segment_width * (character_count - 1)",
+    "extended_canonical_width_formula": "extended_curve_span + 2 * 60",
+    "canonical_height": 420,
+    "proportional_output_width_formula": "round(output_height * extended_canonical_width / 420)",
+    "required_behavior": "keep segment width constant and grow total curve span and canvas width; never compress more than 15 character anchors into the Signature 300-unit span"
+  },
+  "geometry": {
+    "point_distribution": "average",
+    "random_point_height": true,
+    "line_start_x": 60,
+    "line_end_x": 360,
+    "short_text_span_denominator": 4,
+    "handle_rotation_degrees": [-45, 45],
+    "handle_length_px": [10, 90],
+    "point_y_shift_px": [-30, 30],
+    "angle_smoothing_weights": [1, 2, 1],
+    "centering_samples_per_segment": 64
+  },
+  "serial": {
+    "nine_pulse_height_px": 40,
+    "baseline_height_ratio": 0.5,
+    "width_weight_range": [0.2, 1.0],
+    "width_weight_scope": "digit_character",
+    "y_scope": "x-handle-digits",
+    "height_scope": "x-handle-digits",
+    "digit_spacing": "per_digit_weight_normalized_spacing",
+    "pulse_handle_spacing_factor": 0.28,
+    "transition_weight_factor": 0.6
+  },
+  "gr0k": {
+    "default_raw": 22,
+    "parameter_labels": [
+      "gr0k/handle-angle",
+      "gr0k/incoming-handle-length",
+      "gr0k/outgoing-handle-length",
+      "gr0k/point-y",
+      "gr0k/point-gap",
+      "gr0k/serial-width",
+      "gr0k/serial-height"
+    ],
+    "rotation_max_degrees": 10,
+    "handle_length_max_ratio": 0.2,
+    "y_max_px": 5,
+    "gap_weight_max_ratio": 0.5,
+    "serial_width_max_ratio": 0.2,
+    "serial_height_max_ratio": 0.2
+  },
+  "stroke": {
+    "base_weight_px": 4,
+    "uppercase_extra_weight_px": 10,
+    "underscore_max_weight_px": 0.15,
+    "weight_easing": "smoothstep"
+  },
+  "path": {
+    "mode": "variable_bezier_outline",
+    "coordinate_decimals": 2
+  }
+}

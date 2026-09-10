@@ -1,5 +1,5 @@
 {
-  "description": "Frozen sg-nft-metadata-1.0.0 / sg-ipfs-unixfs-1.0.0 cross-process fixture.",
+  "description": "Formal algorithm v1.0.0: exact-case handle and unscaled integer seed; frozen metadata/IPFS cross-process fixture.",
   "source": {
     "svgUtf8": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 2 2\"><path d=\"M0 1L2 1\"/></svg>",
     "pngBase64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
@@ -9,11 +9,11 @@
     "pngCid": "bafkreicddtwwsfvcuinbk3ryoanp4vn3274is2p3x7cw277athkh6jsuma"
   },
   "input": {
-    "signatureId": "sg1_j5ii32jw5ccljacrqivzj3pmdoxp5mvka6avgv3izzfmvcunspva",
+    "signatureId": "sg1_i4p2ewy4lkbui2v65y5moarzjrgph6vaeunf7pxzvm5cbeatsida",
     "publicAccountId": "xa1_aaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "handleAtClaim": "alice",
-    "gr0kRaw": 371924,
-    "gr0kScale": 1000000,
+    "handleAtClaim": "Alice",
+    "gr0kRaw": 22,
+    "gr0kScale": 1,
     "rendererVersion": "sg-renderer-1.0.0",
     "cardRendererVersion": "sg-card-1.0.0",
     "svgSha256": "937c1e9a625d65e3da278f631ab17dcf42917bcfd31ededd2d37476934891228",
@@ -24,23 +24,35 @@
     "publicArtifactOrigin": "https://signatures.gallery"
   },
   "metadata": {
-    "name": "@alice — Signature — gr0k 0.371924",
+    "name": "@Alice — Signature — gr0k 22",
     "description": "A signature claimed through X authentication and minted in the Gallery of Signatures collection. In the intended workflow, gr0k is selected in a private Grok conversation; that private step is not independently verified.",
     "image": "ipfs://bafkreietpqpjuys5mxr5uj4pmmnlc7opikixxt6td3pn2ljxi5utjcisfa",
-    "external_url": "https://signatures.gallery/signatures/sg1_j5ii32jw5ccljacrqivzj3pmdoxp5mvka6avgv3izzfmvcunspva",
+    "external_url": "https://signatures.gallery/signatures/sg1_i4p2ewy4lkbui2v65y5moarzjrgph6vaeunf7pxzvm5cbeatsida",
     "attributes": [
-      { "trait_type": "Handle at Claim", "value": "@alice" },
-      { "trait_type": "gr0k", "value": "0.371924" },
-      { "trait_type": "Renderer", "value": "sg-renderer-1.0.0" },
-      { "trait_type": "Claim Method", "value": "X OAuth" }
+      {
+        "trait_type": "Handle at Claim",
+        "value": "@Alice"
+      },
+      {
+        "trait_type": "gr0k",
+        "value": "22"
+      },
+      {
+        "trait_type": "Renderer",
+        "value": "sg-renderer-1.0.0"
+      },
+      {
+        "trait_type": "Claim Method",
+        "value": "X OAuth"
+      }
     ],
     "properties": {
       "metadata_version": "sg-nft-metadata-1.0.0",
-      "signature_id": "sg1_j5ii32jw5ccljacrqivzj3pmdoxp5mvka6avgv3izzfmvcunspva",
+      "signature_id": "sg1_i4p2ewy4lkbui2v65y5moarzjrgph6vaeunf7pxzvm5cbeatsida",
       "account_ref": "xa1_aaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "handle_at_claim": "alice",
-      "gr0k_raw": 371924,
-      "gr0k_scale": 1000000,
+      "handle_at_claim": "Alice",
+      "gr0k_raw": 22,
+      "gr0k_scale": 1,
       "renderer_version": "sg-renderer-1.0.0",
       "card_renderer_version": "sg-card-1.0.0",
       "svg_sha256": "937c1e9a625d65e3da278f631ab17dcf42917bcfd31ededd2d37476934891228",
@@ -51,9 +63,9 @@
       "claimed_at": "2026-08-26T16:12:00.123Z"
     }
   },
-  "canonicalJson": "{\"attributes\":[{\"trait_type\":\"Handle at Claim\",\"value\":\"@alice\"},{\"trait_type\":\"gr0k\",\"value\":\"0.371924\"},{\"trait_type\":\"Renderer\",\"value\":\"sg-renderer-1.0.0\"},{\"trait_type\":\"Claim Method\",\"value\":\"X OAuth\"}],\"description\":\"A signature claimed through X authentication and minted in the Gallery of Signatures collection. In the intended workflow, gr0k is selected in a private Grok conversation; that private step is not independently verified.\",\"external_url\":\"https://signatures.gallery/signatures/sg1_j5ii32jw5ccljacrqivzj3pmdoxp5mvka6avgv3izzfmvcunspva\",\"image\":\"ipfs://bafkreietpqpjuys5mxr5uj4pmmnlc7opikixxt6td3pn2ljxi5utjcisfa\",\"name\":\"@alice — Signature — gr0k 0.371924\",\"properties\":{\"account_ref\":\"xa1_aaaaaaaaaaaaaaaaaaaaaaaaaa\",\"card_renderer_version\":\"sg-card-1.0.0\",\"claim_method\":\"x_oauth_v1\",\"claimed_at\":\"2026-08-26T16:12:00.123Z\",\"gr0k_raw\":371924,\"gr0k_scale\":1000000,\"handle_at_claim\":\"alice\",\"metadata_version\":\"sg-nft-metadata-1.0.0\",\"png_sha256\":\"431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460\",\"png_uri\":\"ipfs://bafkreicddtwwsfvcuinbk3ryoanp4vn3274is2p3x7cw277athkh6jsuma\",\"renderer_version\":\"sg-renderer-1.0.0\",\"signature_id\":\"sg1_j5ii32jw5ccljacrqivzj3pmdoxp5mvka6avgv3izzfmvcunspva\",\"svg_sha256\":\"937c1e9a625d65e3da278f631ab17dcf42917bcfd31ededd2d37476934891228\",\"svg_uri\":\"ipfs://bafkreietpqpjuys5mxr5uj4pmmnlc7opikixxt6td3pn2ljxi5utjcisfa\"}}",
-  "metadataSha256": "4fa2c7235aa7a4d3cb474aa681d80bafac383677a210cda49096439a87c86243",
-  "metadataCid": "bafkreicpuldsgwvhutj4wr2ku2a5qc5pvq4dm55ccdg2jeewionipsdcim",
-  "tokenURI": "ipfs://bafkreicpuldsgwvhutj4wr2ku2a5qc5pvq4dm55ccdg2jeewionipsdcim",
-  "tokenURIHash": "0x8fc8bbd1191efa2f11427e9f89189522238cae1d084d65172e6fcad9c48d6103"
+  "canonicalJson": "{\"attributes\":[{\"trait_type\":\"Handle at Claim\",\"value\":\"@Alice\"},{\"trait_type\":\"gr0k\",\"value\":\"22\"},{\"trait_type\":\"Renderer\",\"value\":\"sg-renderer-1.0.0\"},{\"trait_type\":\"Claim Method\",\"value\":\"X OAuth\"}],\"description\":\"A signature claimed through X authentication and minted in the Gallery of Signatures collection. In the intended workflow, gr0k is selected in a private Grok conversation; that private step is not independently verified.\",\"external_url\":\"https://signatures.gallery/signatures/sg1_i4p2ewy4lkbui2v65y5moarzjrgph6vaeunf7pxzvm5cbeatsida\",\"image\":\"ipfs://bafkreietpqpjuys5mxr5uj4pmmnlc7opikixxt6td3pn2ljxi5utjcisfa\",\"name\":\"@Alice — Signature — gr0k 22\",\"properties\":{\"account_ref\":\"xa1_aaaaaaaaaaaaaaaaaaaaaaaaaa\",\"card_renderer_version\":\"sg-card-1.0.0\",\"claim_method\":\"x_oauth_v1\",\"claimed_at\":\"2026-08-26T16:12:00.123Z\",\"gr0k_raw\":22,\"gr0k_scale\":1,\"handle_at_claim\":\"Alice\",\"metadata_version\":\"sg-nft-metadata-1.0.0\",\"png_sha256\":\"431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460\",\"png_uri\":\"ipfs://bafkreicddtwwsfvcuinbk3ryoanp4vn3274is2p3x7cw277athkh6jsuma\",\"renderer_version\":\"sg-renderer-1.0.0\",\"signature_id\":\"sg1_i4p2ewy4lkbui2v65y5moarzjrgph6vaeunf7pxzvm5cbeatsida\",\"svg_sha256\":\"937c1e9a625d65e3da278f631ab17dcf42917bcfd31ededd2d37476934891228\",\"svg_uri\":\"ipfs://bafkreietpqpjuys5mxr5uj4pmmnlc7opikixxt6td3pn2ljxi5utjcisfa\"}}",
+  "metadataSha256": "8ffb1dc5633374864bb5ecaa53cfa02cefeee47b83c5c676d9c0cac8f152d070",
+  "metadataCid": "bafkreiep7mo4kyztosdexnpmvjj47ibm57xoi64dyxdhnwoazlepcuwqoa",
+  "tokenURI": "ipfs://bafkreiep7mo4kyztosdexnpmvjj47ibm57xoi64dyxdhnwoazlepcuwqoa",
+  "tokenURIHash": "0x5697cf5a90f4a1227b021c536b28ccf4e82d844ba10cc5cc27fd8530eb37faf5"
 }

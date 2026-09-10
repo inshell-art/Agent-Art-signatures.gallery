@@ -98,7 +98,7 @@ describe("global rehearsal watermark", () => {
 
   it.each([false, true])("removes repeated gallery notices without removing fixture qualification (Anvil=%s)", (localChain) => {
     const entries = ["alice", "bob"].map((handleAtClaim) => ({
-      signatureId: handleAtClaim, handleAtClaim, gr0kRaw: 371924,
+      signatureId: handleAtClaim, handleAtClaim, gr0kRaw: 37,
       claimedAt: new Date("2026-09-01"), finalizedAt: new Date("2026-09-02"),
       mintWallet: "0x123", currentTokenHolder: "0x123",
     }));

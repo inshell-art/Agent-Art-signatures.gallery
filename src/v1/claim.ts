@@ -1,6 +1,6 @@
 import type { AuthenticatedIdentity, OAuthFlow } from "./authState.js";
 import type { ArtifactStore, StoredArtifact } from "./artifacts.js";
-import { DEV_CARD_RENDERER_VERSION, type RendererRegistry, renderCardPng, sha256Hex } from "./renderer.js";
+import { CARD_RENDERER_VERSION, type RendererRegistry, renderCardPng, sha256Hex } from "./renderer.js";
 import type { SignatureStore } from "./store.js";
 import { GR0K_SCALE } from "./input.js";
 import { deriveSignatureId } from "./identity.js";
@@ -16,7 +16,7 @@ export async function finalizeClaim(runtime: ClaimRuntime, flow: OAuthFlow, iden
   if (
     flow.status !== "authenticated" ||
     flow.purpose !== "claim" ||
-    flow.handleNormalized === null ||
+    flow.handleNormalized === null || flow.handleAtClaim === null ||
     flow.gr0kRaw === null ||
     flow.rendererVersion === null
   ) {
@@ -28,7 +28,7 @@ export async function finalizeClaim(runtime: ClaimRuntime, flow: OAuthFlow, iden
 
   const renderer = runtime.renderers.get(rendererVersion);
   const rendered = renderer.render({
-    handleNormalized: flow.handleNormalized,
+    handle: flow.handleAtClaim,
     gr0kRaw,
     gr0kScale: GR0K_SCALE,
     rendererVersion,
@@ -40,7 +40,7 @@ export async function finalizeClaim(runtime: ClaimRuntime, flow: OAuthFlow, iden
   const png = await renderCardPng(rendered.svgUtf8);
   const signatureId = deriveSignatureId({
     xUserId: identity.xUserId,
-    handleNormalized: identity.handleNormalized,
+    handleAtClaim: flow.handleAtClaim,
     gr0kRaw,
     rendererVersion,
   });
@@ -54,13 +54,14 @@ export async function finalizeClaim(runtime: ClaimRuntime, flow: OAuthFlow, iden
 
       return await runtime.store.claim({
         xUserId: identity.xUserId,
-        handleAtClaim: identity.username,
+        handleAtClaim: flow.handleAtClaim!,
+        currentHandle: identity.username,
         handleNormalized: identity.handleNormalized,
         gr0kRaw,
         rendererVersion,
         svgSha256,
         svgStorageKey: svgObject.key,
-        cardRendererVersion: runtime.cardRendererVersion || DEV_CARD_RENDERER_VERSION,
+        cardRendererVersion: runtime.cardRendererVersion || CARD_RENDERER_VERSION,
         pngSha256: pngObject.sha256,
         cardStorageKey: pngObject.key,
         xAuthenticatedAt: identity.authenticatedAt,

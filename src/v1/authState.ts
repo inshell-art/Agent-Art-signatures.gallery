@@ -41,6 +41,8 @@ export interface OAuthFlow {
   stateDigest: string;
   boundSessionIdDigest: string;
   pkceVerifier: string;
+  /** Exact spelling consented to on the artwork preview. */
+  handleAtClaim: string | null;
   handleNormalized: string | null;
   gr0kRaw: number | null;
   rendererVersion: string | null;
@@ -56,6 +58,7 @@ export interface OAuthFlow {
 
 export interface ClaimFlowInput {
   claimIntent?: typeof CLAIM_ON_RETURN_INTENT;
+  handleAtClaim: string;
   handleNormalized: string;
   gr0kRaw: number;
   rendererVersion: string;
@@ -98,6 +101,7 @@ export class MemoryAuthState {
       stateDigest: digest(state),
       boundSessionIdDigest: digest(session.id),
       pkceVerifier: verifier,
+      handleAtClaim: input?.handleAtClaim ?? null,
       handleNormalized: input?.handleNormalized ?? null,
       gr0kRaw: input?.gr0kRaw ?? null,
       rendererVersion: input?.rendererVersion ?? null,

@@ -91,10 +91,11 @@ CREATE TABLE x_accounts (
 CREATE TABLE signatures (
     signature_id          TEXT PRIMARY KEY CHECK (signature_id ~ '^sg1_[a-z2-7]{52}$'),
     x_user_id             TEXT NOT NULL REFERENCES x_accounts (x_user_id),
-    handle_at_claim       TEXT NOT NULL CHECK (handle_at_claim ~ '^[A-Za-z0-9_]{1,15}$'),
+    handle_at_claim       TEXT COLLATE "C" NOT NULL CHECK (handle_at_claim ~ '^[A-Za-z0-9_]{1,15}$'),
     handle_normalized     TEXT NOT NULL CHECK (handle_normalized ~ '^[a-z0-9_]{1,15}$'),
-    gr0k_raw              INTEGER NOT NULL CHECK (gr0k_raw BETWEEN 0 AND 1000000),
-    gr0k_scale            INTEGER NOT NULL CHECK (gr0k_scale = 1000000),
+    -- Algorithm v1.0.0 uses unscaled integer seeds, never a 0–1 ratio.
+    gr0k_raw              INTEGER NOT NULL CHECK (gr0k_raw BETWEEN 1 AND 100),
+    gr0k_scale            INTEGER NOT NULL CHECK (gr0k_scale = 1),
     renderer_version      TEXT NOT NULL,
     svg_sha256            TEXT NOT NULL CHECK (svg_sha256 ~ '^[0-9a-f]{64}$'),
     svg_storage_key       TEXT NOT NULL,
@@ -104,7 +105,8 @@ CREATE TABLE signatures (
     claim_method          TEXT NOT NULL CHECK (claim_method = 'x_oauth_v1'),
     x_authenticated_at    TIMESTAMPTZ NOT NULL,
     claimed_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (x_user_id, handle_normalized, gr0k_raw, gr0k_scale, renderer_version)
+    CONSTRAINT signatures_formal_artwork_unique UNIQUE (x_user_id, handle_at_claim, gr0k_raw, gr0k_scale, renderer_version),
+    CONSTRAINT signatures_artwork_account_match CHECK (lower(handle_at_claim COLLATE "C") = handle_normalized)
 );
 
 CREATE INDEX signatures_by_owner_claimed_at

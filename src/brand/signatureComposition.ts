@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { GR0K_SCALE } from "../v1/input.js";
+import { GR0K_MIN, GR0K_MAX, GR0K_SCALE } from "../v1/input.js";
 import type { SignatureTextRenderer } from "../v1/renderer.js";
 
 export const SIGNATURE_COMPOSITION_SCHEMA = "signature-composition/2" as const;
@@ -244,10 +244,10 @@ function assertSource(source: SignatureCompositionSource): { id: string; display
       "Composition id must be 1-80 lowercase letters, numbers, dots, underscores, or hyphens.",
     );
   }
-  if (!Number.isInteger(source.gr0kRaw) || source.gr0kRaw < 0 || source.gr0kRaw > GR0K_SCALE) {
+  if (!Number.isInteger(source.gr0kRaw) || source.gr0kRaw < GR0K_MIN || source.gr0kRaw > GR0K_MAX) {
     throw new SignatureCompositionError(
       "INVALID_GR0K",
-      `Composition gr0kRaw must be an integer from 0 through ${GR0K_SCALE}.`,
+      `Composition gr0kRaw must be an integer from ${GR0K_MIN} through ${GR0K_MAX}.`,
     );
   }
   return { id: source.id, displayText: normalizedDisplayText(source.displayText), gr0kRaw: source.gr0kRaw };
@@ -429,6 +429,13 @@ function snapshotInteger(value: unknown, label: string, minimum: number, maximum
   return value as number;
 }
 
+function snapshotDimension(value: unknown, label: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0 || value > Number.MAX_SAFE_INTEGER) {
+    throw new SignatureCompositionError("INVALID_SNAPSHOT", `${label} must be a positive finite dimension.`);
+  }
+  return value;
+}
+
 function snapshotHash(value: unknown, label: string): string {
   if (typeof value !== "string" || !SHA256_HEX.test(value)) {
     throw new SignatureCompositionError("INVALID_SNAPSHOT", `${label} must be a lowercase SHA-256 hash.`);
@@ -570,15 +577,27 @@ export function captureSignatureComposition(
       );
     }
     const { pathElement, drawing } = extractPathDrawing(svg);
+    // Export pixels need not equal the renderer's coordinate space (v1.0.0
+    // exports 1080px against a 420-unit canvas). Lock the path's own viewport,
+    // including the wider, unsqueezed canvas used by long branding phrases.
+    const svgElement = svg.match(/<svg\b[^>]*>/)?.[0];
+    const viewBox = svgElement && attribute(svgElement, "viewBox");
+    const viewport = viewBox?.trim().split(/[\s,]+/).map(Number);
+    if (viewport && (viewport.length !== 4 || viewport.some(value => !Number.isFinite(value))
+      || viewport[0] !== 0 || viewport[1] !== 0 || viewport[2] <= 0 || viewport[3] <= 0)) {
+      throw new SignatureCompositionError("INVALID_RENDERER_OUTPUT", "Renderer viewBox must use a positive, zero-origin coordinate space.");
+    }
+    const width = viewport?.[2] ?? output.width;
+    const height = viewport?.[3] ?? output.height;
     glyphs.push(
       Object.freeze({
         rendererInput,
         firstDisplayWord: token.displayWord,
-        width: output.width,
-        height: output.height,
+        width,
+        height,
         svgSha256: sha256(output.svgUtf8),
         sourcePathElementSha256: sha256(pathElement),
-        shapeSha256: sha256(shapeDescriptor(output.width, output.height, drawing)),
+        shapeSha256: sha256(shapeDescriptor(width, height, drawing)),
         drawing,
       }),
     );
@@ -695,7 +714,7 @@ export function restoreSignatureCompositionSnapshot(value: unknown): CompiledSig
 
   const id = snapshotString(snapshot.id, "Snapshot id");
   const displayText = snapshotString(snapshot.displayText, "Snapshot displayText");
-  const gr0kRaw = snapshotInteger(snapshot.gr0kRaw, "Snapshot gr0kRaw", 0, GR0K_SCALE);
+  const gr0kRaw = snapshotInteger(snapshot.gr0kRaw, "Snapshot gr0kRaw", GR0K_MIN, GR0K_MAX);
   const checkedSource = assertSource({ id, displayText, gr0kRaw });
   if (checkedSource.displayText !== displayText) {
     throw new SignatureCompositionError(
@@ -799,8 +818,8 @@ export function restoreSignatureCompositionSnapshot(value: unknown): CompiledSig
         `Snapshot glyph ${glyphIndex}.firstDisplayWord does not match its first token occurrence.`,
       );
     }
-    const width = snapshotInteger(glyph.width, `Snapshot glyph ${glyphIndex}.width`, 1, Number.MAX_SAFE_INTEGER);
-    const height = snapshotInteger(glyph.height, `Snapshot glyph ${glyphIndex}.height`, 1, Number.MAX_SAFE_INTEGER);
+    const width = snapshotDimension(glyph.width, `Snapshot glyph ${glyphIndex}.width`);
+    const height = snapshotDimension(glyph.height, `Snapshot glyph ${glyphIndex}.height`);
     const drawing = restoreDrawing(glyph.drawing, `Snapshot glyph ${glyphIndex}.drawing`);
     const shapeSha256 = snapshotHash(glyph.shapeSha256, `Snapshot glyph ${glyphIndex}.shapeSha256`);
     const recomputedShapeHash = sha256(shapeDescriptor(width, height, drawing));

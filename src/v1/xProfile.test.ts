@@ -5,7 +5,7 @@ import { collectionPage, homePage, mintEntryPage, mintReviewPage, previewPage, s
 import { SITE_CSS } from "./siteCss.js";
 
 const signature: SignatureView = {
-  signatureId: `sg1_${"a".repeat(52)}`, handleAtClaim: "Old_Handle", gr0kRaw: 500000,
+  signatureId: `sg1_${"a".repeat(52)}`, handleAtClaim: "Old_Handle", gr0kRaw: 50,
   rendererVersion: "artwork/1", svgSha256: "b".repeat(64), pngSha256: "c".repeat(64),
   cardRendererVersion: "social-card/1", publicAccountId: "account-reference",
   xAuthenticatedAt: new Date("2026-09-01"), claimedAt: new Date("2026-09-01"),

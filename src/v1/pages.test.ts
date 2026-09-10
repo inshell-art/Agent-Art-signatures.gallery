@@ -8,7 +8,7 @@ import { xProfileLink } from "./xProfile.js";
 const signature: SignatureView = {
   signatureId: `sg1_${"a".repeat(52)}`,
   handleAtClaim: "historical_name",
-  gr0kRaw: 371924,
+  gr0kRaw: 37,
   rendererVersion: "artwork/1",
   svgSha256: "b".repeat(64),
   pngSha256: "c".repeat(64),
@@ -39,7 +39,7 @@ describe("compact public gallery captions", () => {
     const entry = tab === "minted" ? { ...signature, finalizedAt: finalized.finalizedAt!, mintWallet: finalized.mintWallet!, currentTokenHolder: finalized.currentTokenHolder! } : signature;
     const html = homePage(false, [entry], null, false, tab);
     const card = html.match(/<article class="gallery-item"[\s\S]*?<\/article>/)![0];
-    expect(card).toContain(`<strong>${xProfileLink("historical_name")}</strong><span>gr0k 0.371924</span>`);
+    expect(card).toContain(`<strong>${xProfileLink("historical_name")}</strong><span>gr0k 37</span>`);
     expect(card).not.toContain("<time");
     expect(card).not.toContain("2026-08-25");
     expect(card).not.toContain("2026-09-06");

@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryArtifactStore } from "../v1/artifacts.js";
 import { MemoryAuthState } from "../v1/authState.js";
 import { COLLECTION_STATE_FIXTURES } from "../v1/collectionStateFixtures.js";
-import { DEV_RENDERER_VERSION, developmentFixtureRenderer, RendererRegistry } from "../v1/renderer.js";
+import { RENDERER_VERSION, formalSignatureRenderer, RendererRegistry } from "../v1/renderer.js";
 import { MemorySignatureStore } from "../v1/store.js";
 import { SITE_CSS, SITE_CSS_URL } from "../v1/siteCss.js";
 import { startServer } from "./server.js";
@@ -14,7 +14,7 @@ async function boot(fixtureMode: boolean, localChainRehearsal = false) {
   const store = new MemorySignatureStore();
   const artifacts = new MemoryArtifactStore();
   const auth = new MemoryAuthState();
-  const server = startServer({ store, artifacts, auth, renderers: new RendererRegistry([developmentFixtureRenderer]) }, 0, { fixtureMode, localChainRehearsal, activeRendererVersion: DEV_RENDERER_VERSION });
+  const server = startServer({ store, artifacts, auth, renderers: new RendererRegistry([formalSignatureRenderer]) }, 0, { fixtureMode, localChainRehearsal, activeRendererVersion: RENDERER_VERSION });
   servers.push(server);
   await new Promise<void>((resolve, reject) => { server.once("listening", resolve); server.once("error", reject); });
   return { base: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, store, artifacts, auth };

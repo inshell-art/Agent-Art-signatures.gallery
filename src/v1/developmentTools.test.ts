@@ -7,7 +7,7 @@ import { LOCAL_TEST_WALLET } from "../local/wallet.js";
 const main = (html: string) => html.match(/<main>[\s\S]*?<\/main>/)![0];
 const dev = (html: string) => html.slice(html.indexOf('<aside class="rehearsal-watermark"'));
 const privateAccount = { fixtureMode: true, mintEnabled: true, mintChainId: "31337", currentHandle: "alice", csrfToken: "private-csrf" };
-const signature: SignatureView = { signatureId: `sg1_${"a".repeat(52)}`, handleAtClaim: "alice", gr0kRaw: 371924, rendererVersion: "art/1", cardRendererVersion: "card/1", svgSha256: "a".repeat(64), pngSha256: "b".repeat(64), claimedAt: new Date("2026-09-01"), xAuthenticatedAt: new Date("2026-09-01"), publicAccountId: "public-reference" };
+const signature: SignatureView = { signatureId: `sg1_${"a".repeat(52)}`, handleAtClaim: "alice", gr0kRaw: 37, rendererVersion: "art/1", cardRendererVersion: "card/1", svgSha256: "a".repeat(64), pngSha256: "b".repeat(64), claimedAt: new Date("2026-09-01"), xAuthenticatedAt: new Date("2026-09-01"), publicAccountId: "public-reference" };
 
 describe("development tools stay outside the product", () => {
   it.each(COLLECTION_STATE_FIXTURES)("keeps $key free of developer controls", ({ key }) => {

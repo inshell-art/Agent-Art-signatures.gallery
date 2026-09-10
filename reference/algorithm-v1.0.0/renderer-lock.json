@@ -1,0 +1,61 @@
+{
+  "schema": "signatures-gallery-renderer-lock/1",
+  "status": "locked",
+  "visualApproval": {
+    "date": "2026-09-10",
+    "approvedBy": "project owner",
+    "basis": "Validated the v1.0.0 renderer in the expanded local preset gallery."
+  },
+  "upstream": {
+    "repository": "https://github.com/inshell-art/agent-art-Signature-prototype",
+    "tag": "v1.0.0",
+    "commit": "1e1dab4ec093261006feb7879c109413c0b3ac6d"
+  },
+  "algorithmVersion": "1.0.0",
+  "rendererVersion": "sg-renderer-1.0.0",
+  "cardRendererVersion": "sg-card-1.0.0",
+  "contract": {
+    "handlePattern": "^[A-Za-z0-9_]{1,15}$",
+    "caseSensitive": true,
+    "gr0kMin": 1,
+    "gr0kMax": 100,
+    "gr0kDefault": 22,
+    "gr0kScale": 1,
+    "outputSize": 1080,
+    "canonicalSize": 420,
+    "background": "#f4e7c7",
+    "ink": "#000000",
+    "handleLabel": true
+  },
+  "rasterizer": {
+    "sharp": "0.35.4",
+    "policy": "SVG bytes are canonical. PNGs are derived with the locked adapter; native libraries and system font fallback can affect cross-platform PNG bytes. Stored claimed assets are never regenerated in place."
+  },
+  "files": {
+    "reference/algorithm-v1.0.0/signature_algorithm_v1.py": "dad855cd33ea59222dc129b3619744a7c33ee13a64c8c46bddefb3a200bbe175",
+    "reference/algorithm-v1.0.0/signature_algorithm_v1.json": "b025b7121df26d04121d4ca7791cf84fae89d57309a8085056c466cd2d6a2a4c",
+    "reference/algorithm-v1.0.0/SHA256SUMS": "7163666968e31a9291c0f283ee3bf3022a14885f0703e920dc070e04c66e7909",
+    "src/algorithmV1/index.ts": "6bec97576d435a49b246cad2c5b6f0eb346da064f190aa79598c1ce36d776bcc",
+    "src/v1/renderer.ts": "a3789743eb932f9e7de2e5ef1b0f16b36d691445e5203313f0d63b52c434725b",
+    "src/v1/input.ts": "4df342530aa57c3c8ccc77418de54f8eee36d648b265405506d801ac6fd483e2"
+  },
+  "goldenSvgs": [
+    { "kind": "signature", "handle": "S", "gr0kRaw": 22, "sha256": "d2f03d1c6d07eb94ce8d3fcf05a62f661bf6c10abf60e459e53234fd89fd0062" },
+    { "kind": "signature", "handle": "s", "gr0kRaw": 22, "sha256": "f6a44e217b1ec704f9705540d77a966c7302331c929ca5406187ccc24a131b46" },
+    { "kind": "signature", "handle": "_", "gr0kRaw": 1, "sha256": "c426a9dab9c76fc7ebac7522bb6eb2f3487bbcf902cee773b36c458066243917" },
+    { "kind": "signature", "handle": "0", "gr0kRaw": 100, "sha256": "dbac6fd741e19604124c9e9eb89f21a08009bd35d75f6b27005977a67860ebdc" },
+    { "kind": "signature", "handle": "Alice", "gr0kRaw": 22, "sha256": "3292646bd1bf149b4ff50d75f6728c93b9388c8bb4e8dc117fb46af217f25cce" },
+    { "kind": "signature", "handle": "alice", "gr0kRaw": 22, "sha256": "cb2c62c85887df3ebbc77e5cad27c863e0f188ddb37438c1069a3c43a6b56e65" },
+    { "kind": "signature", "handle": "TimD1919027", "gr0kRaw": 1, "sha256": "6a63517ee4ee7a26fc847463fbc2cfe10b5b35fc9bb2a875a59eb57801bb0a1f" },
+    { "kind": "signature", "handle": "TimD1919027", "gr0kRaw": 100, "sha256": "aea12ea13272263d55ecf525c52365fb3d4da4b47fa2dd5308fb654dfc649469" },
+    { "kind": "signature", "handle": "inshell_art", "gr0kRaw": 22, "sha256": "a75a89e287cea385f460bc370660828e375989a24165bf4a10806c385db0e1e4" },
+    { "kind": "signature", "handle": "Usamadeen_001", "gr0kRaw": 22, "sha256": "7a86407adf03e38f85d0d10f367d07b5c0c9029882eb42915fc9bb9ece177e73" },
+    { "kind": "signature", "handle": "AuraMetaX", "gr0kRaw": 22, "sha256": "588652c3cd451568bca7b6169ae289d96c86bf20492d0f7fe736ff9a9ceb4417" },
+    { "kind": "signature", "handle": "AaBbCcDdEeFfGgH", "gr0kRaw": 22, "sha256": "9f7422087ab0da8390305a752a36d4979647bd65ac51e02be25e10412e7f5a2f" },
+    { "kind": "signature", "handle": "012345678901234", "gr0kRaw": 22, "sha256": "4b32a9b8a4db354ff6ed906c652b126360282dedbb8f1e3dae4e187e2f982df6" },
+    { "kind": "signature", "handle": "0xRiker", "gr0kRaw": 22, "sha256": "a30b7af0ef22e7689bca0bda72f23d8c07298f8a2f1144dab6ddf370da2f1f03" },
+    { "kind": "signature", "handle": "A_b09Z", "gr0kRaw": 1, "width": 420, "height": 420, "sha256": "14f3564b503d5adde167ea25318822d40f77a474b10910e45c0176d2fd06fe3d" },
+    { "kind": "signature", "handle": "z0_9Z", "gr0kRaw": 99, "width": 937, "height": 523, "sha256": "0e0755e4ed53cc1c32577f1d657310cddf30438041bec7b4d23b66d4fff5d601" },
+    { "kind": "text", "text": "What_shape_do_you_go_by?", "gr0kRaw": 22, "sha256": "d5334a15d2a87d7658b22e6b1d7e750c4733a053fb328d5d8bed1f24ba26568f" }
+  ]
+}

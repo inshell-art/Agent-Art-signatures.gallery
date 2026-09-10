@@ -70,7 +70,7 @@ describe("frozen UnixFS profile", () => {
 describe("immutable V2 metadata", () => {
   it("locks the complete object, RFC 8785 bytes, SHA-256, CID, URI, and URI Keccak hash", async () => {
     const prepared = await prepareTokenMetadata(metadataInput);
-    expect(prepared.metadata.name).toBe("@alice — Signature — gr0k 0.371924");
+    expect(prepared.metadata.name).toBe("@Alice — Signature — gr0k 22");
     expect(prepared.metadata).toEqual(golden.metadata);
     expect(prepared.metadata.attributes.map(({ trait_type }) => trait_type)).toEqual([
       "Handle at Claim",
@@ -92,11 +92,12 @@ describe("immutable V2 metadata", () => {
     const json = Buffer.from(canonicalMetadataBytes(metadata)).toString("utf8");
     expect(json).not.toContain("1234567890123456789");
     expect(json).not.toMatch(/owner|current_handle|wallet/i);
-    expect(metadata.properties.gr0k_raw).toBe(371924);
+    expect(metadata.properties.gr0k_raw).toBe(22);
     expect(Number.isInteger(metadata.properties.gr0k_raw)).toBe(true);
-    expect(metadata.attributes[1].value).toBe("0.371924");
-    expect(formatGr0k(1_000_000)).toBe("1.000000");
-    expect(formatGr0k(1)).toBe("0.000001");
+    expect(metadata.properties.gr0k_scale).toBe(1);
+    expect(metadata.attributes[1].value).toBe("22");
+    expect(formatGr0k(100)).toBe("100");
+    expect(formatGr0k(1)).toBe("1");
   });
 
   it("changes both SHA-256 and CID after a one-byte metadata change", async () => {
@@ -104,6 +105,19 @@ describe("immutable V2 metadata", () => {
     const changed = await prepareTokenMetadata({ ...metadataInput, handleAtClaim: "alica" });
     expect(changed.sha256).not.toBe(original.sha256);
     expect(changed.cid).not.toBe(original.cid);
+  });
+
+  it("preserves case in the frozen handle, artwork name, and metadata bytes", async () => {
+    const original = await prepareTokenMetadata(metadataInput);
+    const lowercase = await prepareTokenMetadata({ ...metadataInput, handleAtClaim: "alice" });
+    expect(original.metadata.properties.handle_at_claim).toBe("Alice");
+    expect(original.metadata.attributes[0].value).toBe("@Alice");
+    expect(original.sha256).not.toBe(lowercase.sha256);
+    expect(original.cid).not.toBe(lowercase.cid);
+  });
+
+  it.each([0, 101, 371924])("rejects obsolete/out-of-range integer seed %s", (gr0kRaw) => {
+    expect(() => buildTokenMetadata({ ...metadataInput, gr0kRaw })).toThrow(/integer raw value/);
   });
 
   it("verifies exact V1 bytes and rejects missing integrity or external SVG resources", () => {
@@ -125,5 +139,6 @@ describe("immutable V2 metadata", () => {
     expect(() => buildTokenMetadata({ ...metadataInput, publicArtifactOrigin: "https://signatures.gallery/" })).toThrow(/trailing slash/);
     expect(() => buildTokenMetadata({ ...metadataInput, gr0kRaw: 371924.1 })).toThrow(/integer raw value/);
     expect(() => buildTokenMetadata({ ...metadataInput, publicAccountId: "1234567890123456789" })).toThrow(/opaque V1/);
+    expect(() => buildTokenMetadata({ ...metadataInput, handleAtClaim: "Alice\n" })).toThrow(/case-sensitive/);
   });
 });

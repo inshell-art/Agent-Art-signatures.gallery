@@ -7,7 +7,7 @@ import {
 import { SLOGAN_SHAPE_LOCK } from "./sloganShapeLock.js";
 import { OPEN_FLOW_QUESTION_MARK } from "./sloganQuestionMark.js";
 
-export const SLOGAN_SIGNATURE_VERSION = "sg-slogan-composition-7.0.0";
+export const SLOGAN_SIGNATURE_VERSION = "sg-slogan-composition-8.0.0";
 
 /**
  * The renderer-free side of the composition boundary. Importing this module
@@ -18,10 +18,11 @@ const LOCKED_SLOGAN = restoreSignatureCompositionSnapshot(SLOGAN_SHAPE_LOCK);
 // The tooltip, accessible heading, and captured renderer input share one literal.
 export const SLOGAN_DISPLAY_TEXT = LOCKED_SLOGAN.displayText;
 
+const curveWidth = LOCKED_SLOGAN.glyphs[0].width;
 const DESKTOP_PRESENTATION = {
-  viewBox: [35, 145, 370, 100],
-  width: 1_110,
-  height: 300,
+  viewBox: [35, 145, curveWidth - 50, 120],
+  width: Math.round((curveWidth - 50) * 3),
+  height: 360,
   placements: [
     { tokenIndex: 0, translateX: 0, translateY: 0, scale: 1 },
   ],
@@ -34,7 +35,7 @@ export type SloganSignatureLayout = "desktop" | "mobile";
 
 // Readable punctuation is a presentation annotation, not part of the shape lock.
 // SVG coordinates keep it beside the curve at every responsive size.
-const QUESTION_MARK = `<g class="slogan-signature-punctuation" data-punctuation-id="${OPEN_FLOW_QUESTION_MARK.id}" transform="translate(373 169)" aria-hidden="true">${OPEN_FLOW_QUESTION_MARK.svgMarkup}</g>`;
+const QUESTION_MARK = `<g class="slogan-signature-punctuation" data-punctuation-id="${OPEN_FLOW_QUESTION_MARK.id}" transform="translate(${curveWidth - 47} 169)" aria-hidden="true">${OPEN_FLOW_QUESTION_MARK.svgMarkup}</g>`;
 
 /** Composes locked drawings, then adds the separate readable question mark. */
 export function renderSloganSignatureSvg(layout: SloganSignatureLayout = "desktop"): string {

@@ -28,7 +28,7 @@ import { mnemonicToAccount } from "viem/accounts";
 import { MemoryAuthState } from "../v1/authState.js";
 import { seedDevelopmentFixtures } from "../v1/fixtures.js";
 import { FileArtifactStore } from "../v1/fileArtifactStore.js";
-import { DEV_CARD_RENDERER_VERSION, developmentFixtureRenderer, RendererRegistry, sha256Hex } from "../v1/renderer.js";
+import { CARD_RENDERER_VERSION, formalSignatureRenderer, RendererRegistry, sha256Hex } from "../v1/renderer.js";
 import { signatureTokenId } from "../v2/core/signatureId.js";
 import { mintAuthorizationTypedData } from "../v2/core/mintAuthorization.js";
 import {
@@ -290,6 +290,7 @@ function migrateDatabase(): void {
   }
   assertV2MigrationChecksum();
   applySqlFile(resolve(REPO_ROOT, "src/store/migrations/003_claim_withdrawal.sql"));
+  applySqlFile(resolve(REPO_ROOT, "src/store/migrations/004_formal_algorithm.sql"));
 }
 
 function readPid(path: string): number | null {
@@ -466,8 +467,8 @@ async function seedV1(pool: ReturnType<typeof createPostgresPool>): Promise<{ st
     await seedDevelopmentFixtures({
       store,
       artifacts,
-      renderers: new RendererRegistry([developmentFixtureRenderer]),
-      cardRendererVersion: DEV_CARD_RENDERER_VERSION,
+      renderers: new RendererRegistry([formalSignatureRenderer]),
+      cardRendererVersion: CARD_RENDERER_VERSION,
     }, auth);
   }
   return { store, artifacts };
@@ -887,8 +888,8 @@ async function verify(): Promise<RuntimeRecord> {
       pool.query<{ count: string }>(
         `SELECT count(*)::text AS count FROM signatures
           WHERE x_user_id = '1234567890123456789'
-            AND renderer_version = 'sg-renderer-dev-fixture'
-            AND gr0k_raw IN (120000, 371924, 820000)`,
+            AND renderer_version = 'sg-renderer-1.0.0'
+            AND gr0k_raw IN (12, 37, 82)`,
       ),
       pool.query<{ count: string }>("SELECT count(*)::text AS count FROM local_rehearsal.artifact_references"),
       pool.query<{ count: string }>(

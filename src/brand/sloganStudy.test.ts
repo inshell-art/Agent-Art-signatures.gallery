@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { developmentFixtureRenderer } from "../v1/renderer.js";
+import { formalSignatureRenderer } from "../v1/renderer.js";
 import { captureSignatureComposition } from "./signatureComposition.js";
 import { OPEN_FLOW_QUESTION_MARK, QUESTION_MARK_STUDIES } from "./sloganQuestionMark.js";
 import { SLOGAN_SHAPE_LOCK } from "./sloganShapeLock.js";
@@ -35,7 +35,7 @@ describe("local slogan design study", () => {
     expect(article(html, "copy", "go-by")).toContain(OPEN_FLOW_QUESTION_MARK.svgMarkup);
     expect(SLOGAN_SIGNATURE_SVG).toContain(OPEN_FLOW_QUESTION_MARK.svgMarkup);
     expect(html).toContain("not an identity or reputation score");
-    expect(html).toContain("unapproved local renderer");
+    expect(html).toContain("formal Signature Algorithm v1.0.0");
     expect(html).not.toContain("<script");
   });
 
@@ -44,8 +44,8 @@ describe("local slogan design study", () => {
     const expected = captureSignatureComposition({
       id: `independent-study-check-${item.id}`,
       displayText: item.text.replaceAll(" ", "_"),
-      gr0kRaw: 500_000,
-    }, developmentFixtureRenderer);
+      gr0kRaw: 22,
+    }, formalSignatureRenderer);
     const row = article(sloganStudyPage(), "copy", item.id);
     expect(expected.glyphs).toHaveLength(1);
     expect(expected.glyphs[0].rendererInput).toBe(rendererInput);
@@ -56,8 +56,8 @@ describe("local slogan design study", () => {
   });
 
   it("passes the exact spelling of all new study inputs through the text interface", () => {
-    const renderer = vi.spyOn(developmentFixtureRenderer, "renderText");
-    const handleRenderer = vi.spyOn(developmentFixtureRenderer, "render");
+    const renderer = vi.spyOn(formalSignatureRenderer, "renderText");
+    const handleRenderer = vi.spyOn(formalSignatureRenderer, "render");
     try {
       const html = sloganStudyPage();
       expect(handleRenderer).not.toHaveBeenCalled();
@@ -70,9 +70,9 @@ describe("local slogan design study", () => {
       ]);
       for (const [input] of renderer.mock.calls) {
         expect(input).toMatchObject({
-          gr0kRaw: 500_000,
-          gr0kScale: 1_000_000,
-          rendererVersion: developmentFixtureRenderer.version,
+          gr0kRaw: 22,
+          gr0kScale: 1,
+          rendererVersion: formalSignatureRenderer.version,
         });
       }
       expect(generatedPath(article(html, "copy", "go-by"))).toBe(SLOGAN_SHAPE_LOCK.glyphs[0].drawing.d);
@@ -102,8 +102,8 @@ describe("local slogan design study", () => {
       const captured = captureSignatureComposition({
         id: `case-check-${index}`,
         displayText: literal,
-        gr0kRaw: 500_000,
-      }, developmentFixtureRenderer);
+        gr0kRaw: 22,
+      }, formalSignatureRenderer);
       expect(row).toContain(`data-source-literal="${literal}"`);
       expect(row).toContain(`title="${literal}"`);
       expect(row).toContain(`data-renderer-input="${literal}"`);
@@ -117,18 +117,18 @@ describe("local slogan design study", () => {
         expect(row).toContain("Title case · comparison");
       }
       expect(row).toContain(OPEN_FLOW_QUESTION_MARK.svgMarkup);
-      expect(row).toContain('viewBox="35 145 370 100"');
+      expect(row).toContain('viewBox="35 145 562.8571428571429 120"');
     }
   });
 
   it.each(QUESTION_MARK_STUDIES)("shows $id beside the exact locked curve and as two font-free specimens", (mark) => {
     const row = article(sloganStudyPage(), "mark", mark.id);
     expect(generatedPath(row)).toBe(SLOGAN_SHAPE_LOCK.glyphs[0].drawing.d);
-    expect(row).toContain(`<g class="study-punctuation" transform="translate(373 169)">${mark.svgMarkup}</g>`);
+    expect(row).toContain(`<g class="study-punctuation" transform="translate(565.8571428571429 169)">${mark.svgMarkup}</g>`);
     expect(row.split(mark.svgMarkup)).toHaveLength(4);
     expect(row.match(/viewBox="0 0 30 54"/g)).toHaveLength(2);
-    expect(row).toContain('viewBox="35 145 370 100"');
-    expect(row).toContain('width="1110" height="300"');
+    expect(row).toContain('viewBox="35 145 562.8571428571429 120"');
+    expect(row).toContain('width="1689" height="360"');
     expect(row).toContain('class="study-mark-large"');
     expect(row).toContain('class="study-mark-small"');
     expect(row).not.toMatch(/<(?:text|script|image|use)\b|font-family=|matrix\(|scale\(/i);
@@ -147,7 +147,7 @@ describe("local slogan design study", () => {
     expect(SLOGAN_SHAPE_LOCK.displayText).toBe("What_shape_do_you_go_by?");
     expect(SLOGAN_SHAPE_LOCK.schema).toBe("signature-composition/2");
     expect(SLOGAN_SHAPE_LOCK.verifiedShapeLock).toEqual({
-      "What_shape_do_you_go_by?": "142988f78977033590a0bd286f08e46392e99ef86e8da23aa80702304f883f4b",
+      "What_shape_do_you_go_by?": "cc0e4cea391e4f44e2d9f3fd4f4aeed8ad722ff40e9a8b2274c308ac24cd178f",
     });
   });
 });

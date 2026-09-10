@@ -9,23 +9,23 @@
   "primaryType": "MintAuthorization",
   "typeString": "MintAuthorization(bytes32 signatureDigest,bytes32 walletBindingId,address mintWallet,bytes32 svgSha256,bytes32 pngSha256,bytes32 metadataSha256,bytes32 tokenURIHash,bytes32 authorizationId,uint64 validAfter,uint64 deadline,uint32 authorizerEpoch)",
   "authorization": {
-    "signatureDigest": "0x4f508de936e884b48051822b94edec1baefeb2aa0781535768ce4aca8a8d93ea",
+    "signatureDigest": "0x471fa25b1c5a83446abeee3ac702394c4cf3faa0251a5fbef9ab3a2090139206",
     "walletBindingId": "0x1111111111111111111111111111111111111111111111111111111111111111",
     "mintWallet": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
     "svgSha256": "0x937c1e9a625d65e3da278f631ab17dcf42917bcfd31ededd2d37476934891228",
     "pngSha256": "0x431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460",
-    "metadataSha256": "0x4fa2c7235aa7a4d3cb474aa681d80bafac383677a210cda49096439a87c86243",
-    "tokenURIHash": "0x8fc8bbd1191efa2f11427e9f89189522238cae1d084d65172e6fcad9c48d6103",
+    "metadataSha256": "0x8ffb1dc5633374864bb5ecaa53cfa02cefeee47b83c5c676d9c0cac8f152d070",
+    "tokenURIHash": "0x5697cf5a90f4a1227b021c536b28ccf4e82d844ba10cc5cc27fd8530eb37faf5",
     "authorizationId": "0x2222222222222222222222222222222222222222222222222222222222222222",
     "validAfter": "1788534000",
     "deadline": "1788534900",
     "authorizerEpoch": 1
   },
-  "tokenURI": "ipfs://bafkreicpuldsgwvhutj4wr2ku2a5qc5pvq4dm55ccdg2jeewionipsdcim",
+  "tokenURI": "ipfs://bafkreiep7mo4kyztosdexnpmvjj47ibm57xoi64dyxdhnwoazlepcuwqoa",
   "typeHash": "0x2693c666060f4281b37daed88fc7538b218d454bb5b4950c96ac1bd9537b64de",
-  "structHash": "0x019e8a7f73ccbfed9df1e6ea60a5f185884e39f18328e9bda5d6c8a51176d676",
+  "structHash": "0x3f7ea1beb9512ee49088fe7f1f014d981a8194db27f5732d4834826c4c742713",
   "domainSeparator": "0xcf2c89b6ff7a60dbfea986aaed7939c89485867a5e582a8d814ef912be7ea067",
-  "digest": "0x7b9417467fcc1c2f473c5eb1ad7bd9f050bde705c17058e0ae2583356d560df6",
+  "digest": "0xa6dca39e75612b2ce4214e5830fc20516e12e4aa971fbd2f4f835512496e20c3",
   "authorizer": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
-  "galleryAttestation": "0x1b1529fab161df3983c71958a5c6866c741164760b0005b0930e5195f2f16ae673f717f8ccdc58833362da6ad77512d7198249f105328369f1759a9dbad6e0a41c"
+  "galleryAttestation": "0xced6034679b460d49ecf68a5ace3b56dc90c1d4d639c74b0fe52469f8815bb5425de9dfe89fe6831275692a982a21bbf9610edf6cb2ec27a30a846b7411e620e1b"
 }
