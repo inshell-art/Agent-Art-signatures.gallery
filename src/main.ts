@@ -5,6 +5,11 @@ import { MemoryAuthState } from "./v1/authState.js";
 import { seedDevelopmentFixtures } from "./v1/fixtures.js";
 import { DEV_CARD_RENDERER_VERSION, DEV_RENDERER_VERSION, developmentFixtureRenderer, RendererRegistry } from "./v1/renderer.js";
 import { MemorySignatureStore } from "./v1/store.js";
+import { loadMintConfig } from "./v2/config.js";
+import { seedV2DevelopmentFixtures } from "./v2/fixtures.js";
+import { seedGalleryDevelopmentFixtures } from "./v2/galleryFixtures.js";
+import { MemoryMintStore } from "./v2/memoryStore.js";
+import { V2MintService } from "./v2/service.js";
 
 const port = Number(process.env.PORT ?? 3000);
 const fixtureMode = process.env.DEV_FIXTURES !== "0" && process.env.NODE_ENV !== "production";
@@ -46,6 +51,13 @@ const renderers = new RendererRegistry([developmentFixtureRenderer]);
 if (fixtureMode) {
   await seedDevelopmentFixtures({ store, artifacts, renderers, cardRendererVersion: options.cardRendererVersion ?? DEV_CARD_RENDERER_VERSION }, auth);
 }
-startServer({ store, artifacts, auth, renderers }, port, options);
-console.log(`signatures.gallery V1 listening on http://localhost:${port}`);
-if (fixtureMode) console.log("Development fixtures are enabled; no fixture record is production provenance.");
+const mintConfig = loadMintConfig(process.env, fixtureMode, options.publicOrigin ?? `http://localhost:${port}`);
+const mintState = new MemoryMintStore();
+const mint = new V2MintService(mintConfig, mintState, store, artifacts);
+if (fixtureMode && mintConfig.enabled) {
+  await seedV2DevelopmentFixtures(mint, store);
+  await seedGalleryDevelopmentFixtures({ store, artifacts, renderers, cardRendererVersion: options.cardRendererVersion ?? DEV_CARD_RENDERER_VERSION }, auth, mint);
+}
+startServer({ store, artifacts, auth, renderers, mint }, port, options);
+console.log(`signatures.gallery V2 listening on http://localhost:${port}`);
+if (fixtureMode) console.log("Development rehearsal fixtures are enabled; seeded identity, wallet, transaction, and finality records are not production provenance.");

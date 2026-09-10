@@ -1,0 +1,295 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://signatures.gallery/schemas/sg-mint-deployment-1.0.0.json",
+  "title": "signatures.gallery canonical mint deployment manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "manifest_version",
+    "status",
+    "example_only",
+    "chain",
+    "deployment",
+    "constructor_arguments",
+    "build",
+    "contract_identity",
+    "roles",
+    "collection_metadata",
+    "onchain_verification",
+    "finality_policy",
+    "source_verification",
+    "mainnet_deployment_approval_record"
+  ],
+  "properties": {
+    "$schema": { "type": "string", "minLength": 1 },
+    "manifest_version": { "const": "sg-mint-deployment-1.0.0" },
+    "status": {
+      "enum": ["example_only", "draft", "rehearsal_verified"]
+    },
+    "example_only": { "type": "boolean" },
+    "chain": { "$ref": "#/$defs/chain" },
+    "deployment": { "$ref": "#/$defs/deployment" },
+    "constructor_arguments": { "$ref": "#/$defs/constructorArguments" },
+    "build": { "$ref": "#/$defs/build" },
+    "contract_identity": { "$ref": "#/$defs/contractIdentity" },
+    "roles": { "$ref": "#/$defs/roles" },
+    "collection_metadata": { "$ref": "#/$defs/collectionMetadata" },
+    "onchain_verification": { "$ref": "#/$defs/onchainVerification" },
+    "finality_policy": { "$ref": "#/$defs/finalityPolicy" },
+    "source_verification": { "$ref": "#/$defs/sourceVerification" },
+    "mainnet_deployment_approval_record": {
+      "type": ["string", "null"],
+      "minLength": 1
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "status": { "const": "rehearsal_verified" } },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "chain": {
+            "properties": { "chain_id": { "const": "11155111" } },
+            "required": ["chain_id"]
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "hash32": {
+      "type": "string",
+      "pattern": "^0x[0-9a-f]{64}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "address": {
+      "type": "string",
+      "pattern": "^0x[0-9a-fA-F]{40}$"
+    },
+    "uintString": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)$"
+    },
+    "cid": {
+      "type": "string",
+      "pattern": "^b[a-z2-7]+$"
+    },
+    "ipfsURI": {
+      "type": "string",
+      "pattern": "^ipfs://b[a-z2-7]+$"
+    },
+    "chain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["chain_id", "network_name", "genesis_hash"],
+      "properties": {
+        "chain_id": { "$ref": "#/$defs/uintString" },
+        "network_name": { "type": "string", "minLength": 1 },
+        "genesis_hash": { "$ref": "#/$defs/hash32" }
+      }
+    },
+    "deployment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_address",
+        "transaction_hash",
+        "block_number",
+        "block_hash",
+        "deployment_initcode_keccak256",
+        "runtime_code_keccak256"
+      ],
+      "properties": {
+        "contract_address": { "$ref": "#/$defs/address" },
+        "transaction_hash": { "$ref": "#/$defs/hash32" },
+        "block_number": { "$ref": "#/$defs/uintString" },
+        "block_hash": { "$ref": "#/$defs/hash32" },
+        "deployment_initcode_keccak256": { "$ref": "#/$defs/hash32" },
+        "runtime_code_keccak256": { "$ref": "#/$defs/hash32" }
+      }
+    },
+    "constructorArguments": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "collection_name",
+        "collection_symbol",
+        "collection_uri",
+        "collection_metadata_sha256",
+        "collection_uri_keccak256",
+        "default_admin_delay_seconds",
+        "delayed_admin",
+        "authorizer_manager",
+        "pauser",
+        "authorization_revoker",
+        "initial_authorizer"
+      ],
+      "properties": {
+        "collection_name": { "const": "Gallery of Signatures" },
+        "collection_symbol": { "const": "SIGN" },
+        "collection_uri": { "$ref": "#/$defs/ipfsURI" },
+        "collection_metadata_sha256": { "$ref": "#/$defs/hash32" },
+        "collection_uri_keccak256": { "$ref": "#/$defs/hash32" },
+        "default_admin_delay_seconds": { "$ref": "#/$defs/uintString" },
+        "delayed_admin": { "$ref": "#/$defs/address" },
+        "authorizer_manager": { "$ref": "#/$defs/address" },
+        "pauser": { "$ref": "#/$defs/address" },
+        "authorization_revoker": { "$ref": "#/$defs/address" },
+        "initial_authorizer": { "$ref": "#/$defs/address" }
+      }
+    },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_commit", "compiler", "packages", "abi"],
+      "properties": {
+        "source_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "compiler": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["version", "optimizer_enabled", "optimizer_runs", "evm_version", "via_ir"],
+          "properties": {
+            "version": { "type": "string", "minLength": 1 },
+            "optimizer_enabled": { "type": "boolean" },
+            "optimizer_runs": { "type": "integer", "minimum": 0 },
+            "evm_version": { "type": "string", "minLength": 1 },
+            "via_ir": { "type": "boolean" }
+          }
+        },
+        "packages": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["openzeppelin_contracts"],
+          "properties": {
+            "openzeppelin_contracts": { "type": "string", "minLength": 1 }
+          }
+        },
+        "abi": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["version", "hash_algorithm", "sha256"],
+          "properties": {
+            "version": { "const": "sg-gallery-abi-1.0.0" },
+            "hash_algorithm": { "const": "sha256-rfc8785-json" },
+            "sha256": { "$ref": "#/$defs/sha256" }
+          }
+        }
+      }
+    },
+    "contractIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "symbol", "eip712_name", "eip712_version", "initial_authorizer_epoch"],
+      "properties": {
+        "name": { "const": "Gallery of Signatures" },
+        "symbol": { "const": "SIGN" },
+        "eip712_name": { "const": "signatures.gallery" },
+        "eip712_version": { "const": "2" },
+        "initial_authorizer_epoch": { "const": 1 }
+      }
+    },
+    "roles": {
+      "type": "object",
+      "description": "All six deployment, administrative, operational, and online-authorizer identities must be pairwise distinct; the repository validator enforces this cross-field invariant.",
+      "additionalProperties": false,
+      "required": [
+        "deployer",
+        "deployer_retained_privilege",
+        "delayed_admin_safe",
+        "authorizer_manager",
+        "pauser",
+        "authorization_revoker",
+        "online_authorizer"
+      ],
+      "properties": {
+        "deployer": { "$ref": "#/$defs/address" },
+        "deployer_retained_privilege": { "const": false },
+        "delayed_admin_safe": { "$ref": "#/$defs/address" },
+        "authorizer_manager": { "$ref": "#/$defs/address" },
+        "pauser": { "$ref": "#/$defs/address" },
+        "authorization_revoker": { "$ref": "#/$defs/address" },
+        "online_authorizer": { "$ref": "#/$defs/address" }
+      }
+    },
+    "collectionMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "document_version",
+        "import_profile",
+        "canonical_json",
+        "canonical_utf8_base64",
+        "cid",
+        "uri",
+        "sha256",
+        "uri_keccak256",
+        "independent_pin_count"
+      ],
+      "properties": {
+        "document_version": { "const": "sg-collection-metadata-1.0.0" },
+        "import_profile": { "const": "sg-ipfs-unixfs-1.0.0" },
+        "canonical_json": { "type": "string", "minLength": 2 },
+        "canonical_utf8_base64": { "type": "string", "minLength": 4 },
+        "cid": { "$ref": "#/$defs/cid" },
+        "uri": { "$ref": "#/$defs/ipfsURI" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "uri_keccak256": { "$ref": "#/$defs/hash32" },
+        "independent_pin_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "onchainVerification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observed_at_block",
+        "contract_uri",
+        "collection_metadata_sha256",
+        "collection_uri_keccak256",
+        "current_authorizer_epoch",
+        "current_authorizer",
+        "paused",
+        "runtime_code_independently_verified"
+      ],
+      "properties": {
+        "observed_at_block": { "$ref": "#/$defs/uintString" },
+        "contract_uri": { "$ref": "#/$defs/ipfsURI" },
+        "collection_metadata_sha256": { "$ref": "#/$defs/hash32" },
+        "collection_uri_keccak256": { "$ref": "#/$defs/hash32" },
+        "current_authorizer_epoch": { "const": 1 },
+        "current_authorizer": { "$ref": "#/$defs/address" },
+        "paused": { "type": "boolean" },
+        "runtime_code_independently_verified": { "type": "boolean" }
+      }
+    },
+    "finalityPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["block_tag", "required_provider_agreement", "reorg_overlap_blocks", "deployment_block_pinned"],
+      "properties": {
+        "block_tag": { "enum": ["latest", "finalized"] },
+        "required_provider_agreement": { "type": "integer", "minimum": 1 },
+        "reorg_overlap_blocks": { "$ref": "#/$defs/uintString" },
+        "deployment_block_pinned": { "type": "boolean" }
+      }
+    },
+    "sourceVerification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["explorer", "status", "url"],
+      "properties": {
+        "explorer": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["not_applicable", "pending", "verified"] },
+        "url": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

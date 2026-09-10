@@ -1,0 +1,17 @@
+{
+  "description": "Public deterministic test fixture only; no production key material.",
+  "fields": {
+    "appHost": "signatures.gallery",
+    "appOrigin": "https://signatures.gallery",
+    "walletAddress": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+    "chainId": "1",
+    "nonce": "A1b2C3d4E5f6G7h8I9j0K1",
+    "issuedAt": "2026-09-04T12:34:56.789Z",
+    "expirationTime": "2026-09-04T12:44:56.789Z",
+    "challengeId": "wc1_testchallenge001",
+    "publicAccountId": "xa1_testaccount001"
+  },
+  "message": "signatures.gallery wants you to sign in with your Ethereum account:\n0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\n\nLink this wallet to your X-authenticated signatures.gallery account for minting.\n\nURI: https://signatures.gallery\nVersion: 1\nChain ID: 1\nNonce: A1b2C3d4E5f6G7h8I9j0K1\nIssued At: 2026-09-04T12:34:56.789Z\nExpiration Time: 2026-09-04T12:44:56.789Z\nRequest ID: wc1_testchallenge001\nResources:\n- https://signatures.gallery/account-ref/xa1_testaccount001",
+  "digest": "0x1f54e6ce8372827e050cae5536378d47e312ca9349e8f793592c6fc95f29e3ea",
+  "walletProof": "0xb44720fdf633f2f5bdcf216a508324810ebc8f1f3fec31cb39bafc2446a06c847443c5d05df78aabbbeb33804dd71d74f10ed07aa764af798db1522e7f81de7c1c"
+}

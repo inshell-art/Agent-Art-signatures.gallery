@@ -12,7 +12,7 @@ export function fixtureIdentity(handleNormalized: string, now = new Date()): Aut
   return { xUserId, username: handleNormalized, handleNormalized, authenticatedAt: now };
 }
 
-async function seedOne(runtime: ClaimRuntime, auth: MemoryAuthState, handle: string, gr0kRaw: number, claimedAt: Date): Promise<void> {
+export async function seedDevelopmentClaim(runtime: ClaimRuntime, auth: MemoryAuthState, handle: string, gr0kRaw: number, claimedAt: Date) {
   const identity = fixtureIdentity(handle, new Date(claimedAt.getTime() - 2 * 60 * 1000));
   const renderer = runtime.renderers.get("sg-renderer-dev-fixture");
   const rendered = renderer.render({ handleNormalized: handle, gr0kRaw, gr0kScale: GR0K_SCALE, rendererVersion: renderer.version });
@@ -25,12 +25,13 @@ async function seedOne(runtime: ClaimRuntime, auth: MemoryAuthState, handle: str
   }, generateCodeVerifier(), identity.authenticatedAt);
   flow.status = "processing";
   auth.authenticate(flow, identity, session, identity.authenticatedAt);
-  await finalizeClaim(runtime, flow, identity, claimedAt);
+  const result = await finalizeClaim(runtime, flow, identity, claimedAt);
   auth.complete(flow);
+  return result;
 }
 
 export async function seedDevelopmentFixtures(runtime: ClaimRuntime, auth: MemoryAuthState): Promise<void> {
-  await seedOne(runtime, auth, "alice", 120000, new Date("2026-08-14T09:30:00.000Z"));
-  await seedOne(runtime, auth, "alice", 371924, new Date("2026-08-26T16:12:00.000Z"));
-  await seedOne(runtime, auth, "alice", 820000, new Date("2026-09-02T11:05:00.000Z"));
+  await seedDevelopmentClaim(runtime, auth, "alice", 120000, new Date("2026-08-14T09:30:00.000Z"));
+  await seedDevelopmentClaim(runtime, auth, "alice", 371924, new Date("2026-08-26T16:12:00.000Z"));
+  await seedDevelopmentClaim(runtime, auth, "alice", 820000, new Date("2026-09-02T11:05:00.000Z"));
 }

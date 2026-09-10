@@ -21,6 +21,24 @@ function claim(overrides: Partial<ClaimRecordInput> = {}): ClaimRecordInput {
 }
 
 describe("MemorySignatureStore", () => {
+  it("lists claims across accounts with stable keyset ordering and no duplicates on replay", async () => {
+    const store = new MemorySignatureStore();
+    await store.claim(claim());
+    await store.claim(claim());
+    await store.claim(claim({ gr0kRaw: 500_000 }));
+    await store.claim(claim({ xUserId: "987654321", handleAtClaim: "bob", handleNormalized: "bob", claimedAt: new Date("2026-09-05T00:00:00Z") }));
+    const all = await store.listClaimedSignatures(100);
+    expect(all).toHaveLength(3);
+    expect(all[0].handleAtClaim).toBe("bob");
+    expect(all[1].signatureId < all[2].signatureId).toBe(true);
+    const first = await store.listClaimedSignatures(2);
+    const last = await store.listClaimedSignatures(2, first[1]);
+    expect([...first, ...last]).toEqual(all);
+    expect(await store.listClaimedSignatures(2, last[0])).toEqual([]);
+    await expect(store.listClaimedSignatures(0)).rejects.toBeInstanceOf(RangeError);
+    await expect(store.listClaimedSignatures(101)).rejects.toBeInstanceOf(RangeError);
+  });
+
   it("returns one row for concurrent identical claims and preserves claimed_at", async () => {
     const store = new MemorySignatureStore();
     const [first, second] = await Promise.all([store.claim(claim()), store.claim(claim({ claimedAt: new Date("2026-09-05T00:00:00Z") }))]);

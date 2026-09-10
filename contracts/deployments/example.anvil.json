@@ -1,0 +1,99 @@
+{
+  "$schema": "./deployment-manifest.schema.json",
+  "manifest_version": "sg-mint-deployment-1.0.0",
+  "status": "example_only",
+  "example_only": true,
+  "chain": {
+    "chain_id": "31337",
+    "network_name": "anvil",
+    "genesis_hash": "0x3333333333333333333333333333333333333333333333333333333333333333"
+  },
+  "deployment": {
+    "contract_address": "0xFCD5F4eeAcAC02F7eBf410544a3363daa014E755",
+    "transaction_hash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+    "block_number": "1",
+    "block_hash": "0x2222222222222222222222222222222222222222222222222222222222222222",
+    "deployment_initcode_keccak256": "0xe7fe22ee48c6d3c154d4b012f456ed08c31a83c7a19d17761a559f14a37c94e5",
+    "runtime_code_keccak256": "0x78cee3689322c781ea29889d3372fbde9a087804b92fec6221d3eeaf1b7fa05c"
+  },
+  "constructor_arguments": {
+    "collection_name": "Gallery of Signatures",
+    "collection_symbol": "SIGN",
+    "collection_uri": "ipfs://bafkreih7bz4qacjadndnf76hu3toyzy54za2hreks45npcwxzkwuimgpdi",
+    "collection_metadata_sha256": "0xff0e790009201b46d2ffc7a6e6ec671de641a3c48a973ad78ad7caad4430cf1a",
+    "collection_uri_keccak256": "0x51402158eed04f9de88c4774fb6b2b09a030544addecfc1dc0015daef1674a52",
+    "default_admin_delay_seconds": "3600",
+    "delayed_admin": "0x000000000000000000000000000000000000a001",
+    "authorizer_manager": "0x000000000000000000000000000000000000a002",
+    "pauser": "0x000000000000000000000000000000000000a003",
+    "authorization_revoker": "0x000000000000000000000000000000000000a004",
+    "initial_authorizer": "0x000000000000000000000000000000000000a005"
+  },
+  "build": {
+    "source_commit": "0000000000000000000000000000000000000000",
+    "compiler": {
+      "version": "0.8.30+commit.73712a01.Emscripten.clang",
+      "optimizer_enabled": true,
+      "optimizer_runs": 200,
+      "evm_version": "prague",
+      "via_ir": false
+    },
+    "packages": {
+      "openzeppelin_contracts": "5.6.1"
+    },
+    "abi": {
+      "version": "sg-gallery-abi-1.0.0",
+      "hash_algorithm": "sha256-rfc8785-json",
+      "sha256": "bf77cf0530bbda251f9fbe93dcfc81fb0284ac869c21feda33254606918520b7"
+    }
+  },
+  "contract_identity": {
+    "name": "Gallery of Signatures",
+    "symbol": "SIGN",
+    "eip712_name": "signatures.gallery",
+    "eip712_version": "2",
+    "initial_authorizer_epoch": 1
+  },
+  "roles": {
+    "deployer": "0x000000000000000000000000000000000000d001",
+    "deployer_retained_privilege": false,
+    "delayed_admin_safe": "0x000000000000000000000000000000000000a001",
+    "authorizer_manager": "0x000000000000000000000000000000000000a002",
+    "pauser": "0x000000000000000000000000000000000000a003",
+    "authorization_revoker": "0x000000000000000000000000000000000000a004",
+    "online_authorizer": "0x000000000000000000000000000000000000a005"
+  },
+  "collection_metadata": {
+    "document_version": "sg-collection-metadata-1.0.0",
+    "import_profile": "sg-ipfs-unixfs-1.0.0",
+    "canonical_json": "{\"description\":\"A collection of signatures claimed through X authentication. In the intended workflow, gr0k is selected in a private Grok conversation; that private step is not independently verified.\",\"external_link\":\"https://signatures.gallery\",\"name\":\"Gallery of Signatures\"}",
+    "canonical_utf8_base64": "eyJkZXNjcmlwdGlvbiI6IkEgY29sbGVjdGlvbiBvZiBzaWduYXR1cmVzIGNsYWltZWQgdGhyb3VnaCBYIGF1dGhlbnRpY2F0aW9uLiBJbiB0aGUgaW50ZW5kZWQgd29ya2Zsb3csIGdyMGsgaXMgc2VsZWN0ZWQgaW4gYSBwcml2YXRlIEdyb2sgY29udmVyc2F0aW9uOyB0aGF0IHByaXZhdGUgc3RlcCBpcyBub3QgaW5kZXBlbmRlbnRseSB2ZXJpZmllZC4iLCJleHRlcm5hbF9saW5rIjoiaHR0cHM6Ly9zaWduYXR1cmVzLmdhbGxlcnkiLCJuYW1lIjoiR2FsbGVyeSBvZiBTaWduYXR1cmVzIn0=",
+    "cid": "bafkreih7bz4qacjadndnf76hu3toyzy54za2hreks45npcwxzkwuimgpdi",
+    "uri": "ipfs://bafkreih7bz4qacjadndnf76hu3toyzy54za2hreks45npcwxzkwuimgpdi",
+    "sha256": "ff0e790009201b46d2ffc7a6e6ec671de641a3c48a973ad78ad7caad4430cf1a",
+    "uri_keccak256": "0x51402158eed04f9de88c4774fb6b2b09a030544addecfc1dc0015daef1674a52",
+    "independent_pin_count": 0
+  },
+  "onchain_verification": {
+    "observed_at_block": "1",
+    "contract_uri": "ipfs://bafkreih7bz4qacjadndnf76hu3toyzy54za2hreks45npcwxzkwuimgpdi",
+    "collection_metadata_sha256": "0xff0e790009201b46d2ffc7a6e6ec671de641a3c48a973ad78ad7caad4430cf1a",
+    "collection_uri_keccak256": "0x51402158eed04f9de88c4774fb6b2b09a030544addecfc1dc0015daef1674a52",
+    "current_authorizer_epoch": 1,
+    "current_authorizer": "0x000000000000000000000000000000000000a005",
+    "paused": false,
+    "runtime_code_independently_verified": false
+  },
+  "finality_policy": {
+    "block_tag": "latest",
+    "required_provider_agreement": 1,
+    "reorg_overlap_blocks": "0",
+    "deployment_block_pinned": false
+  },
+  "source_verification": {
+    "explorer": "none-local-anvil",
+    "status": "not_applicable",
+    "url": null
+  },
+  "mainnet_deployment_approval_record": null
+}

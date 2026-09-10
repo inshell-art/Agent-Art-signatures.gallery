@@ -1,0 +1,20 @@
+/** Shared presentation-only catalog: never inserted into a store or used as authority. */
+export const COLLECTION_STATE_FIXTURES = [
+  { key: "signed-out", label: "Signed out", description: "No X session. Sign in before accessing a private collection." },
+  { key: "empty", label: "No claims", description: "Signed in as @newcomer, with no claims and no wallet. The prompt uses this site’s origin." },
+  { key: "gallery-claimed-empty", label: "Claimed · empty", description: "The public Claimed gallery has no works. Participation guidance does not assume a signed-in account." },
+  { key: "gallery-minted-empty", label: "Minted · empty", description: "The public Minted gallery has no finalized works. Participation guidance is available before sign-in." },
+  { key: "claimed", label: "Claimed · no wallet", description: "A claimed signature remains in the collection without any wallet." },
+  { key: "wallet-linked", label: "Wallet linked", description: "A claimed signature and linked wallet, ready for an optional mint." },
+  { key: "authorized", label: "Awaiting wallet", description: "Authorization exists. No confirmed mint yet." },
+  { key: "submitted", label: "Submitted", description: "A transaction was submitted; it is not yet a finalized mint." },
+  { key: "confirming", label: "Confirming", description: "Included in a block, but awaiting finality." },
+  { key: "minted", label: "Minted", description: "A finalized mint, held by the initial recipient. Open Provenance to inspect the fixture references." },
+  { key: "transferred", label: "Transferred", description: "Still the original claimant’s signature. The token’s current holder is another wallet." },
+  { key: "validation-pending", label: "Verification pending", description: "The claim stays visible while mint evidence is checked." },
+  { key: "quarantined", label: "Review required", description: "Conflicting mint evidence requires review; no finalized status is asserted." },
+  { key: "finality-revoked", label: "Finality incident", description: "A previously finalized mint has lost its confirmation. The claim is unchanged." },
+  { key: "mint-paused", label: "Minting paused", description: "Minting is unavailable. Existing claims remain readable; inspect the account dot for the paused wallet controls." },
+  { key: "reauthenticate", label: "X reauthentication", description: "The collection stays readable. Refresh X authentication before wallet management or minting." },
+  { key: "renamed", label: "Handle changed", description: "The account is now @alice_studio. The historical claim remains @alice." },
+] as const;

@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+
+SOLC_DRIVER_PATH="$(dirname "$0")/solc-driver.cjs"
+
+# Foundry passes native-solc's --allow-paths flag, which the local JS build
+# does not expose. Standard JSON already contains Foundry's resolved sources.
+if [ "${1:-}" = "--allow-paths" ]; then
+  shift 2
+fi
+
+exec node "$SOLC_DRIVER_PATH" "$@"

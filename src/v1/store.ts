@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { createPublicAccountId, deriveSignatureId } from "./identity.js";
 import { GR0K_SCALE } from "./input.js";
 
@@ -12,6 +13,8 @@ export interface XAccount {
 
 export interface Signature {
   signatureId: string;
+  /** Identifies this database claim, not the deterministic artwork. Never reused. */
+  claimInstanceId: string;
   xUserId: string;
   handleAtClaim: string;
   handleNormalized: string;
@@ -52,9 +55,15 @@ export class RendererIntegrityError extends Error {
 }
 
 export interface SignatureStore {
+  /** Optional durable adapter hook spanning artifact references and the claim row. */
+  withClaimLock?<T>(signatureId: string, work: () => Promise<T>): Promise<T>;
   claim(input: ClaimRecordInput): Promise<{ signature: Signature; account: XAccount; existing: boolean }>;
+  /** Caller holds withClaimLock and has checked mint safety. No tombstone is created. */
+  withdraw(signatureId: string, xUserId: string, claimInstanceId: string): Promise<boolean>;
   getSignature(signatureId: string): Promise<Signature | null>;
   listSignaturesForAccount(xUserId: string): Promise<Signature[]>;
+  /** All committed claims, newest first, with a stable signature-ID tie break. */
+  listClaimedSignatures(limit: number, after?: Pick<Signature, "claimedAt" | "signatureId">): Promise<Signature[]>;
   getAccount(xUserId: string): Promise<XAccount | null>;
   updateExistingAccountLogin(xUserId: string, currentHandle: string, handleNormalized: string, authenticatedAt: Date): Promise<void>;
 }
@@ -68,6 +77,15 @@ export class MemorySignatureStore implements SignatureStore {
   private readonly signatures = new Map<string, Signature>();
   private readonly tuples = new Map<string, string>();
   private readonly publicAccountIds = new Set<string>();
+  private readonly claimLocks = new Map<string, Promise<unknown>>();
+
+  async withClaimLock<T>(signatureId: string, work: () => Promise<T>): Promise<T> {
+    const previous = this.claimLocks.get(signatureId) ?? Promise.resolve();
+    const next = previous.catch(() => undefined).then(work);
+    this.claimLocks.set(signatureId, next);
+    try { return await next; }
+    finally { if (this.claimLocks.get(signatureId) === next) this.claimLocks.delete(signatureId); }
+  }
 
   async claim(input: ClaimRecordInput): Promise<{ signature: Signature; account: XAccount; existing: boolean }> {
     const key = tupleKey(input);
@@ -109,6 +127,7 @@ export class MemorySignatureStore implements SignatureStore {
     if (collision) throw new RendererIntegrityError();
     const signature: Signature = {
       signatureId,
+      claimInstanceId: randomUUID(),
       xUserId: input.xUserId,
       handleAtClaim: input.handleAtClaim,
       handleNormalized: input.handleNormalized,
@@ -134,10 +153,27 @@ export class MemorySignatureStore implements SignatureStore {
     return this.signatures.get(signatureId) ?? null;
   }
 
+  async withdraw(signatureId: string, xUserId: string, claimInstanceId: string): Promise<boolean> {
+    const signature = this.signatures.get(signatureId);
+    if (!signature || signature.xUserId !== xUserId || signature.claimInstanceId !== claimInstanceId) return false;
+    this.tuples.delete(tupleKey(signature));
+    this.signatures.delete(signatureId);
+    return true;
+  }
+
   async listSignaturesForAccount(xUserId: string): Promise<Signature[]> {
     return [...this.signatures.values()]
       .filter((signature) => signature.xUserId === xUserId)
       .sort((a, b) => b.claimedAt.getTime() - a.claimedAt.getTime());
+  }
+
+  async listClaimedSignatures(limit: number, after?: Pick<Signature, "claimedAt" | "signatureId">): Promise<Signature[]> {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new RangeError("Claim page limit must be between 1 and 100.");
+    return [...this.signatures.values()]
+      .filter((signature) => !after || signature.claimedAt < after.claimedAt ||
+        (signature.claimedAt.getTime() === after.claimedAt.getTime() && signature.signatureId > after.signatureId))
+      .sort((a, b) => b.claimedAt.getTime() - a.claimedAt.getTime() || (a.signatureId < b.signatureId ? -1 : a.signatureId > b.signatureId ? 1 : 0))
+      .slice(0, limit);
   }
 
   async getAccount(xUserId: string): Promise<XAccount | null> {

@@ -8,15 +8,42 @@
     "dev": "tsx watch src/main.ts",
     "start": "node dist/main.js",
     "test": "vitest run",
+    "test:v2": "vitest run src/v2 src/api/server.test.ts",
+    "test:contract": "cd contracts && forge test --offline",
+    "test:manifest": "node contracts/tools/validate-deployment-manifest.mjs --allow-example contracts/deployments/example.anvil.json",
+    "test:manifest:roles": "node --test contracts/tools/validate-deployment-manifest.node-test.mjs",
+    "local:up": "node --import tsx src/local/rehearsalCli.ts up",
+    "local:reset": "node --import tsx src/local/rehearsalCli.ts reset",
+    "local:stop": "node --import tsx src/local/rehearsalCli.ts stop",
+    "local:status": "node --import tsx src/local/rehearsalCli.ts status",
+    "local:verify": "node --import tsx src/local/rehearsalCli.ts verify",
+    "local:test": "node --import tsx src/local/interactiveRehearsalTest.ts",
+    "local:serve": "node --env-file-if-exists=.env.local --import tsx src/local/rehearsalServer.ts",
+    "local:serve:x": "npm run local:serve -- --x-auth=real",
+    "local:serve:emulator": "npm run local:serve -- --x-auth=emulator",
+    "local:auth:check": "node --env-file-if-exists=.env.local --import tsx src/local/xAuthCheck.ts",
+    "test:postgres:local": "node --import tsx src/local/postgresMigrationTest.ts",
+    "slogan:inspect": "node --import tsx src/brand/inspectSloganShapeCandidate.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@types/node": "^26.4.1",
+    "@types/pg": "^8.23.1",
+    "solc": "^0.8.30",
     "tsx": "^4.23.13",
     "typescript": "^5.6.3",
     "vitest": "^2.1.4"
   },
   "dependencies": {
-    "sharp": "^0.35.4"
+    "@fontsource-variable/instrument-sans": "5.3.0",
+    "@openzeppelin/contracts": "^5.6.1",
+    "blockstore-core": "^7.0.1",
+    "canonicalize": "^4.0.0",
+    "ipfs-unixfs-importer": "^17.1.0",
+    "multiformats": "^14.0.5",
+    "pg": "^8.23.0",
+    "sharp": "^0.35.4",
+    "undici": "7.29.1",
+    "viem": "^2.56.3"
   }
 }

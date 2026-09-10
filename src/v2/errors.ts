@@ -1,0 +1,48 @@
+export type V2ErrorCode =
+  | "CLAIM_WITHDRAWAL_BLOCKED"
+  | "CLAIM_CHANGED"
+  | "INVALID_WITHDRAWAL"
+  | "INVALID_WALLET_ADDRESS"
+  | "WRONG_CHAIN"
+  | "INVALID_TRANSACTION_HASH"
+  | "INVALID_GALLERY_CURSOR"
+  | "INVALID_GALLERY_TAB"
+  | "AUTH_REQUIRED"
+  | "X_REAUTH_REQUIRED"
+  | "NOT_CLAIMANT"
+  | "WALLET_NOT_LINKED"
+  | "WALLET_MISMATCH"
+  | "WALLET_CHALLENGE_INVALID"
+  | "BINDING_TRANSITION"
+  | "LIVE_AUTHORIZATION_EXISTS"
+  | "MINT_INELIGIBLE"
+  | "ALREADY_MINTED"
+  | "AUTHORIZATION_UNAVAILABLE"
+  | "AUTHORIZATION_EXPIRED"
+  | "WALLET_UNSUPPORTED"
+  | "ARTIFACT_INTEGRITY_ERROR"
+  | "METADATA_INTEGRITY_ERROR"
+  | "TRANSACTION_MISMATCH"
+  | "RATE_LIMITED"
+  | "X_AUTH_UNAVAILABLE"
+  | "WALLET_RPC_UNAVAILABLE"
+  | "METADATA_UNAVAILABLE"
+  | "SIGNER_UNAVAILABLE"
+  | "CHAIN_UNAVAILABLE"
+  | "MINT_PAUSED"
+  | "CHAIN_SAFETY_HALT";
+
+export class V2Error extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: V2ErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = "V2Error";
+  }
+}
+
+export function v2Error(status: number, code: V2ErrorCode, message: string): V2Error {
+  return new V2Error(status, code, message);
+}

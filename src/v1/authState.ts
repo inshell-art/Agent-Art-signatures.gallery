@@ -1,6 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { OAuthPurpose } from "./types.js";
 
+export const CLAIM_ON_RETURN_INTENT = "claim-on-return-v1";
+
 const FLOW_TTL_MS = 15 * 60 * 1000;
 const SESSION_IDLE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -25,6 +27,8 @@ export interface BrowserSession {
   identity: AuthenticatedIdentity | null;
   createdAt: Date;
   lastSeenAt: Date;
+  /** Short-lived, session-bound feedback; never part of a public signature response. */
+  claimNotice?: { signatureId: string; expiresAt: Date };
 }
 
 export type FlowStatus = "pending" | "processing" | "authenticated" | "completed" | "failed";
@@ -32,6 +36,8 @@ export type FlowStatus = "pending" | "processing" | "authenticated" | "completed
 export interface OAuthFlow {
   id: string;
   purpose: OAuthPurpose;
+  /** Server-validated canonical mint route, bound to this one-time OAuth flow. */
+  returnTo?: string;
   stateDigest: string;
   boundSessionIdDigest: string;
   pkceVerifier: string;
@@ -39,6 +45,9 @@ export interface OAuthFlow {
   gr0kRaw: number | null;
   rendererVersion: string | null;
   previewSvgSha256: string | null;
+  /** Explicit consent from the same-origin “and claim” POST, never ordinary login. */
+  claimIntent?: typeof CLAIM_ON_RETURN_INTENT;
+  claimFailure?: "storage_unavailable" | "rate_limited";
   status: FlowStatus;
   identity: AuthenticatedIdentity | null;
   createdAt: Date;
@@ -46,6 +55,7 @@ export interface OAuthFlow {
 }
 
 export interface ClaimFlowInput {
+  claimIntent?: typeof CLAIM_ON_RETURN_INTENT;
   handleNormalized: string;
   gr0kRaw: number;
   rendererVersion: string;
@@ -92,6 +102,7 @@ export class MemoryAuthState {
       gr0kRaw: input?.gr0kRaw ?? null,
       rendererVersion: input?.rendererVersion ?? null,
       previewSvgSha256: input?.previewSvgSha256 ?? null,
+      ...(purpose === "claim" && input?.claimIntent === CLAIM_ON_RETURN_INTENT ? { claimIntent: CLAIM_ON_RETURN_INTENT } : {}),
       status: "pending",
       identity: null,
       createdAt: now,
@@ -106,10 +117,16 @@ export class MemoryAuthState {
   beginCallback(session: BrowserSession, state: string, now = new Date()): OAuthFlow | null {
     const stateDigest = digest(state);
     const flowId = this.states.get(stateDigest);
-    this.states.delete(stateDigest);
     if (!flowId) return null;
     const flow = this.flows.get(flowId);
-    if (!flow || flow.status !== "pending" || flow.expiresAt < now || flow.boundSessionIdDigest !== digest(session.id)) return null;
+    if (!flow || flow.status !== "pending" || flow.expiresAt < now) {
+      this.states.delete(stateDigest);
+      return null;
+    }
+    // A guessed/stolen state presented from a different browser must not burn
+    // the legitimate browser's callback capability.
+    if (flow.boundSessionIdDigest !== digest(session.id)) return null;
+    this.states.delete(stateDigest);
     flow.status = "processing";
     return flow;
   }
@@ -142,6 +159,22 @@ export class MemoryAuthState {
     if (flow.status === "authenticated") flow.status = "completed";
   }
 
+  setClaimNotice(session: BrowserSession, signatureId: string, now = new Date()): void {
+    session.claimNotice = { signatureId, expiresAt: new Date(now.getTime() + 5 * 60_000) };
+  }
+
+  takeClaimNotice(session: BrowserSession, signatureId: string, now = new Date()): boolean {
+    const notice = session.claimNotice;
+    if (!notice) return false;
+    if (notice.expiresAt <= now) {
+      delete session.claimNotice;
+      return false;
+    }
+    if (!session.identity || notice.signatureId !== signatureId) return false;
+    delete session.claimNotice;
+    return true;
+  }
+
   fail(flow: OAuthFlow): void {
     flow.status = "failed";
     flow.pkceVerifier = "";
@@ -149,6 +182,12 @@ export class MemoryAuthState {
 
   logout(sessionId: string | null): void {
     if (sessionId) this.sessions.delete(sessionId);
+  }
+
+  clearClaimNotices(signatureId: string): void {
+    for (const session of this.sessions.values()) {
+      if (session.claimNotice?.signatureId === signatureId) delete session.claimNotice;
+    }
   }
 
   private cleanup(now: Date): void {

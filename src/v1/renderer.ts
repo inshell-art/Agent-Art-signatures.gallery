@@ -26,6 +26,20 @@ export interface SignatureRenderer {
   render(input: RenderInput): RenderOutput;
 }
 
+/** Artwork text is not an account identifier. Its spelling belongs to the artist. */
+export interface TextRenderInput {
+  text: string;
+  gr0kRaw: number;
+  gr0kScale: typeof GR0K_SCALE;
+  rendererVersion: string;
+}
+
+export interface SignatureTextRenderer {
+  readonly version: string;
+  readonly approved: boolean;
+  renderText(input: TextRenderInput): RenderOutput;
+}
+
 export class RendererUnavailableError extends Error {
   constructor(version: string) {
     super(`Renderer ${version} is not available.`);
@@ -72,10 +86,18 @@ function fixtureSettings(gr0kRaw: number): Settings {
  * rejects it. The approved scalar mapping and golden hashes remain a launch
  * dependency supplied by the art project.
  */
-export const developmentFixtureRenderer: SignatureRenderer = {
+export const developmentFixtureRenderer: SignatureRenderer & SignatureTextRenderer = {
   version: DEV_RENDERER_VERSION,
   approved: false,
   render(input): RenderOutput {
+    return developmentFixtureRenderer.renderText({
+      text: input.handleNormalized,
+      gr0kRaw: input.gr0kRaw,
+      gr0kScale: input.gr0kScale,
+      rendererVersion: input.rendererVersion,
+    });
+  },
+  renderText(input): RenderOutput {
     if (
       input.rendererVersion !== DEV_RENDERER_VERSION ||
       input.gr0kScale !== GR0K_SCALE ||
@@ -86,7 +108,7 @@ export const developmentFixtureRenderer: SignatureRenderer = {
       throw new Error("Invalid development renderer input.");
     }
 
-    const svg = renderSvgForText(input.handleNormalized, fixtureSettings(input.gr0kRaw)).svg
+    const svg = renderSvgForText(input.text, fixtureSettings(input.gr0kRaw)).svg
       .replace(/<text\b[^>]*>[\s\S]*?<\/text>/, "");
 
     return { svgUtf8: Buffer.from(svg, "utf8"), width: 420, height: 420 };

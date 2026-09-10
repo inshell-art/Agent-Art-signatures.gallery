@@ -1,0 +1,17 @@
+{
+  "status": "rehearsal_fixture_only_not_pinned",
+  "description": "Deterministic collection-level metadata candidate for local and test validation. Production copy and any collection image require explicit approval before pinning.",
+  "importProfile": "sg-ipfs-unixfs-1.0.0",
+  "metadata": {
+    "name": "Gallery of Signatures",
+    "description": "A collection of signatures claimed through X authentication. In the intended workflow, gr0k is selected in a private Grok conversation; that private step is not independently verified.",
+    "external_link": "https://signatures.gallery"
+  },
+  "canonicalJson": "{\"description\":\"A collection of signatures claimed through X authentication. In the intended workflow, gr0k is selected in a private Grok conversation; that private step is not independently verified.\",\"external_link\":\"https://signatures.gallery\",\"name\":\"Gallery of Signatures\"}",
+  "canonicalUtf8Base64": "eyJkZXNjcmlwdGlvbiI6IkEgY29sbGVjdGlvbiBvZiBzaWduYXR1cmVzIGNsYWltZWQgdGhyb3VnaCBYIGF1dGhlbnRpY2F0aW9uLiBJbiB0aGUgaW50ZW5kZWQgd29ya2Zsb3csIGdyMGsgaXMgc2VsZWN0ZWQgaW4gYSBwcml2YXRlIEdyb2sgY29udmVyc2F0aW9uOyB0aGF0IHByaXZhdGUgc3RlcCBpcyBub3QgaW5kZXBlbmRlbnRseSB2ZXJpZmllZC4iLCJleHRlcm5hbF9saW5rIjoiaHR0cHM6Ly9zaWduYXR1cmVzLmdhbGxlcnkiLCJuYW1lIjoiR2FsbGVyeSBvZiBTaWduYXR1cmVzIn0=",
+  "sha256": "ff0e790009201b46d2ffc7a6e6ec671de641a3c48a973ad78ad7caad4430cf1a",
+  "cid": "bafkreih7bz4qacjadndnf76hu3toyzy54za2hreks45npcwxzkwuimgpdi",
+  "uri": "ipfs://bafkreih7bz4qacjadndnf76hu3toyzy54za2hreks45npcwxzkwuimgpdi",
+  "uriKeccak256": "0x51402158eed04f9de88c4774fb6b2b09a030544addecfc1dc0015daef1674a52"
+}
+

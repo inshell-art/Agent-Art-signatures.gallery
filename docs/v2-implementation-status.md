@@ -1,0 +1,139 @@
+# V2 implementation status
+
+Claim-flow update, 2026-09-09: the explicit **Sign in with X and claim this signature** CTA now binds consent to the exact preview. Matching OAuth authentication persists the claim before returning to the same artwork page. Ordinary account sign-in does not claim; failed persistence offers an explicit CSRF-protected retry. Legacy cached forms retain their final confirmation because they do not carry the new consent. Minting remains a separate wallet action.
+
+Earlier status snapshot: 2026-09-06.
+
+Homepage update, 2026-09-06: the public home now has **Claimed | Minted** views. Claimed is the default and reads all committed V1 claims across accounts from the memory/PostgreSQL repository; successful OAuth plus the final explicit Claim action remains the sole creation boundary. Minted reads only the existing finalized mint projections. A minted work remains claimed. Both views exclude suppressed records, paginate independently, and show truthful local-rehearsal labels. Claim confirmation now discloses public listing. Claimed pages and unminted permalinks remain `noindex`; the finalized-only publication/indexing rules below refer to Minted, not to claim creation or visibility.
+
+This repository has a real interactive repo-local PostgreSQL 16 + Anvil 31337 rehearsal and substantial executable safety logic. It is **not production-ready**, has not completed a Sepolia rehearsal, and has not deployed the collection to any public network. The production entrypoint remains intentionally refused in `src/main.ts`. A separate local entrypoint supports new browser claims, real SIWE proof, signed mint transactions, continuous local indexing, and transfers, using PostgreSQL-backed claims, file artifacts, and atomic mint/indexer snapshots.
+
+## Transaction record
+
+Transactions were sent **only to the disposable repo-owned Anvil chain ID 31337 on `127.0.0.1`**. Initial setup deploys the contract and submits one signed self-mint using public Anvil test keys; the interactive local server also submits user-confirmed local mints and transfers. No transaction was sent to Sepolia, Ethereum mainnet, or any other public network. The checked-in Anvil manifest remains example-only; the actual ephemeral run record is ignored under `.local/rehearsal/runtime.json`.
+
+The default `npm run dev` fixture authorization response is still marked `fixture: true`; its browser flow stops before `eth_sendTransaction`. The durable local workflow is separate: `npm run local:serve` enables the interactive mint path only against the owned Anvil node, with real local signatures/transactions and a continuous, restartable snapshot-backed reconciler. Neither mode enables a public-network mint.
+
+## What runs locally now
+
+Two explicitly different local modes exist:
+
+- `npm run dev` is the original dependency-free, fully in-memory simulation. Restarting discards its state.
+- `npm run local:up` initializes or reuses repo-local PostgreSQL and Anvil state; `npm run local:serve` exposes durable claims/artifacts and real-Anvil mints/transfers through an intentionally emulator-only X identity flow. It never reads real X credentials. Restarting PostgreSQL, Anvil, or the app preserves this rehearsal state without replaying fixtures over newer account metadata. App sessions/OAuth flows remain ephemeral, so the user signs in again after an app restart; real wallet bindings and chain evidence persist. `local:reset` is the separate explicit destructive reset.
+
+The interactive app checks repository process ownership, chain/deployment identity, runtime code hash, and the seeded mint receipt. Its reconciler verifies exact receipts, calldata, EIP-712 evidence, metadata/artifact commitments, tokenURI, and holder projections; a missing advisory transaction report cannot conceal an actual mint. The built-in TEST wallet uses public Anvil account index 6, requires an explicitly approved one-time SIWE proof and mint confirmation, and can transfer only to the fixed second TEST wallet at index 7. The historical CLI seed's fixture binding is revoked at startup and is not authority for new mints. A dedicated injected browser EOA can instead sign its own proof and transaction.
+
+Two-second Anvil interval mining and roughly one-second polling provide automatic local confirmation. The label is **Local Anvil automatic confirmation; single node**, never independent-provider agreement or Ethereum finality. A single exclusive PostgreSQL writer serializes HTTP mutations and indexing; intent is checkpointed before signing, the attestation before return, and cursor/projection snapshots atomically before publication. RPC/validation failures pause mint writes; chain rollback or confirmed-history changes halt reconciliation and revoke local confirmations. Expiry requires complete local-chain coverage plus a pinned unused check. `local:up`, `local:reset`, and `local:stop` refuse lifecycle changes while the app owns the writer.
+
+The executable local surface includes:
+
+- V1 preview, render assets, fixture/X-auth flow boundary, explicit claim creation, account collection, permalink, and immutable artifact responses;
+- a presentation-only homepage composition that captures exact case-preserving words or an underscore-joined phrase through the real `SignatureRenderer` boundary at neutral `gr0k 0.500000`, then lays the stored drawings out without renderer calls or non-uniform stretching; it creates no X-handle artifact, claim, or mint provenance (see `docs/slogan-composition.md`);
+- a fixture account with three V2 states: unminted, included but unfinalized, and finalized;
+- V2 wallet challenge/confirmation endpoints, binding revocation, guided fresh-X reauthentication, mint review and consent, authorization creation, advisory transaction reporting, mint status, finalized-position Gallery keyset reads, claimant transaction/current-holder detail, fixture-only lifecycle advancement in `npm run dev`, and actual Anvil mint/transfer controls in `local:serve`;
+- exact SIWE and EIP-712 construction/verification, V1 digest-to-token-ID conversion, canonical signature checks, deterministic metadata bytes, SHA-256 commitments, and deterministic UnixFS CID calculation;
+- system-following light/dark theme behavior and the complete fixture UI.
+
+The `npm run dev` paths exercise request boundaries and state transitions, not infrastructure: its default wallet may be seeded without a real SIWE proof, its EOA check is simulated, computed CIDs are not pinned, finalized blocks are simulated, and no transaction is submitted. In the separate durable workflow, wallet proofs and Anvil mint/transfer transactions are real local cryptographic evidence. X remains emulated, the renderer/metadata and authorizer key remain development fixtures, and computed IPFS CIDs are neither published nor pinned externally. Automatic single-node confirmation is not Ethereum finality.
+
+## Safeguards implemented as pure or in-memory reference models
+
+These components are executable and tested. Some have durable local adapters; the remaining production boundaries are explicit:
+
+| Area | What exists | Current boundary |
+| --- | --- | --- |
+| V1/V2 identity bridge | Exact Base32 digest decoding, payload recomputation, decimal token ID, and golden vectors | Used for seeded and interactive local Anvil mints; no public-network deployment exists |
+| SIWE and EOA policy | Exact message grammar, one-time/session-bound challenge rules, canonical EIP-191 signatures, and a dual-RPC EOA verifier; the interactive local entrypoint uses a real proof and pinned local code check | Production dual-RPC behavior is unit-tested with fake clients; only the single-node local verifier is wired into a running entrypoint |
+| Metadata and IPFS identity | RFC 8785 JSON, exact hashes, CIDv1/UnixFS profile, immutable V1 byte checks, and golden fixtures | Computes locally only; there is no external pin/retrieval adapter or retained provider evidence |
+| Authorization | Exact EIP-712 schema/digest, 900-second issuance window, low-`s` 65-byte signature verification, idempotency and ambiguous-signing states; local intent/attestation checkpoints and evidence-gated expiry | Local runtime persists reference-model snapshots and uses a public test signer; no normalized production repository, KMS/HSM adapter, or production signer-audit worker exists |
+| Content writer/GC | Shared object references, write reservations, leases, fencing tokens, exact-byte verification, erasure control version, grace period, stale-worker rejection, shared-hash retention, race/crash tests, and a local content-addressed file adapter with PostgreSQL reference ledger | The local file adapter is not an external object store and has no production garbage-collection worker |
+| Chain indexing | Strict frozen-ABI decoder and pure reducer for contiguous scans, receipt/log checks, control-state replay, reorgs, promotion, quarantine, transfer ownership, and safety halt; a continuous local Anvil reconciler verifies pinned historical tokenURI/receipt evidence and atomically stores cursor/projection snapshots | The running poller is single-node/local-only, not a normalized production repository or production archive-state/independent-provider finality daemon |
+| Gallery publication/erasure | Pure two-phase staging/activation fence, suppression, purge requests, stale publisher rejection, erasure reconciliation, and cutover predicates; the local HTTP fixture also applies one in-memory suppression gate to authorization, Gallery, status, permalink, collection, and artifact reads | The durable two-phase publisher is not connected to HTTP/CDN/sitemap/robots/pin providers, and there is no durable legal/compliance workflow |
+| Startup operations | Strict parsing of the V2 commitment configuration, exact Ethereum/Sepolia identity checks, fail-closed health decision, redacted config summary, and fixed metric/alert names | The layer is tested but not yet connected to `src/main.ts`, RPCs, signer, pin services, monitoring, or deployment state |
+| PostgreSQL schema | Additive migration `src/store/migrations/002_v2_minting.sql` with serialized binding heads, one-live-authorization indexes, evidence-gated terminal transitions/erasure, append-only finalized observations, references, leases, controls, and fences; a fresh-cluster PG16 integration test applies the V1 schema, V2 migration, and local schema; local reuse is guarded by the recorded migration checksum | It has been exercised only on disposable local PostgreSQL 16.15, not a staging/production database; V2 mint/indexer runtime persistence is a JSONB snapshot of the reference model rather than normalized production repositories |
+
+Unit tests establish model and adapter behavior; the repeatable local transaction test and read-only restart check additionally exercise the actual PostgreSQL/Anvil path. Local serialized checkpoints and exclusive writer ownership are not evidence of production/distributed crash recovery, provider independence, retained IPFS availability, public-network canonical agreement, or a staging restore drill.
+
+## Contract and guarded deployment tooling
+
+The repository contains a real non-upgradeable Solidity ERC-721 implementation and offline Foundry tests for mint commitments, replay resistance, epoch management, revocation, pause behavior, role separation, transfer semantics, constructor commitments, and the shared backend/contract golden authorization.
+
+The deployment surface is intentionally constrained:
+
+- `contracts/script/DeployGalleryOfSignatures.s.sol` supports Anvil and Sepolia rehearsal inputs and unconditionally rejects chain ID `1`;
+- it reads no raw private key and relies on an externally configured signer;
+- omitting `--broadcast` performs a simulation only;
+- `contracts/deployments/deployment-manifest.schema.json` and its validator require chain, bytecode, constructor, role, metadata, source, and finality evidence;
+- `contracts/deployments/example.anvil.json` validates only with `--allow-example` and must never be treated as a real deployment manifest;
+- no external contract/security audit has been completed.
+
+The repository does not contain a Sepolia contract address, deployment transaction, finalized deployment block, verified source record, or rehearsal-verified manifest.
+
+## External gates still closed
+
+Sepolia issuance remains blocked until all of the following are real and independently evidenced:
+
+- an approved production renderer/card-renderer release and exact golden artifact hashes;
+- a backed-up durable V1 database, successful additive migration, control/reference backfill, and tested restore/rebuild procedure;
+- durable implementations for signatures, sessions, flow state, rate limits, mint state, content leases/references, indexer checkpoints, publication leases, and erasure records;
+- two genuinely independent archive-capable RPC providers, live historical-state checks, continuous indexer operation, finalized checkpoint agreement, and restart/reorg rehearsals;
+- two independent IPFS pin providers plus independent byte-for-byte retrieval verification;
+- a dedicated non-exportable staging signer, signer request idempotency, local recovery verification, audit reconciliation, and alerting;
+- approved distinct deployer/admin Safe/authorizer manager/pauser/revoker/online-authorizer assignments;
+- approved canonical collection metadata bytes and commitments;
+- a fresh-X → SIWE → authorization → Sepolia mint → finality → Gallery → transfer end-to-end rehearsal, including all specified failure cases;
+- source verification, independently reproduced initcode/runtime hashes, a real manifest, monitoring, incident/runbook work, and security review;
+- separate explicit approval to broadcast the Sepolia deployment and mint transactions.
+
+Ethereum mainnet remains a later, separate decision. It additionally requires explicit mainnet authorization and a reviewed change to tooling that currently rejects chain ID `1`. A Sepolia success would not itself authorize mainnet deployment.
+
+## Exact inspection and verification commands
+
+Install from the lockfile, then run each command from the repository root:
+
+```bash
+npm ci
+npm run typecheck
+npm run build
+npm test
+npm run test:v2
+npm run test:contract
+npm run test:manifest
+npm run test:manifest:roles
+npm run test:postgres:local
+```
+
+The baseline commands after dependency installation passed in this working tree on 2026-09-05; rerun them for the current working tree. HTTP tests bind a loopback port; a restricted sandbox must allow loopback listening. The manifest command proves only that the illustrative file satisfies the example rules.
+
+For browser inspection:
+
+```bash
+npm run dev
+```
+
+Then open <http://localhost:3000>. The page must show the development-rehearsal environment indicator and disclosure. Use **My collection** → **Use local OAuth emulator** → **@alice** → **Approve local identity** to exercise the redirect, one-time state, PKCE exchange, identity lookup, callback, and session rotation before inspecting the fixture states. This provider is local and proves no X account control.
+
+For the real local infrastructure rehearsal, install PostgreSQL 16 and Foundry in the documented default locations, then run:
+
+```bash
+npm run local:up
+npm run local:verify
+npm run local:serve
+```
+
+Open <http://127.0.0.1:3000/s/alice/0.731642> → **Rehearse local claim** → approve **@alice** → final **Claim** confirmation → **My collection** → **Use local TEST wallet** → approve SIWE proof → **Mint this signature** → confirm the transaction → **Transfer local token** after automatic indexing. Keep the canonical `http://127.0.0.1:3000` origin across restarts; unfinished frozen metadata is not silently regenerated if the port changes. Native-form origin handling uses `Referrer-Policy: same-origin` while retaining strict Origin and CSRF checks.
+
+With the foreground app running, explicitly execute the repeatable Bob claim/mint/transfer test, then retain its printed signature ID for read-only verification after restart:
+
+```bash
+npm run local:test -- --execute-local-test-transactions
+npm run local:test -- --verify SIGNATURE_ID
+```
+
+Stop the foreground app with Ctrl-C before `npm run local:stop`. Lifecycle commands refuse an active app writer. `local:up` restarts infrastructure without redeploying; `local:reset` is the explicit destructive reset for `.local/rehearsal` only. See `docs/local-rehearsal.md` for exact ports, overrides, verification, and limitations.
+
+On the same local-provider screen, **@bob** exercises account switching (its collection is empty only before creating Bob claims or running `local:test`), **Simulate account denial** exercises a terminal denial callback, and **Simulate provider error** exercises the unavailable-provider callback. Choosing Bob while rehearsing `/s/alice/0.371924` must stop at `HANDLE_MISMATCH`. Log out and restart the login flow to select another account. This `local:serve` entrypoint is always emulator-only; configured real-X credentials apply only to the default production-shaped/development entrypoint.
+
+Do not use any fixture identity, address, key, CID, block, transaction, or finality label as production provenance.
+
+For deployment-tooling details and stop conditions, read `contracts/REHEARSAL.md` and `contracts/deployments/README.md`. Do not add `--broadcast` without a separate, explicit network transaction approval.
