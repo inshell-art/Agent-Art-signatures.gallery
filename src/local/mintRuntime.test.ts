@@ -54,4 +54,32 @@ describe("serialized local mint durability boundary", () => {
     await expect(runtime.run(() => { calls += 1; })).rejects.toThrow("restart is required");
     expect(calls).toBe(0);
   });
+
+  it("drains accepted writes, stops mining, then verifies and persists the final checkpoint", async () => {
+    const events: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const runtime = new LocalMintRuntime({ assertOwnership() {}, async persist() { events.push("persist"); } });
+    const mutation = runtime.run(async () => { events.push("mutation"); await gate; });
+    const stopping = runtime.settleForShutdown(async () => { events.push("stop-mining"); }, async () => { events.push("reconcile"); });
+    await Promise.resolve();
+    expect(events).toEqual(["mutation"]);
+    release();
+    await Promise.all([mutation, stopping]);
+    expect(events).toEqual(["mutation", "persist", "stop-mining", "reconcile", "persist"]);
+  });
+
+  it("does not report a settled checkpoint if mining cannot stop", async () => {
+    let reconciled = false;
+    const runtime = new LocalMintRuntime({ assertOwnership() {}, async persist() {} });
+    await expect(runtime.settleForShutdown(async () => { throw new Error("RPC timeout"); }, async () => { reconciled = true; })).rejects.toThrow("RPC timeout");
+    expect(reconciled).toBe(false);
+  });
+
+  it("does not report successful shutdown reconciliation after a validation or persistence failure", async () => {
+    const runtime = new LocalMintRuntime({ assertOwnership() {}, async persist() {} });
+    await expect(runtime.settleForShutdown(async () => {}, async () => { throw new Error("Chain mismatch"); })).rejects.toThrow("Chain mismatch");
+    const unavailable = new LocalMintRuntime({ assertOwnership() {}, async persist() { throw new Error("Database offline"); } });
+    await expect(unavailable.settleForShutdown(async () => {}, async () => {})).rejects.toThrow("Database offline");
+  });
 });

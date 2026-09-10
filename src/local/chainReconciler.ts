@@ -12,6 +12,7 @@ import {
 } from "../v2/indexer/index.js";
 import type { MemoryMintStoreSnapshot } from "../v2/memoryStore.js";
 import { unmintedProjection, type FrozenTokenMetadata, type GalleryEntry, type MintAuthorizationRecord, type MintProjection } from "../v2/model.js";
+import { LOCAL_RPC_HTTP_OPTIONS } from "./nodePolicy.js";
 
 export const LOCAL_AUTOMATIC_FINALITY_LABEL = "Local Anvil automatic confirmation; single node";
 const CHAIN_ID = 31_337n;
@@ -80,7 +81,7 @@ export function assertLocalReconcilerUrl(value: string): void {
 
 export function createLocalChainRpc(rpcUrl: string): LocalChainRpc {
   assertLocalReconcilerUrl(rpcUrl);
-  const client = createPublicClient({ transport: http(rpcUrl, { retryCount: 0, timeout: 5_000, fetchOptions: { redirect: "error" } }) });
+  const client = createPublicClient({ transport: http(rpcUrl, LOCAL_RPC_HTTP_OPTIONS) });
   const raw = (log: {
     address: Hex; topics: Hex[]; data: Hex; blockNumber: bigint | null; blockHash: Hex | null;
     transactionHash: Hex | null; transactionIndex: number | null; logIndex: number | null; removed?: boolean;

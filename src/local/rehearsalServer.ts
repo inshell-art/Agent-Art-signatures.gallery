@@ -24,6 +24,7 @@ import { createLocalChainReconciler } from "./chainReconciler.js";
 import { assertOwnedAnvil, validateLocalRuntime } from "./runtimeGuards.js";
 import { LocalTestWallet } from "./wallet.js";
 import { loadLocalAppConfig, localXOAuthClient } from "./xAuthConfig.js";
+import { LOCAL_RPC_HTTP_OPTIONS, LOCAL_RPC_TIMEOUT_MS } from "./nodePolicy.js";
 
 const appConfig = loadLocalAppConfig(process.env, process.argv.slice(2));
 const oauthClient = localXOAuthClient(appConfig);
@@ -31,11 +32,8 @@ const { port, appOrigin } = appConfig;
 const repoRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const runtime = validateLocalRuntime(JSON.parse(readFileSync(resolve(repoRoot, ".local/rehearsal/runtime.json"), "utf8")));
 assertOwnedAnvil(repoRoot, runtime.rpcUrl);
-// Large persisted Anvil snapshots can briefly stall reads. Keep startup and
-// ownership guards bounded, but allow more time than the fast indexer poller.
-// This never skips deployment checks or makes an unhealthy indexer mint-ready.
-const localGuardTimeoutMs = 30_000;
-const chain = createPublicClient({ transport: http(runtime.rpcUrl, { retryCount: 0, timeout: localGuardTimeoutMs, fetchOptions: { redirect: "error" } }) });
+// Guards and the indexer share the same bounded snapshot-aware RPC policy.
+const chain = createPublicClient({ transport: http(runtime.rpcUrl, LOCAL_RPC_HTTP_OPTIONS) });
 const pool = createPostgresPool(runtime.postgresUrl);
 // Avoid an unhandled idle-connection event; active ownership failures are handled below.
 pool.on("error", () => console.error("Local PostgreSQL connection unavailable."));
@@ -157,7 +155,7 @@ const mint = new V2MintService(config, mintState, store, artifacts, {
 async function mining(method: "anvil_mine" | "anvil_setIntervalMining", params: unknown[]) {
   await assertChain();
   const response = await fetch(runtime.rpcUrl, {
-    method: "POST", redirect: "error", signal: AbortSignal.timeout(localGuardTimeoutMs),
+    method: "POST", redirect: "error", signal: AbortSignal.timeout(LOCAL_RPC_TIMEOUT_MS),
     headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
   });
   const body = await response.json() as { error?: unknown };
@@ -203,8 +201,12 @@ async function shutdown() {
   stopping = true;
   clearTimeout(timer);
   await new Promise<void>((resolveClose) => { server.close(() => resolveClose()); server.closeIdleConnections(); });
-  await queue.drain();
-  try { await mining("anvil_setIntervalMining", [0]); } catch { /* Never redirect/reset an unavailable chain. */ }
+  try {
+    await queue.settleForShutdown(() => mining("anvil_setIntervalMining", [0]), requireChainReady);
+  } catch {
+    // Never invent a caught-up checkpoint or reset a chain we cannot verify.
+    console.error("Local shutdown could not settle the chain checkpoint. Preserve both saved states and verify before minting.");
+  }
   await releaseWriter();
   await pool.end();
   await oauthClient?.close();

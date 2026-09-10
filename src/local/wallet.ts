@@ -3,6 +3,7 @@ import { mnemonicToAccount } from "viem/accounts";
 import { buildExactSiweMessage } from "../v2/core/siwe.js";
 import type { WalletBindingChallenge } from "../v2/model.js";
 import type { MintAuthorizationResponse } from "../v2/service.js";
+import { LOCAL_RPC_HTTP_OPTIONS } from "./nodePolicy.js";
 
 // Anvil's publicly known test keys only. Never accept user-provided private keys.
 const PUBLIC_ANVIL_MNEMONIC = "test test test test test test test test test test test junk";
@@ -65,7 +66,7 @@ export class LocalTestWallet {
     this.contract = getAddress(options.contract);
     const chain = defineChain({ id: 31337, name: "Local Anvil TEST chain", nativeCurrency: { name: "Test Ether", symbol: "ETH", decimals: 18 }, rpcUrls: { default: { http: [options.rpcUrl] } } });
     // Redirects may never turn a loopback-only request into an external request.
-    const transport = () => http(options.rpcUrl, { fetchOptions: { redirect: "error" } });
+    const transport = () => http(options.rpcUrl, LOCAL_RPC_HTTP_OPTIONS);
     this.publicClient = createPublicClient({ chain, transport: transport() });
     this.walletClient = createWalletClient({ account: mintAccount, chain, transport: transport() });
   }

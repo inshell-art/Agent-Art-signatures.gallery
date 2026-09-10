@@ -51,6 +51,8 @@ Open <http://127.0.0.1:3000>. This entrypoint defaults to the X simulator. Use `
 
 At startup it checks the owned node, chain/deployment identity, runtime code hash, and seeded mint receipt. Its continuous reconciler scans actual contract logs and checks receipts, exact mint calldata, durable authorization/artifact commitments, token URI, and current holder. A missing browser transaction report does not hide a mint. The app enables two-second Anvil interval mining and polls approximately every second; confirmation normally takes a few seconds, not a guaranteed deadline.
 
+Anvil saves its full historical snapshot every **60 seconds** and on graceful shutdown. Local RPC calls allow **30 seconds** for snapshot-related pauses, with automatic transport retries disabled (including transaction submissions). Startup and shutdown allow **180 seconds** for large saved states; exceeding that wait never force-kills or resets the node. The chain and contract checks still fail closed if a read fails. After an abrupt process or machine crash, the chain snapshot can lag the PostgreSQL records; preserve both and investigate any mismatch instead of resetting or treating unverified mints as confirmed. Use graceful shutdown before restarting to flush the latest chain state.
+
 HTTP mint mutations and indexer ticks share a single serialized runtime. An exclusive PostgreSQL writer lock prevents competing app writers; prepared intent is persisted before signing, the signed authorization before it is returned, and each indexer cursor plus its mint projection is committed atomically before publication. RPC/validation failures pause mint writes. A local chain rollback or changed confirmed block stops reconciliation and revokes affected local confirmations rather than inventing replacement history. Expired authorizations are released only after complete local-chain coverage and a pinned unused check; a reverted attempt does not release an authorization that can still be used.
 
 ## Simulator browser walkthrough
@@ -87,6 +89,8 @@ npm run local:serve
 Use `local:reset` only when intentionally discarding this repository's local database and chain.
 
 App sessions and local OAuth flows are deliberately in memory. After an app restart, sign in again with the selected provider (X or the emulator); completed claims, real wallet bindings, authorization evidence, mint/transfer records, and the indexing cursor remain. A previously issued authorization is resumed or safely reconciled, not replaced just because the page was refreshed. A rejected confirmation sends nothing and can be retried. On an RPC/persistence safety error, inspect the server message rather than repeatedly resending or resetting the chain.
+
+Graceful app shutdown drains accepted operations, stops interval mining, then verifies and persists one final indexer pass before releasing the database writer. This keeps the saved checkpoint at the stopped chain head: a reloaded Anvil node may not serve contract-state reads at an older checkpoint even when its block hashes and current state are retained. A failed final check is reported, never replaced by an assumed checkpoint.
 
 `local:up` and `local:verify` compare the recorded SHA-256 of `002_v2_minting.sql` with the current file. An unversioned or mismatched existing V2 schema fails closed and requires the explicit local reset; the CLI never guesses that a table's presence means a revised migration was applied.
 

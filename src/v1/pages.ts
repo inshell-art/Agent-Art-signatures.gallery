@@ -287,7 +287,7 @@ export function signaturePage(signature: SignatureView, fixtureMode: boolean, mi
       : `<section class="claim-withdrawal" data-withdraw-control><details class="auth-disclosure"><summary>Withdraw claim</summary><p id="withdraw-description">This removes the claim from Claimed and My Collection. You can make a new claim later.</p><div data-withdraw-confirmation><h2 id="withdraw-title">Withdraw this claim?</h2><p id="withdraw-work">@${handle} · gr0k ${gr0k}</p><form method="post" action="/signatures/${escapeHtml(signature.signatureId)}/withdraw"><input type="hidden" name="csrf" value="${escapeHtml(withdrawal.csrfToken)}"><input type="hidden" name="claim_instance" value="${escapeHtml(withdrawal.claimInstanceId)}"><div class="auth-actions"><button class="auth-action auth-action-quiet" type="button" data-withdraw-cancel hidden><span>Cancel</span></button><button class="auth-action" type="submit" name="confirm" value="withdraw"><span>Confirm withdrawal</span></button></div></form></div></details></section>`;
   // The server supplies owner controls only when the X account ID matches.
   const mintEntry = (withdrawal && (!mint || ["unminted", "authorized", "expired"].includes(mint.state))
-    ? `<div class="signature-mint-entry"><a class="auth-action" href="/signatures/${escapeHtml(signature.signatureId)}/mint" data-action-tooltip="mint-tooltip" aria-describedby="mint-tooltip" title="Only the original claimant can mint. Sign-in and wallet linking come next."><span>Mint this signature →</span></a><span class="action-tooltip" id="mint-tooltip" role="tooltip" hidden>Only the original claimant can mint. Sign-in and wallet linking come next.</span></div>` : "");
+    ? `<div class="signature-mint-entry"><a class="auth-action" href="/signatures/${escapeHtml(signature.signatureId)}/mint" data-action-tooltip="mint-tooltip" aria-describedby="mint-tooltip" title="Link a wallet if needed, then review and confirm the mint in your wallet."><span>Mint this signature →</span></a><span class="action-tooltip" id="mint-tooltip" role="tooltip" hidden>Link a wallet if needed, then review and confirm the mint in your wallet.</span></div>` : "");
 const body = `<a class="gallery-return" href="/?tab=${galleryTab}" title="Gallery" aria-label="Gallery">${HOME_ICON}</a><article class="signature-page" aria-labelledby="signature-heading"><div class="signature-sheet"><figure class="signature-art"><img src="/artifacts/${escapeHtml(signature.signatureId)}.svg" alt="Signature claimed as @${handle}"></figure><div class="signature-record"><div class="signature-heading"><h1 id="signature-heading">${xProfileLink(signature.handleAtClaim)}</h1><span class="signature-gr0k">gr0k ${gr0k}</span><div class="signature-tags" aria-label="Signature status"><span class="signature-tag" data-signature-status="claimed" title="${claimTitle}">Claimed</span>${mintTag}</div></div>${mintEntry}<div class="signature-tools"><details class="signature-provenance"><summary>Provenance</summary><div class="signature-provenance-body">${claimSection}${artworkSection}${mintSection}</div></details><a class="signature-svg" href="/artifacts/${escapeHtml(signature.signatureId)}.svg" title="Open canonical SVG" aria-label="Open canonical SVG">SVG ↗</a></div>${withdrawAction}</div></div></article>`;
   const artifactPath = `/artifacts/${signature.signatureId}.png`;
   return layout({ title: `@${signature.handleAtClaim} · signature`, description: fixtureMode ? `A development rehearsal signature for @${signature.handleAtClaim}.` : `A signature claimed via X by @${signature.handleAtClaim}.`, body, fixtureMode, localChainRehearsal, robots: !fixtureMode && finalized ? "index" : "noindex", ogImage: `${publicOrigin.replace(/\/$/, "")}${artifactPath}`, bookPage: true, developmentNotes, claimNoticeSignatureId: signature.signatureId });
@@ -381,23 +381,28 @@ export function mintEntryPage(params: {
   const needsIdentity = ["sign-in", "reauthenticate", "wrong-account"].includes(stage);
   const message = {
     "sign-in": "Sign in with the X account that originally claimed this signature.",
-    reauthenticate: "Refresh your X sign-in to continue. Your claim and linked wallet are unchanged.",
+    reauthenticate: "Confirm your X sign-in before minting. This security check does not change your claim or wallet.",
     "wrong-account": "This signature belongs to another X account. Switch to the original claimant to continue.",
     wallet: "Link a wallet and prove ownership to continue. Linking does not mint or send a transaction.",
     paused: "Minting is paused. Your claim remains available; no wallet action is needed until minting resumes.",
     pending: "This mint is awaiting confirmation or verification. No new mint can be started while it is being resolved.",
     ready: "Your wallet is linked. Next, review the exact artwork and permanent publication before authorizing.",
   }[stage];
-  const signInLabel = stage === "wrong-account" ? "Switch X account" : stage === "reauthenticate" ? "Reauthenticate with X" : "Sign in with X";
+  const signInLabel = stage === "wrong-account" ? "Switch X account" : stage === "reauthenticate" ? "Confirm X sign-in" : "Sign in with X";
   const action = needsIdentity
     ? `<form class="auth-actions" method="post" action="/auth/x/start"><input type="hidden" name="purpose" value="account_login"><input type="hidden" name="return_to" value="${escapeHtml(returnTo)}"><button class="auth-action" type="submit"><span>${signInLabel}</span></button></form>`
     : stage === "wallet" ? walletLinkControls(account)
     : `<div class="auth-actions"><button class="auth-action" type="button" disabled><span>${stage === "paused" ? "Minting paused" : stage === "pending" ? "Await mint verification" : "Review and authorize"}</span></button></div>`;
-  const steps = '<ol class="mint-entry-steps"><li>Sign in as the claimant</li><li>Link and prove a wallet</li><li>Review and authorize the mint</li></ol>';
+  const remainingSteps = ["wallet", "reauthenticate", "ready"].includes(stage)
+    ? [...(!account.wallet ? ["Link and verify your wallet"] : []), "Review the mint details", "Confirm the transaction in your wallet"]
+    : [];
+  const steps = remainingSteps.length
+    ? `<ol class="mint-entry-steps" aria-label="Remaining mint steps">${remainingSteps.map(step => `<li>${step}</li>`).join("")}</ol>`
+    : "";
   const artwork = preview ? "/dev/collection-states/artwork.svg" : `/artifacts/${escapeHtml(signature.signatureId)}.svg`;
   const back = preview ? `/dev/collection-states?state=${escapeHtml(preview.state)}` : `/signatures/${escapeHtml(signature.signatureId)}`;
   const content = `<h1>Mint this signature</h1><div class="signature-heading"><span>${xProfileLink(signature.handleAtClaim)}</span><span class="signature-gr0k">gr0k ${formatGr0k(signature.gr0kRaw)}</span></div><img class="mint-entry-art" src="${artwork}" alt="Signature claimed as @${escapeHtml(signature.handleAtClaim)}">${steps}<p>${escapeHtml(message)}</p>${params.statusLabel ? `<p class="auth-note">${escapeHtml(params.statusLabel)}</p>` : ""}${preview ? `<fieldset class="preview-controls" disabled>${action}</fieldset>` : action}<p class="auth-note">Minting is optional. Only an explicit authorization and wallet transaction can mint the work.</p><a class="auth-action auth-action-quiet" href="${back}"><span>Back to signature →</span></a>`;
-  return authPage({ title: `Mint @${signature.handleAtClaim} signature`, description: "Sign in, link a wallet, then review and authorize this exact signature.", body: `<div data-mint-entry="${stage}">${content}</div>`, fixtureMode: account.fixtureMode, localChainRehearsal: account.localChainRehearsal, accountPanel: { ...account, previewOnly: Boolean(preview) }, preview, localOAuthMode: localOAuth, developmentNotes: localIdentityNotes(localOAuth) });
+  return authPage({ title: `Mint @${signature.handleAtClaim} signature`, description: "Link a wallet if needed, then review and confirm the mint in your wallet.", body: `<div data-mint-entry="${stage}">${content}</div>`, fixtureMode: account.fixtureMode, localChainRehearsal: account.localChainRehearsal, accountPanel: { ...account, previewOnly: Boolean(preview) }, preview, localOAuthMode: localOAuth, developmentNotes: localIdentityNotes(localOAuth) });
 }
 
 export function mintReviewPage(params: {

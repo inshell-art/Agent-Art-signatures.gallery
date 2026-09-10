@@ -55,6 +55,7 @@ import { V2MintService, type GallerySigner } from "../v2/service.js";
 import { createPostgresPool, PostgresArtifactLedger, PostgresSignatureStore } from "../store/postgresStore.js";
 import { LocalPostgresState } from "./postgresState.js";
 import { rehearsalMintVerificationPlan } from "./rehearsalVerification.js";
+import { LOCAL_ANVIL_PERSISTENCE_ARGS, LOCAL_RPC_HTTP_OPTIONS, LOCAL_RPC_TIMEOUT_MS, waitForLocalNode } from "./nodePolicy.js";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const LOCAL_ROOT = resolve(REPO_ROOT, ".local/rehearsal");
@@ -314,24 +315,20 @@ function anvilRunning(): boolean {
 }
 
 async function waitForRpc(): Promise<void> {
-  let lastError: unknown = null;
-  for (let attempt = 0; attempt < 40; attempt += 1) {
+  await waitForLocalNode(async () => {
+    if (!anvilRunning()) throw new Error("The owned Anvil process exited before its saved state finished loading. Preserve the state and inspect its log.");
     try {
       const response = await fetch(RPC_URL, {
         method: "POST",
+        redirect: "error",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_chainId", params: [] }),
-        signal: AbortSignal.timeout(750),
+        signal: AbortSignal.timeout(LOCAL_RPC_TIMEOUT_MS),
       });
       const body = await response.json() as { result?: string };
-      if (response.ok && body.result === "0x7a69") return;
-      lastError = new Error(`Unexpected chain ID response: ${body.result ?? "missing"}`);
-    } catch (error) {
-      lastError = error;
-    }
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
-  }
-  throw new Error(`Anvil did not become ready on ${RPC_URL}: ${String(lastError)}`);
+      return response.ok && body.result === "0x7a69";
+    } catch { return false; }
+  }, `Anvil did not become ready on ${RPC_URL}. Preserve its saved state and inspect its log; no reset was performed.`);
 }
 
 async function rpcChainIdOrNull(): Promise<string | null> {
@@ -365,8 +362,7 @@ async function ensureAnvil(): Promise<void> {
       "--chain-id", CHAIN_ID.toString(),
       "--mnemonic", ANVIL_MNEMONIC,
       "--state", ANVIL_STATE,
-      "--state-interval", "1",
-      "--preserve-historical-states",
+      ...LOCAL_ANVIL_PERSISTENCE_ARGS,
       "--quiet",
       "--color", "never",
     ], {
@@ -383,7 +379,7 @@ async function ensureAnvil(): Promise<void> {
   if (!anvilRunning()) throw new Error("The owned Anvil process exited while another RPC endpoint answered on its port.");
 }
 
-function stopAnvil(): boolean {
+async function stopAnvil(): Promise<boolean> {
   const pid = readPid(ANVIL_PID);
   if (!pid) return false;
   const command = processCommand(pid);
@@ -395,10 +391,8 @@ function stopAnvil(): boolean {
     throw new Error(`Refusing to signal PID ${pid}; it is not this repository's Anvil process.`);
   }
   process.kill(pid, "SIGINT");
-  for (let attempt = 0; attempt < 50 && processCommand(pid) !== null; attempt += 1) {
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
-  }
-  if (processCommand(pid) !== null) throw new Error(`Anvil PID ${pid} did not stop after SIGINT.`);
+  await waitForLocalNode(() => processCommand(pid) === null,
+    `Anvil PID ${pid} is still saving its state after SIGINT. It was not force-killed; wait for shutdown before restarting.`);
   rmSync(ANVIL_PID, { force: true });
   return true;
 }
@@ -436,7 +430,7 @@ function assertRoleSeparation(): void {
 }
 
 function publicClient() {
-  return createPublicClient({ chain: localChain, transport: http(RPC_URL) });
+  return createPublicClient({ chain: localChain, transport: http(RPC_URL, LOCAL_RPC_HTTP_OPTIONS) });
 }
 
 async function assertLocalChain(): Promise<void> {
@@ -684,7 +678,7 @@ async function deployMintAndPersist(
   if (keccak256(new TextEncoder().encode(COLLECTION.uri)) !== COLLECTION.uriHash) {
     throw new Error("Frozen local collection URI commitment is internally inconsistent.");
   }
-  const deployer = createWalletClient({ account: ROLE_ACCOUNTS.deployer, chain: localChain, transport: http(RPC_URL) });
+  const deployer = createWalletClient({ account: ROLE_ACCOUNTS.deployer, chain: localChain, transport: http(RPC_URL, LOCAL_RPC_HTTP_OPTIONS) });
   const deploymentTransaction = await deployer.deployContract({
     abi: artifact.abi,
     bytecode: artifact.bytecode.object,
@@ -748,7 +742,7 @@ async function deployMintAndPersist(
     account,
     new Date(Number(latest.timestamp) * 1_000),
   );
-  const mintWallet = createWalletClient({ account: ROLE_ACCOUNTS.mintWallet, chain: localChain, transport: http(RPC_URL) });
+  const mintWallet = createWalletClient({ account: ROLE_ACCOUNTS.mintWallet, chain: localChain, transport: http(RPC_URL, LOCAL_RPC_HTTP_OPTIONS) });
   const mintTransaction = await mintWallet.sendTransaction({
     to: authorizationResponse.transaction.to,
     data: authorizationResponse.transaction.data,
@@ -1031,8 +1025,8 @@ async function withExistingWriter<T>(operation: () => T | Promise<T>): Promise<T
 
 async function reset(): Promise<RuntimeRecord> {
   ensureLocalRootIsSafe();
-  await withExistingWriter(() => {
-    stopAnvil();
+  await withExistingWriter(async () => {
+    await stopAnvil();
     stopPostgres();
     rmSync(LOCAL_ROOT, { recursive: true, force: true });
   });
@@ -1041,8 +1035,8 @@ async function reset(): Promise<RuntimeRecord> {
 
 async function stop(): Promise<{ anvil: boolean; postgres: boolean }> {
   ensureLocalRootIsSafe();
-  return withExistingWriter(() => {
-    const anvil = stopAnvil();
+  return withExistingWriter(async () => {
+    const anvil = await stopAnvil();
     const postgresStopped = stopPostgres();
     return { anvil, postgres: postgresStopped };
   });

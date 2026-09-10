@@ -62,4 +62,12 @@ export class LocalMintRuntime {
   async drain(): Promise<void> {
     await this.tail;
   }
+
+  /** Call after closing HTTP and stopping the poller. Freeze the block source
+   * before the final verified/persisted scan so the saved cursor cannot lag it. */
+  async settleForShutdown(stopMining: () => Promise<void>, reconcile: () => Promise<void>): Promise<void> {
+    await this.drain();
+    await stopMining();
+    await this.run(reconcile);
+  }
 }
