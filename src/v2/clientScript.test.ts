@@ -4,35 +4,80 @@ import { encodeFunctionData, parseAbi, type Address, type Hex } from "viem";
 import { MINT_CLIENT_SCRIPT } from "./clientScript.js";
 
 describe("dynamic CTA label styling", () => {
-  it("uses the shared outlined-button structure for X reauthentication", async () => {
-    const node = (tag: string) => ({
+  it.each(["AUTH_REQUIRED", "AUTH_EXPIRED", "MINT_RECIPIENT_REQUIRED", "X_ACTION_CONFIRMATION_REQUIRED", "BINDING_TRANSITION", "WALLET_CHALLENGE_INVALID"].flatMap(code => [
+    { code, mode: "link" },
+    { code, mode: "replace" },
+  ]))("recovers $code for $mode without requesting action-specific X authentication", async ({ code, mode }) => {
+    let recoveryClick: (() => void) | undefined;
+    let submitted = false;
+    const node = (tag: string): any => ({
       tag, type: "", className: "", textContent: "", children: [] as unknown[],
       append(...children: unknown[]) { this.children.push(...children); },
-      addEventListener() {},
+      addEventListener(_event: string, callback: () => void) { recoveryClick = callback; },
+      submit() { submitted = true; },
     });
     const feedback = node("p");
+    const body = node("body");
     let click: (() => Promise<void>) | undefined;
-    const revoke = {
-      dataset: { csrf: "test-csrf" }, disabled: false,
+    const control = {
+      dataset: { csrf: "test-csrf", walletProvider: "fixture", fixture: "true", chainId: "31337", mode, signatureId: `sg1_${"a".repeat(52)}`, claimInstanceId: "original-claim-instance", previousBindingId: "" }, disabled: false,
       closest: () => ({ querySelector: () => feedback }),
       addEventListener(_event: string, callback: () => Promise<void>) { click = callback; },
     };
     runInNewContext(MINT_CLIENT_SCRIPT, {
       window: { addEventListener() {} },
+      // Recovery must retain the action target even if another view is current.
+      location: { pathname: `/signatures/sg1_${"b".repeat(52)}/mint` },
       document: {
+        body,
         querySelector: () => null,
-        querySelectorAll: (selector: string) => selector === "[data-revoke-wallet]" ? [revoke] : [],
+        querySelectorAll: (selector: string) => selector === "[data-link-wallet]" ? [control] : [],
         createElement: node, createTextNode: () => node("#text"),
       },
-      fetch: async () => ({ ok: false, json: async () => ({ error: { code: "X_REAUTH_REQUIRED", message: "Sign in again." } }) }),
+      fetch: async () => ({ ok: false, json: async () => ({ error: { code, message: "Verify this mint’s recipient again." } }) }),
     });
     await click!();
     const button = feedback.children[1] as ReturnType<typeof node>;
+    const sessionExpired = code === "AUTH_REQUIRED" || code === "AUTH_EXPIRED";
+    expect(button.className).toBe("auth-action");
+    expect(control.disabled).toBe(false);
+    if (!sessionExpired) {
+      expect(button.tag).toBe("a");
+      expect(button.href).toBe(`/signatures/sg1_${"a".repeat(52)}/mint`);
+      expect(button.children[0]).toMatchObject({ tag: "span", textContent: "Review mint" });
+      expect(feedback.textContent).toBe("Verify this mint’s recipient again.");
+      expect(recoveryClick).toBeUndefined();
+      expect(body.children).toEqual([]);
+      expect(submitted).toBe(false);
+      return;
+    }
     expect(button.tag).toBe("button");
     expect(button.type).toBe("button");
-    expect(button.className).toBe("auth-action reauth-button");
-    expect(button.children[0]).toMatchObject({ tag: "span", textContent: "Reauthenticate with X" });
-    expect(revoke.disabled).toBe(false);
+    expect(button.children[0]).toMatchObject({ tag: "span", textContent: "Sign in with X" });
+    expect(feedback.textContent).toBe("Session expired. Sign in to continue.");
+    recoveryClick!();
+    expect(feedback.textContent).toBe("Opening X to sign in…");
+    const form = body.children[0];
+    expect(form.method).toBe("post");
+    expect(form.action).toBe("/auth/x/start");
+    const fields = Object.fromEntries(form.children.map((input: any) => [input.name, input.value]));
+    expect(fields).toEqual({
+      purpose: "account_login",
+      return_to: `/signatures/sg1_${"a".repeat(52)}/mint`,
+    });
+    expect(fields).not.toHaveProperty("csrf");
+    expect(fields).not.toHaveProperty("action");
+    expect(submitted).toBe(true);
+  });
+
+  it("does not install global revoke controls", () => {
+    const selectors: string[] = [];
+    runInNewContext(MINT_CLIENT_SCRIPT, {
+      window: { addEventListener() {} },
+      document: { querySelector: () => null, querySelectorAll(selector: string) { selectors.push(selector); return []; } },
+    });
+    expect(selectors).not.toContain("[data-revoke-wallet]");
+    expect(MINT_CLIENT_SCRIPT).not.toContain("Wallet binding revoked.");
   });
 
   it("preserves the styled label when a rehearsal action fails", async () => {
@@ -95,9 +140,10 @@ function payload(transaction?: { to: string; data: string; value: string }) {
 }
 
 type MintSubmitEvent = { preventDefault(): void; submitter?: { dataset: { walletProvider: string } } };
-async function submitMint(returnedPayload: ReturnType<typeof payload> & { fixture?: boolean; localChainRehearsal?: boolean }, options: { local?: boolean; confirm?: boolean; rejectPath?: string; injected?: boolean; twice?: boolean; injectedSubmit?: boolean; chainAfterEstimate?: string; accountAfterEstimate?: string | null } = {}) {
+async function submitMint(returnedPayload: ReturnType<typeof payload> & { fixture?: boolean; localChainRehearsal?: boolean }, options: { local?: boolean; confirm?: boolean; rejectPath?: string; rejectCode?: string; injected?: boolean; twice?: boolean; injectedSubmit?: boolean; chainAfterEstimate?: string; accountAfterEstimate?: string | null; reviewedBindingId?: string; reviewedRecipient?: string; mutateReviewOnResponse?: boolean; mutateReviewAfterEstimate?: boolean; rejectWalletMethod?: string } = {}) {
   let submit: ((event: MintSubmitEvent) => Promise<void>) | undefined;
-  const feedback = { textContent: "" };
+  const node = (tag: string): any => ({ tag, textContent: "", children: [] as unknown[], append(...children: unknown[]) { this.children.push(...children); } });
+  const feedback = node("p");
   const button = { disabled: false };
   const walletRequests: Array<{ method: string; params?: unknown[] }> = [];
   const sentTransactions: unknown[] = [];
@@ -108,7 +154,8 @@ async function submitMint(returnedPayload: ReturnType<typeof payload> & { fixtur
     dataset: {
       chainId: returnedPayload.chainId,
       contract: returnedPayload.contract,
-      wallet: returnedPayload.authorization.mintWallet,
+      wallet: options.reviewedRecipient ?? returnedPayload.authorization.mintWallet,
+      walletBindingId: options.reviewedBindingId ?? returnedPayload.authorization.walletBindingId,
       signatureDigest: returnedPayload.authorization.signatureDigest,
       svgSha256: returnedPayload.authorization.svgSha256.slice(2),
       pngSha256: returnedPayload.authorization.pngSha256.slice(2),
@@ -116,6 +163,7 @@ async function submitMint(returnedPayload: ReturnType<typeof payload> & { fixtur
       tokenUriHash: returnedPayload.authorization.tokenURIHash,
       tokenUri: returnedPayload.tokenURI,
       signatureId: "sg1_fixture",
+      claimInstanceId: "original-claim-instance",
       localChainRehearsal: String(options.local === true),
       localWallet: String(options.local === true),
     },
@@ -135,10 +183,11 @@ async function submitMint(returnedPayload: ReturnType<typeof payload> & { fixtur
   const ethereum = {
     async request(request: { method: string; params?: unknown[] }) {
       walletRequests.push(request);
+      if (request.method === options.rejectWalletMethod) throw new Error("User rejected the wallet request.");
       if (request.method === "eth_accounts") return estimated && options.accountAfterEstimate !== undefined ? options.accountAfterEstimate === null ? [] : [options.accountAfterEstimate] : [WALLET];
       if (request.method === "eth_chainId") return estimated && options.chainAfterEstimate ? options.chainAfterEstimate : "0x" + BigInt(returnedPayload.chainId).toString(16);
       if (request.method === "eth_call") return "0x";
-      if (request.method === "eth_estimateGas") { estimated = true; return "0x5208"; }
+      if (request.method === "eth_estimateGas") { estimated = true; if (options.mutateReviewAfterEstimate) form.dataset.wallet = "0x2222222222222222222222222222222222222222"; return "0x5208"; }
       if (request.method === "eth_sendTransaction") {
         sentTransactions.push(request.params?.[0]);
         return hash("a");
@@ -147,6 +196,7 @@ async function submitMint(returnedPayload: ReturnType<typeof payload> & { fixtur
     },
   };
   const document = {
+    createElement: node, createTextNode: () => node("#text"),
     querySelectorAll(selector: string) {
       return selector === ".mint-authorization-form" ? [form] : [];
     },
@@ -159,9 +209,10 @@ async function submitMint(returnedPayload: ReturnType<typeof payload> & { fixtur
     return {
     ok: path !== options.rejectPath,
     async json() {
-      if (path === options.rejectPath) return { error: { message: "Local RPC unavailable", code: "CHAIN_UNAVAILABLE" } };
+      if (path === options.rejectPath) return { error: { message: options.rejectCode ? "Review this mint’s recipient again." : "Local RPC unavailable", code: options.rejectCode ?? "CHAIN_UNAVAILABLE" } };
       if (path === "/api/local/wallet") return { chainId: "31337", address: WALLET, contract: CONTRACT };
       if (path === "/api/local/wallet/mint") return { txHash: hash("a") };
+      if (path === form.action && options.mutateReviewOnResponse) form.dataset.walletBindingId = hash("8");
       return path === form.action ? returnedPayload : { state: "reported" };
     },
   }; };
@@ -170,7 +221,7 @@ async function submitMint(returnedPayload: ReturnType<typeof payload> & { fixtur
     window: { addEventListener() {}, ethereum: options.injected === false ? undefined : ethereum, confirm(message: string) { confirmations.push(message); return options.confirm !== false; } },
     document,
     fetch,
-    location: { href: "", reload() {} },
+    location: { href: "", pathname: `/signatures/sg1_${"a".repeat(52)}/mint`, reload() {} },
     setTimeout() {},
     TextEncoder,
   });
@@ -182,6 +233,61 @@ async function submitMint(returnedPayload: ReturnType<typeof payload> & { fixtur
 }
 
 describe("mint browser transaction guard", () => {
+  it.each(["MINT_RECIPIENT_REQUIRED", "X_ACTION_CONFIRMATION_REQUIRED", "BINDING_TRANSITION"])("returns an expired/changed recipient to review without silently reauthorizing (%s)", async (rejectCode) => {
+    const result = await submitMint(payload(), { rejectCode, rejectPath: "/api/v2/signatures/sg1_fixture/mint-authorizations" });
+    expect(result.sentTransactions).toEqual([]);
+    expect(result.walletRequests).toEqual([]);
+    const link = result.feedback.children[1];
+    expect(link).toMatchObject({ tag: "a", className: "auth-action", href: `/signatures/sg1_${"a".repeat(52)}/mint` });
+    expect(link.children[0]).toMatchObject({ tag: "span", textContent: "Review mint" });
+    expect(result.requests).toHaveLength(1);
+    expect(result.button.disabled).toBe(false);
+  });
+
+  it("submits the exact reviewed recipient and proof snapshot with explicit consent", async () => {
+    const returned = payload();
+    const result = await submitMint(returned);
+    const request = result.requests[0];
+    expect(request.init.headers).toMatchObject({ "X-CSRF-Token": "csrf", "X-Mint-Permanence-Acknowledged": "1" });
+    expect(JSON.parse(request.init.body!)).toEqual({ walletBindingId: returned.authorization.walletBindingId, recipient: WALLET });
+  });
+
+  it.each([
+    { reviewedBindingId: hash("9") },
+    { reviewedRecipient: "0x2222222222222222222222222222222222222222" },
+    { mutateReviewOnResponse: true },
+  ])("refuses valid returned calldata that differs from the reviewed recipient snapshot (%j)", async (options) => {
+    const result = await submitMint(payload(), options);
+    expect(result.feedback.textContent).toBe("The returned authorization does not match the reviewed work.");
+    expect(result.walletRequests).toEqual([]);
+    expect(result.sentTransactions).toEqual([]);
+    expect(result.button.disabled).toBe(false);
+  });
+
+  it.each([{ reviewedBindingId: "" }, { reviewedRecipient: "" }])("requires a reviewed recipient proof before requesting an authorization (%j)", async (options) => {
+    const result = await submitMint(payload(), options);
+    expect(result.requests).toEqual([]);
+    expect(result.sentTransactions).toEqual([]);
+    expect(result.feedback.textContent).toBe("Verify the recipient for this mint before authorizing.");
+  });
+
+  it("checks that the reviewed recipient has not changed while estimating gas", async () => {
+    const result = await submitMint(payload(), { mutateReviewAfterEstimate: true });
+    expect(result.sentTransactions).toEqual([]);
+    expect(result.feedback.textContent).toBe("The reviewed recipient changed. Review this mint again. Nothing was sent.");
+    expect(result.button.disabled).toBe(false);
+  });
+
+  it("cancels an injected wallet request without sending a mint and permits a deliberate retry", async () => {
+    const result = await submitMint(payload(), { rejectWalletMethod: "eth_estimateGas", twice: true });
+    expect(result.sentTransactions).toEqual([]);
+    expect(result.feedback.textContent).toBe("User rejected the wallet request.");
+    expect(result.button.disabled).toBe(false);
+    const attempts = result.requests.filter(({ path }) => path.endsWith("/mint-authorizations"));
+    expect(attempts).toHaveLength(2);
+    expect(attempts.map(({ init }) => JSON.parse(init.body!))).toEqual(Array(2).fill({ walletBindingId: hash("2"), recipient: WALLET }));
+  });
+
   it.each([
     ["target", { to: "0x000000000000000000000000000000000000badd", data: `0xf722c561${"00".repeat(32)}`, value: "0x0" }],
     ["value", { to: CONTRACT, data: `0xf722c561${"00".repeat(32)}`, value: "0x1" }],
@@ -353,7 +459,7 @@ describe("mint browser transaction guard", () => {
   });
 });
 
-async function localAction(kind: "link" | "transfer", options: { confirm?: boolean; rejectPath?: string; local?: boolean; injected?: boolean; deferredPanel?: boolean; provider?: "local" | "injected" | "fixture"; fixture?: boolean } = {}) {
+async function localAction(kind: "link" | "transfer", options: { confirm?: boolean; rejectPath?: string; local?: boolean; injected?: boolean; deferredPanel?: boolean; provider?: "local" | "injected" | "fixture"; fixture?: boolean; noTarget?: boolean; wrongChallengeAddress?: boolean; wrongChallengeChain?: boolean; previousBindingId?: string; noSnapshot?: boolean; changingRecipient?: boolean } = {}) {
   let click: (() => Promise<void>) | undefined;
   const feedback = { textContent: "" };
   const requests: Array<{ path: string; init: { headers?: Record<string, string>; body?: string } }> = [];
@@ -361,13 +467,14 @@ async function localAction(kind: "link" | "transfer", options: { confirm?: boole
   const confirmations: string[] = [];
   const timers: Array<() => Promise<void>> = [];
   let reloads = 0;
+  const replacements: string[] = [];
   let panelLoaded = !options.deferredPanel;
   let installedListeners = 0;
   const windowListeners = new Map<string, () => void>();
   const recipient = "0x2222222222222222222222222222222222222222";
   const button = {
     disabled: false,
-    dataset: { walletProvider: options.provider ?? "local", fixture: String(options.fixture === true), csrf: "csrf", chainId: "31337", signatureId: "sg1_fixture", tokenId: "42", owner: WALLET, recipient },
+    dataset: { walletProvider: options.provider ?? "local", fixture: String(options.fixture === true), csrf: "csrf", chainId: "31337", signatureId: options.noTarget ? "" : "sg1_fixture", claimInstanceId: options.noTarget ? "" : "original-claim-instance", previousBindingId: options.noSnapshot ? undefined : options.previousBindingId ?? "", tokenId: "42", owner: WALLET, recipient },
     parentElement: { querySelector: () => feedback },
     closest: () => ({ querySelector: () => feedback }),
     addEventListener(_name: string, listener: () => Promise<void>) { installedListeners++; click = listener; },
@@ -387,7 +494,7 @@ async function localAction(kind: "link" | "transfer", options: { confirm?: boole
     return { ok: options.rejectPath !== path, json: async () => {
       if (options.rejectPath === path) return { error: { code: "CHAIN_UNAVAILABLE", message: "Local action rejected" } };
       if (path === "/api/local/wallet") return { chainId: "31337", address: WALLET, recipientAddress: recipient, contract: CONTRACT };
-      if (path === "/api/v2/wallet-bindings/challenge") return { challengeId: "challenge", message: "Exact SIWE message\nLine two", chainId: "31337", walletAddress: WALLET };
+      if (path === "/api/v2/wallet-bindings/challenge") return { challengeId: "challenge", message: "Exact SIWE message\nLine two", chainId: options.wrongChallengeChain ? "1" : "31337", walletAddress: options.wrongChallengeAddress ? recipient : WALLET };
       if (path === "/api/local/wallet/sign") return { walletProof: "0xproof" };
       if (path === "/api/local/wallet/transfer") return { txHash: hash("a") };
       if (path.endsWith("/mint-status")) return { state: "finalized", currentTokenHolder: recipient };
@@ -396,8 +503,8 @@ async function localAction(kind: "link" | "transfer", options: { confirm?: boole
   };
   runInNewContext(MINT_CLIENT_SCRIPT, {
     document, fetch, TextEncoder,
-    window: { addEventListener(name: string, listener: () => void) { windowListeners.set(name, listener); }, ethereum: options.injected ? { request: async ({ method }: { method: string }) => { walletRequests.push(method); return []; } } : undefined, confirm(message: string) { confirmations.push(message); return options.confirm !== false; } },
-    location: { reload() { reloads++; } },
+    window: { addEventListener(name: string, listener: () => void) { windowListeners.set(name, listener); }, ethereum: options.injected ? { request: async ({ method }: { method: string }) => { walletRequests.push(method); return method === "eth_requestAccounts" ? [WALLET] : method === "personal_sign" ? "0xproof" : []; } } : undefined, confirm(message: string) { confirmations.push(message); return options.confirm !== false; } },
+    location: { pathname: "/signatures/sg1_fixture/mint", search: options.changingRecipient ? "?recipient=change" : "", reload() { reloads++; }, replace(path: string) { replacements.push(path); } },
     setTimeout(callback: () => Promise<void>) { timers.push(callback); },
   });
   if (options.deferredPanel) {
@@ -408,7 +515,7 @@ async function localAction(kind: "link" | "transfer", options: { confirm?: boole
   }
   if (!click) throw new Error("Local action listener missing");
   await click();
-  return { button, feedback, requests, walletRequests, confirmations, timers, click, installedListeners, get reloads() { return reloads; } };
+  return { button, feedback, requests, walletRequests, confirmations, timers, replacements, click, installedListeners, get reloads() { return reloads; } };
 }
 
 describe("local browser wallet proof and transfer", () => {
@@ -423,7 +530,50 @@ describe("local browser wallet proof and transfer", () => {
     const result = await localAction("link", { local: false, provider: "fixture", fixture: true });
     expect(result.requests.map(request => request.path)).toEqual(["/dev/v2/wallet-bindings/seed"]);
     expect(result.walletRequests).toEqual([]);
-    expect(result.reloads).toBe(1);
+    expect(result.reloads).toBe(0);
+    expect(result.replacements).toEqual(["/signatures/sg1_fixture/mint"]);
+    expect(JSON.parse(result.requests[0].init.body!)).toEqual({ chainId: "31337", signatureId: "sg1_fixture", claimInstanceId: "original-claim-instance", recipientConsent: true, previousBindingId: null });
+  });
+
+  it("refuses a recipient control without an exact mint target, even in DEV", async () => {
+    const result = await localAction("link", { local: false, provider: "fixture", fixture: true, noTarget: true });
+    expect(result.requests).toEqual([]);
+    expect(result.reloads).toBe(0);
+    expect(result.feedback.textContent).toBe("Return to this signature’s mint page to verify its recipient.");
+    expect(result.button.disabled).toBe(false);
+  });
+
+  it.each([{ noSnapshot: true }, { previousBindingId: "not-a-binding-id" }])("refuses a stale/malformed previous recipient snapshot before any wallet action (%j)", async (options) => {
+    const result = await localAction("link", options);
+    expect(result.requests).toEqual([]);
+    expect(result.walletRequests).toEqual([]);
+    expect(result.confirmations).toEqual([]);
+    expect(result.button.disabled).toBe(false);
+    expect(result.feedback.textContent).toBe("The previous recipient is not available. Open the mint page again.");
+  });
+
+  it.each(["local", "fixture", "injected"] as const)("requires explicit consent and the previous-binding snapshot for a %s recipient change", async (provider) => {
+    const result = await localAction("link", { previousBindingId: hash("8"), provider, local: provider === "local", fixture: provider === "fixture", injected: provider === "injected" });
+    const proofRequest = result.requests.find(({ path }) => path === "/api/v2/wallet-bindings/challenge" || path === "/dev/v2/wallet-bindings/seed")!;
+    expect(JSON.parse(proofRequest.init.body!)).toMatchObject({ recipientConsent: true, previousBindingId: hash("8"), signatureId: "sg1_fixture", claimInstanceId: "original-claim-instance" });
+    expect(result.reloads).toBe(0);
+    expect(result.replacements).toEqual(["/signatures/sg1_fixture/mint"]);
+  });
+
+  it.each(["local", "fixture", "injected"] as const)("opens the canonical review after changing a %s recipient, without retaining the change query", async (provider) => {
+    const result = await localAction("link", { previousBindingId: hash("8"), changingRecipient: true, provider, local: provider === "local", fixture: provider === "fixture", injected: provider === "injected" });
+    expect(result.requests.some(({ path }) => path === "/api/v2/wallet-bindings/confirm" || path === "/dev/v2/wallet-bindings/seed")).toBe(true);
+    expect(result.replacements).toEqual(["/signatures/sg1_fixture/mint"]);
+    expect(result.replacements[0]).not.toContain("?");
+    expect(result.reloads).toBe(0);
+  });
+
+  it.each([{ wrongChallengeAddress: true }, { wrongChallengeChain: true }])("rejects a proof challenge for a different recipient/network (%j)", async (options) => {
+    const result = await localAction("link", options);
+    expect(result.requests.some(({ path }) => path.endsWith("/sign") || path.endsWith("/confirm"))).toBe(false);
+    expect(result.confirmations).toEqual([]);
+    expect(result.reloads).toBe(0);
+    expect(result.feedback.textContent).toBe("The wallet proof does not match the selected recipient and network. Nothing was signed.");
   });
 
   it("binds lazily loaded panel controls once and reads local mode at action time", async () => {
@@ -434,17 +584,20 @@ describe("local browser wallet proof and transfer", () => {
     expect(result.requests.map(r => r.path)).toEqual(["/api/local/wallet", "/api/v2/wallet-bindings/challenge"]);
     expect(result.reloads).toBe(0);
   });
-  it("links through the ordinary challenge/confirm lifecycle, signing only its challenge ID", async () => {
+  it("verifies the exact mint recipient through challenge/confirm, signing only its challenge ID", async () => {
     const result = await localAction("link", { injected: true });
     expect(result.walletRequests).toEqual([]);
     expect(result.requests.map(({ path }) => path)).toEqual(["/api/local/wallet", "/api/v2/wallet-bindings/challenge", "/api/local/wallet/sign", "/api/v2/wallet-bindings/confirm"]);
     const sign = result.requests.find(({ path }) => path.endsWith("/sign"))!;
     expect(JSON.parse(sign.init.body!)).toEqual({ challengeId: "challenge" });
     expect(sign.init.headers).toMatchObject({ "X-CSRF-Token": "csrf" });
+    expect(JSON.parse(result.requests[1].init.body!)).toEqual({ walletAddress: WALLET, chainId: "31337", signatureId: "sg1_fixture", claimInstanceId: "original-claim-instance", recipientConsent: true, previousBindingId: null });
     expect(JSON.parse(result.requests[3].init.body!)).toEqual({ challengeId: "challenge", walletProof: "0xproof" });
     expect(result.confirmations[0]).toContain("Exact SIWE message\nLine two");
     expect(result.confirmations[0]).toContain("ANVIL 31337 ONLY\nPublic test keys");
-    expect(result.reloads).toBe(1);
+    expect(result.reloads).toBe(0);
+    expect(result.replacements).toEqual(["/signatures/sg1_fixture/mint"]);
+    expect(result.feedback.textContent).toBe("Recipient verified for this mint.");
   });
 
   it("does not sign or bind after the user declines the exact wallet message", async () => {

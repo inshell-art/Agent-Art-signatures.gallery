@@ -291,6 +291,7 @@ function migrateDatabase(): void {
   assertV2MigrationChecksum();
   applySqlFile(resolve(REPO_ROOT, "src/store/migrations/003_claim_withdrawal.sql"));
   applySqlFile(resolve(REPO_ROOT, "src/store/migrations/004_formal_algorithm.sql"));
+  applySqlFile(resolve(REPO_ROOT, "src/store/migrations/005_action_auth_policy.sql"));
 }
 
 function readPid(path: string): number | null {

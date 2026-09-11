@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { decodeFunctionData, parseAbi, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { MemoryArtifactStore } from "../v1/artifacts.js";
-import { MemoryAuthState } from "../v1/authState.js";
+import { MemoryAuthState, type BrowserSession } from "../v1/authState.js";
+import type { SensitiveActionIntent } from "../v1/types.js";
 import { seedDevelopmentFixtures, fixtureIdentity } from "../v1/fixtures.js";
 import { CARD_RENDERER_VERSION, formalSignatureRenderer, RendererRegistry } from "../v1/renderer.js";
 import { MemorySignatureStore } from "../v1/store.js";
@@ -18,6 +19,13 @@ const GALLERY_MINT_ABI = parseAbi([
   "function mintAuthorized((bytes32 signatureDigest,bytes32 walletBindingId,address mintWallet,bytes32 svgSha256,bytes32 pngSha256,bytes32 metadataSha256,bytes32 tokenURIHash,bytes32 authorizationId,uint64 validAfter,uint64 deadline,uint32 authorizerEpoch) a,string tokenURI_,bytes galleryAttestation) returns (uint256 tokenId)",
 ]);
 const GALLERY_MINT_SELECTOR = "0xf722c561";
+
+function approveAction(session: BrowserSession, intent: SensitiveActionIntent, now = new Date("2026-09-04T12:00:00.000Z")): void {
+  session.actionApproval = {
+    intent, sessionId: session.id, xUserId: session.identity!.xUserId,
+    confirmedAt: now, expiresAt: new Date(now.getTime() + 10 * 60_000),
+  };
+}
 
 async function runtime() {
   const signatures = new MemorySignatureStore();
@@ -37,9 +45,45 @@ async function runtime() {
 }
 
 describe("V2 mint service fixture boundary", () => {
+  it("does not accept an ordinary X sign-in as wallet-link consent", async () => {
+    const app = await runtime();
+    const wallet = privateKeyToAccount(FIXTURE_WALLET_KEY);
+    await expect(app.service.createChallenge({
+      session: app.session, account: app.account, walletAddress: wallet.address,
+      chainId: app.config.chainId.toString(), now: new Date("2026-09-04T12:01:00.000Z"),
+    })).rejects.toMatchObject({ code: "X_ACTION_CONFIRMATION_REQUIRED" });
+    expect(app.state.exportSnapshot().challenges).toHaveLength(0);
+  });
+
+  it.each([
+    { kind: "wallet_link", chainId: "1", previousBindingId: null },
+    { kind: "wallet_link", chainId: "11155111", previousBindingId: `0x${"ab".repeat(32)}` },
+    { kind: "wallet_revoke", chainId: "11155111", previousBindingId: `0x${"ab".repeat(32)}` },
+  ] satisfies SensitiveActionIntent[])("requires the exact wallet-link action, chain, and prior binding: %j", async (intent) => {
+    const app = await runtime();
+    const wallet = privateKeyToAccount(FIXTURE_WALLET_KEY);
+    approveAction(app.session, intent);
+    await expect(app.service.createChallenge({
+      session: app.session, account: app.account, walletAddress: wallet.address,
+      chainId: app.config.chainId.toString(), now: new Date("2026-09-04T12:01:00.000Z"),
+    })).rejects.toMatchObject({ code: "X_ACTION_CONFIRMATION_REQUIRED" });
+    expect(app.state.exportSnapshot().challenges).toHaveLength(0);
+  });
+
+  it("validates challenge inputs before consuming the one-time X confirmation", async () => {
+    const app = await runtime();
+    approveAction(app.session, { kind: "wallet_link", chainId: app.config.chainId.toString(), previousBindingId: null });
+    await expect(app.service.createChallenge({
+      session: app.session, account: app.account, walletAddress: "not-an-address",
+      chainId: app.config.chainId.toString(), now: new Date("2026-09-04T12:01:00.000Z"),
+    })).rejects.toMatchObject({ code: "INVALID_WALLET_ADDRESS" });
+    expect(app.session.actionApproval).toBeDefined();
+  });
+
   it("builds and verifies a one-time SIWE binding", async () => {
     const app = await runtime();
     const wallet = privateKeyToAccount(FIXTURE_WALLET_KEY);
+    approveAction(app.session, { kind: "wallet_link", chainId: app.config.chainId.toString(), previousBindingId: null });
     const challenge = await app.service.createChallenge({
       session: app.session,
       account: app.account,
@@ -47,6 +91,12 @@ describe("V2 mint service fixture boundary", () => {
       chainId: app.config.chainId.toString(),
       now: new Date("2026-09-04T12:01:00.000Z"),
     });
+    expect(app.session.actionApproval).toBeUndefined();
+    expect(app.state.getChallenge(challenge.challengeId)?.previousWalletBindingId).toBeNull();
+    await expect(app.service.createChallenge({
+      session: app.session, account: app.account, walletAddress: wallet.address,
+      chainId: app.config.chainId.toString(), now: new Date("2026-09-04T12:01:00.000Z"),
+    })).rejects.toMatchObject({ code: "X_ACTION_CONFIRMATION_REQUIRED" });
     const proof = await wallet.signMessage({ message: challenge.message });
     const linked = await app.service.confirmChallenge({
       session: app.session,
@@ -63,6 +113,39 @@ describe("V2 mint service fixture boundary", () => {
       now: new Date("2026-09-04T12:03:00.000Z"),
     }))
       .rejects.toMatchObject({ code: "WALLET_CHALLENGE_INVALID" });
+  });
+
+  it("gives an approved wallet action a full proof window independent of sign-in age", async () => {
+    const app = await runtime();
+    const wallet = privateKeyToAccount(FIXTURE_WALLET_KEY);
+    const issuedAt = new Date("2026-09-05T12:00:00.000Z");
+    approveAction(app.session, { kind: "wallet_link", chainId: app.config.chainId.toString(), previousBindingId: null }, issuedAt);
+    const challenge = await app.service.createChallenge({
+      session: app.session, account: app.account, walletAddress: wallet.address,
+      chainId: app.config.chainId.toString(), now: issuedAt,
+    });
+    expect(challenge.expiresAt).toBe("2026-09-05T12:10:00.000Z");
+    expect((await app.service.confirmChallenge({
+      session: app.session, challengeId: challenge.challengeId,
+      walletProof: await wallet.signMessage({ message: challenge.message }),
+      now: new Date("2026-09-05T12:09:59.999Z"),
+    })).address).toBe(wallet.address);
+  });
+
+  it("requires a separate exact X confirmation to revoke the current wallet", async () => {
+    const app = await runtime();
+    const now = new Date("2026-09-04T12:01:00.000Z");
+    const binding = app.service.seedFixtureBinding(app.account.xUserId, app.account.publicAccountId, now);
+    expect(() => app.service.revokeBinding(app.account.xUserId, now, app.session))
+      .toThrowError(expect.objectContaining({ code: "X_ACTION_CONFIRMATION_REQUIRED" }));
+    approveAction(app.session, { kind: "wallet_link", chainId: app.config.chainId.toString(), previousBindingId: binding.walletBindingId });
+    expect(() => app.service.revokeBinding(app.account.xUserId, now, app.session))
+      .toThrowError(expect.objectContaining({ code: "X_ACTION_CONFIRMATION_REQUIRED" }));
+    expect(app.state.getActiveBinding(app.account.xUserId, app.config.chainId)?.walletBindingId).toBe(binding.walletBindingId);
+    approveAction(app.session, { kind: "wallet_revoke", chainId: app.config.chainId.toString(), previousBindingId: binding.walletBindingId });
+    app.service.revokeBinding(app.account.xUserId, now, app.session);
+    expect(app.session.actionApproval).toBeUndefined();
+    expect(app.state.getActiveBinding(app.account.xUserId, app.config.chainId)).toBeNull();
   });
 
   it("freezes deterministic local metadata before issuing a 900-second authorization", async () => {
@@ -158,6 +241,7 @@ describe("V2 mint service fixture boundary", () => {
       },
     });
     const wallet = privateKeyToAccount(FIXTURE_WALLET_KEY);
+    approveAction(app.session, { kind: "wallet_link", chainId: app.config.chainId.toString(), previousBindingId: null });
     const challenge = await service.createChallenge({
       session: app.session,
       account: app.account,

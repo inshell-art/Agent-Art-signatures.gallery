@@ -1,8 +1,11 @@
 /** Progressive enhancement: the native POST form remains the only delete path. */
 export const WITHDRAW_CLAIM_DIALOG_SCRIPT = `(() => {
-  if (typeof HTMLDialogElement === "undefined" || !HTMLDialogElement.prototype.showModal) return;
   document.querySelectorAll("[data-withdraw-control]").forEach(root => {
     const fallback = root.querySelector("details");
+    // OAuth returns to the exact action area. Reveal its warning and CTA only;
+    // neither the confirmation dialog nor the destructive form opens/submits.
+    if (typeof location !== "undefined" && location.hash === "#withdraw") fallback.open = true;
+    if (typeof HTMLDialogElement === "undefined" || !HTMLDialogElement.prototype.showModal) return;
     const content = root.querySelector("[data-withdraw-confirmation]");
     const form = content.querySelector("form");
     const cancel = content.querySelector("[data-withdraw-cancel]");

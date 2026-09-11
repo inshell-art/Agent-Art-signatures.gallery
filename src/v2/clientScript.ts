@@ -13,32 +13,48 @@ export const MINT_CLIENT_SCRIPT = `(() => {
     return "The wallet action could not be completed.";
   };
 
-  const showRequestError = (error, feedback) => {
+  const showRequestError = (error, feedback, actionContext) => {
     feedback.textContent = errorMessage(error);
-    if (!error || typeof error !== "object" || error.code !== "X_REAUTH_REQUIRED") return;
+    if (!error || typeof error !== "object") return;
+    const targetMintPath = /^sg1_[a-z2-7]{52}$/.test(actionContext?.signatureId || "") ? "/signatures/" + actionContext.signatureId + "/mint" : null;
+    if (["MINT_RECIPIENT_REQUIRED", "X_ACTION_CONFIRMATION_REQUIRED", "BINDING_TRANSITION", "WALLET_CHALLENGE_INVALID"].includes(error.code)) {
+      const mintPath = targetMintPath || (new RegExp("^/signatures/sg1_[a-z2-7]{52}/mint$").test(location.pathname) ? location.pathname : null);
+      if (mintPath) {
+        const link = document.createElement("a");
+        link.className = "auth-action";
+        link.href = mintPath;
+        const label = document.createElement("span");
+        label.textContent = "Review mint";
+        link.append(label);
+        feedback.append(document.createTextNode(" "), link);
+      }
+      return;
+    }
+    const sessionExpired = error.code === "AUTH_REQUIRED" || error.code === "AUTH_EXPIRED";
+    if (!sessionExpired) return;
+    feedback.textContent = "Session expired. Sign in to continue.";
     const button = document.createElement("button");
     button.type = "button";
-    button.className = "auth-action reauth-button";
+    button.className = "auth-action";
     const label = document.createElement("span");
-    label.textContent = "Reauthenticate with X";
+    label.textContent = "Sign in with X";
     button.append(label);
     button.addEventListener("click", () => {
       const form = document.createElement("form");
       form.method = "post";
       form.action = "/auth/x/start";
-      const purpose = document.createElement("input");
-      purpose.type = "hidden";
-      purpose.name = "purpose";
-      purpose.value = "account_login";
-      form.append(purpose);
-      if (new RegExp("^/signatures/sg1_[a-z2-7]{52}/mint$").test(location.pathname)) {
-        const returnTo = document.createElement("input");
-        returnTo.type = "hidden";
-        returnTo.name = "return_to";
-        returnTo.value = location.pathname;
-        form.append(returnTo);
-      }
+      const hidden = (name, value) => {
+        const input = document.createElement("input");
+        input.type = "hidden";
+        input.name = name;
+        input.value = value;
+        form.append(input);
+      };
+      hidden("purpose", "account_login");
+      const returnTo = targetMintPath || (new RegExp("^/signatures/sg1_[a-z2-7]{52}(?:/mint)?$").test(location.pathname) ? location.pathname : "/me");
+      hidden("return_to", returnTo);
       document.body.append(form);
+      feedback.textContent = "Opening X to sign in…";
       form.submit();
     });
     feedback.append(document.createTextNode(" "), button);
@@ -139,14 +155,14 @@ export const MINT_CLIENT_SCRIPT = `(() => {
     }
   };
 
-  const fixtureWallet = async (button, feedback) => {
+  const fixtureWallet = async (button, feedback, recipientContext) => {
     feedback.textContent = "Opening a clearly simulated fixture wallet…";
     await requestJson("/dev/v2/wallet-bindings/seed", {
       method: "POST",
       headers: { "X-CSRF-Token": button.dataset.csrf || "" },
-      body: JSON.stringify({ chainId: button.dataset.chainId }),
+      body: JSON.stringify({ ...recipientContext, recipientConsent: true }),
     });
-    location.reload();
+    location.replace("/signatures/" + recipientContext.signatureId + "/mint");
   };
 
   const boundWalletControls = new WeakSet();
@@ -158,11 +174,15 @@ export const MINT_CLIENT_SCRIPT = `(() => {
       const feedback = button.closest("[data-wallet-controls],[data-account-panel-content]")?.querySelector("[data-wallet-feedback]") || document.querySelector("[data-wallet-feedback]");
       if (!feedback || button.disabled) return;
       button.disabled = true;
+      const recipientContext = { chainId: button.dataset.chainId, signatureId: button.dataset.signatureId, claimInstanceId: button.dataset.claimInstanceId,
+        previousBindingId: button.dataset.previousBindingId === "" ? null : button.dataset.previousBindingId };
       try {
+        if (!recipientContext.signatureId || !recipientContext.claimInstanceId) throw new Error("Return to this signature’s mint page to verify its recipient.");
+        if (recipientContext.previousBindingId !== null && !/^0x[0-9a-f]{64}$/i.test(recipientContext.previousBindingId || "")) throw new Error("The previous recipient is not available. Open the mint page again.");
         const localWalletEnvironment = Boolean(document.querySelector("[data-local-chain-rehearsal]"));
         const useLocalWallet = localWalletEnvironment && button.dataset.walletProvider === "local";
         if (!localWalletEnvironment && button.dataset.walletProvider === "fixture" && button.dataset.fixture === "true") {
-          await fixtureWallet(button, feedback);
+          await fixtureWallet(button, feedback, recipientContext);
           return;
         }
         if (!useLocalWallet && !ethereum) {
@@ -177,12 +197,13 @@ export const MINT_CLIENT_SCRIPT = `(() => {
         const challenge = await requestJson("/api/v2/wallet-bindings/challenge", {
           method: "POST",
           headers: { "X-CSRF-Token": button.dataset.csrf || "" },
-          body: JSON.stringify({ walletAddress, chainId: button.dataset.chainId }),
+          body: JSON.stringify({ walletAddress, ...recipientContext, recipientConsent: true }),
         });
-        feedback.textContent = "Sign the exact one-time link message in your wallet.";
+        if (!sameAddress(challenge.walletAddress, walletAddress) || challenge.chainId !== button.dataset.chainId) throw new Error("The wallet proof does not match the selected recipient and network. Nothing was signed.");
+        feedback.textContent = "Sign the one-time message to verify this mint’s recipient. This does not mint or send a transaction.";
         let walletProof;
         if (useLocalWallet) {
-          confirmLocal("Sign this exact one-time wallet-link message?\\n\\n" + challenge.message);
+          confirmLocal("Verify this mint’s recipient with this one-time message?\\n\\n" + challenge.message);
           ({ walletProof } = await requestJson("/api/local/wallet/sign", { method: "POST", headers: { "X-CSRF-Token": button.dataset.csrf || "" }, body: JSON.stringify({ challengeId: challenge.challengeId }) }));
         } else {
           walletProof = await ethereum.request({ method: "personal_sign", params: [challenge.message, walletAddress] });
@@ -192,36 +213,17 @@ export const MINT_CLIENT_SCRIPT = `(() => {
           headers: { "X-CSRF-Token": button.dataset.csrf || "" },
           body: JSON.stringify({ challengeId: challenge.challengeId, walletProof }),
         });
-        feedback.textContent = "Wallet linked for minting.";
-        location.reload();
+        feedback.textContent = "Recipient verified for this mint.";
+        // Drop ?recipient=change after proof; reloading it would force the
+        // wallet-selection stage instead of opening this recipient's review.
+        location.replace("/signatures/" + recipientContext.signatureId + "/mint");
       } catch (error) {
-        showRequestError(error, feedback);
+        showRequestError(error, feedback, recipientContext);
         button.disabled = false;
       }
     });
   });
 
-  document.querySelectorAll("[data-revoke-wallet]").forEach((button) => {
-    if (boundWalletControls.has(button)) return;
-    boundWalletControls.add(button);
-    button.addEventListener("click", async () => {
-      const feedback = button.closest("[data-wallet-controls],[data-account-panel-content]")?.querySelector("[data-wallet-feedback]") || document.querySelector("[data-wallet-feedback]");
-      if (!feedback || button.disabled) return;
-      button.disabled = true;
-      try {
-        await requestJson("/api/v2/wallet-bindings/current", {
-          method: "DELETE",
-          headers: { "X-CSRF-Token": button.dataset.csrf || "" },
-          body: "{}",
-        });
-        feedback.textContent = "Wallet binding revoked.";
-        location.reload();
-      } catch (error) {
-        showRequestError(error, feedback);
-        button.disabled = false;
-      }
-    });
-  });
   };
   bindWalletControls();
   window.addEventListener("account-panel:ready", bindWalletControls);
@@ -234,30 +236,36 @@ export const MINT_CLIENT_SCRIPT = `(() => {
       const consent = form.querySelector("input[name=permanence_acknowledged]");
       if (!feedback || !button || button.disabled || !consent?.checked) return;
       button.disabled = true;
+      const reviewed = { ...form.dataset };
+      const reviewedRecipientUnchanged = () => form.dataset.walletBindingId === reviewed.walletBindingId && sameAddress(form.dataset.wallet, reviewed.wallet)
+        && form.dataset.signatureId === reviewed.signatureId && form.dataset.claimInstanceId === reviewed.claimInstanceId;
       try {
+        if (!/^0x[0-9a-f]{64}$/i.test(reviewed.walletBindingId || "") || !/^0x[0-9a-f]{40}$/i.test(reviewed.wallet || "")) throw new Error("Verify the recipient for this mint before authorizing.");
         feedback.textContent = "Preparing and signing the exact mint authorization…";
         const csrf = form.querySelector("input[name=csrf]")?.value || "";
         const payload = await requestJson(form.action, {
           method: "POST",
           headers: { "X-CSRF-Token": csrf, "X-Mint-Permanence-Acknowledged": "1" },
-          body: "{}",
+          body: JSON.stringify({ walletBindingId: reviewed.walletBindingId, recipient: reviewed.wallet }),
         });
         const authorization = payload.authorization;
         const same = (a, b) => typeof a === "string" && typeof b === "string" && a.toLowerCase() === b.toLowerCase();
         if (
-          payload.chainId !== form.dataset.chainId ||
-          !same(payload.contract, form.dataset.contract) ||
+          !reviewedRecipientUnchanged() ||
+          payload.chainId !== reviewed.chainId ||
+          !same(payload.contract, reviewed.contract) ||
           !payload.transaction ||
           !same(payload.transaction.to, payload.contract) ||
           payload.transaction.value !== "0x0" ||
           !canonicalMintCalldata(payload) ||
-          !same(authorization.mintWallet, form.dataset.wallet) ||
-          !same(authorization.signatureDigest, form.dataset.signatureDigest) ||
-          !same(authorization.svgSha256, "0x" + form.dataset.svgSha256) ||
-          !same(authorization.pngSha256, "0x" + form.dataset.pngSha256) ||
-          !same(authorization.metadataSha256, form.dataset.metadataSha256) ||
-          !same(authorization.tokenURIHash, form.dataset.tokenUriHash) ||
-          payload.tokenURI !== form.dataset.tokenUri
+          !same(authorization.walletBindingId, reviewed.walletBindingId) ||
+          !same(authorization.mintWallet, reviewed.wallet) ||
+          !same(authorization.signatureDigest, reviewed.signatureDigest) ||
+          !same(authorization.svgSha256, "0x" + reviewed.svgSha256) ||
+          !same(authorization.pngSha256, "0x" + reviewed.pngSha256) ||
+          !same(authorization.metadataSha256, reviewed.metadataSha256) ||
+          !same(authorization.tokenURIHash, reviewed.tokenUriHash) ||
+          payload.tokenURI !== reviewed.tokenUri
         ) throw new Error("The returned authorization does not match the reviewed work.");
 
         const actualLocal = localEnvironment && form.dataset.localChainRehearsal === "true" && payload.localChainRehearsal === true && payload.chainId === "31337";
@@ -270,6 +278,7 @@ export const MINT_CLIENT_SCRIPT = `(() => {
         const useLocalWallet = actualLocal && form.dataset.localWallet === "true" && event.submitter?.dataset.walletProvider === "local";
         if (useLocalWallet) {
           const localWallet = await requestJson("/api/local/wallet");
+          if (!reviewedRecipientUnchanged()) throw new Error("The reviewed recipient changed. Review this mint again. Nothing was sent.");
           if (localWallet.chainId !== "31337" || !same(localWallet.address, authorization.mintWallet) || !same(localWallet.contract, payload.contract)) throw new Error("The local TEST wallet does not match the reviewed wallet and contract.");
           confirmLocal("Submit this zero-project-fee mint? Only local test ETH pays gas.\\n\\nWallet: " + authorization.mintWallet + "\\nContract: " + payload.contract + "\\nSignature: " + form.dataset.signatureId + "\\nMetadata: " + payload.tokenURI + "\\n\\nThis sends a real transaction to your local Anvil node. IPFS publication and finality are local rehearsals, not Ethereum provenance.");
           feedback.textContent = "Simulating and submitting the exact mint on local Anvil…";
@@ -282,7 +291,7 @@ export const MINT_CLIENT_SCRIPT = `(() => {
         if (!ethereum) throw new Error("No injected Ethereum wallet was found in this browser.");
         const accounts = await ethereum.request({ method: "eth_accounts" });
         const connected = Array.isArray(accounts) ? accounts[0] : null;
-        if (!same(connected, authorization.mintWallet)) throw new Error("Connect the exact wallet linked to this X account.");
+        if (!same(connected, authorization.mintWallet)) throw new Error("Connect the exact recipient verified for this mint.");
         const currentChain = await ethereum.request({ method: "eth_chainId" });
         const expectedChain = "0x" + BigInt(payload.chainId).toString(16);
         if (currentChain !== expectedChain) {
@@ -299,7 +308,8 @@ export const MINT_CLIENT_SCRIPT = `(() => {
           ethereum.request({ method: "eth_accounts" }),
         ]);
         if (submissionChain !== expectedChain) throw new Error("The wallet network changed during review. Return to the reviewed network and try again. Nothing was sent.");
-        if (!same(Array.isArray(submissionAccounts) ? submissionAccounts[0] : null, authorization.mintWallet)) throw new Error("The wallet account changed during review. Reconnect the exact linked wallet and try again. Nothing was sent.");
+        if (!same(Array.isArray(submissionAccounts) ? submissionAccounts[0] : null, authorization.mintWallet)) throw new Error("The wallet account changed during review. Reconnect the verified recipient and try again. Nothing was sent.");
+        if (!reviewedRecipientUnchanged()) throw new Error("The reviewed recipient changed. Review this mint again. Nothing was sent.");
         const txHash = await ethereum.request({ method: "eth_sendTransaction", params: [{ ...transaction, gas, chainId: expectedChain }] });
         feedback.textContent = "Transaction submitted. This is not minted until the finalized event is validated.";
         await requestJson("/api/v2/mint-authorizations/" + authorization.authorizationId + "/transactions", {

@@ -123,7 +123,7 @@ function expectCollectionShortcut(html: string) {
   const shortcut = shortcuts[0][0];
   expect(shortcut).toContain('href="/me"');
   expect(shortcut).not.toContain("title=");
-  expect(html).toContain('id="account-panel-heading">My Collection</h2>');
+  expect(html).toContain('id="account-panel-heading"><a href="/me">My Collection</a></h2>');
   expect(shortcut).toContain('aria-label="My Collection"');
   expect(shortcut).toContain('<span class="collection-shortcut-dot" aria-hidden="true"></span>');
   expect(shortcut.replace(/<[^>]*>/g, "").trim()).toBe("");
@@ -374,11 +374,28 @@ describe("V1 previews", () => {
     expect((await fetch(`${baseUrl}${path}`, { method: "POST" })).status).toBe(404);
   });
 
-  it("offers a direct fresh-X reauthentication action on stale-identity pages", () => {
-    const html = errorPage(401, "X_REAUTH_REQUIRED", "Reauthenticate with X before minting.");
+  it("loads the versioned native X progress enhancement and serves it read-only", async () => {
+    const page = await (await fetch(`${baseUrl}/me`)).text();
+    const path = page.match(/src="(\/assets\/x-action-progress\.js\?v=[a-f0-9]{16})" defer/)?.[1];
+    expect(path).toBeDefined();
+    const response = await fetch(`${baseUrl}${path}`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("javascript");
+    expect(await response.text()).toContain("Opening X to confirm your identity…");
+    const head = await fetch(`${baseUrl}${path}`, { method: "HEAD" });
+    expect(head.status).toBe(200);
+    expect(await head.text()).toBe("");
+    expect((await fetch(`${baseUrl}/assets/x-action-progress.js`, { method: "POST" })).status).toBe(404);
+  });
+
+  it("offers sign-in for an expired app session without substituting ordinary login for action confirmation", () => {
+    const html = errorPage(401, "AUTH_REQUIRED", "Your sign-in session expired. Sign in with X to continue.");
     expect(html).toContain('action="/auth/x/start"');
     expect(html).toContain('name="purpose" value="account_login"');
-    expect(html).toContain("Reauthenticate with X");
+    expect(html).toContain("Sign in with X");
+    expect(html).not.toContain("Reauthenticate with X");
+    const actionError = errorPage(401, "X_ACTION_CONFIRMATION_REQUIRED", "Confirm this action with X to continue.");
+    expect(actionError).not.toContain('name="purpose" value="account_login"');
   });
 
   it("follows the system theme with no site header or empty header strip", async () => {
@@ -678,7 +695,7 @@ describe("fixture account and claim flow", () => {
     expect(await store.listClaimedSignatures(100)).toEqual(before);
   });
 
-  it("loads anonymous account controls privately without creating a session or enabling wallet linking", async () => {
+  it("loads X-only anonymous account controls privately without creating a session or wallet setup", async () => {
     const response = await fetch(`${baseUrl}/api/v1/account-panel`);
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("private, no-store");
@@ -688,15 +705,15 @@ describe("fixture account and claim flow", () => {
     expect(developmentHtml).toContain('data-dev-x-auth="emulator"');
     expect(developmentHtml).not.toMatch(/<button|data-link-wallet|name="csrf"/);
     expect(html).toContain('aria-label="X account"');
-    expect(html).toContain('aria-label="Wallet"');
+    expect(html).not.toContain('aria-label="Wallet"');
     expect(html).toContain('name="purpose" value="account_login"');
     expect(html).toContain("Sign in with X");
-    expect(html).toContain("Sign in with X first");
-    expect(html).not.toContain("data-link-wallet");
+    expect(html).not.toContain("Confirm your X account, then prove wallet ownership.");
+    expect(html).not.toMatch(/Link wallet|Replace wallet|Revoke wallet|Connect wallet|data-link-wallet|data-revoke-wallet/);
     expect(html).not.toContain("data-csrf");
   });
 
-  it("isolates account panel identity, wallet and CSRF from other sessions and public HTML", async () => {
+  it("isolates X-only account identity and CSRF from other sessions and public HTML", async () => {
     await closeServer();
     await boot(true, true);
     const alice = await localLogin("alice");
@@ -706,14 +723,19 @@ describe("fixture account and claim flow", () => {
     const bobPanel = await (await fetch(`${baseUrl}/api/v1/account-panel`, { headers: { Cookie: bob.cookie } })).json();
     expect(alicePanel.html).toContain("@alice");
     expect(alicePanel.html).toContain(aliceSession.csrfToken);
-    expect(alicePanel.html).toContain("data-revoke-wallet");
+    expect(alicePanel.html).toContain('action="/auth/logout"');
+    expect(alicePanel.html).not.toMatch(/aria-label="Wallet"|name="action"|data-link-wallet|data-revoke-wallet/);
     expect(bobPanel.html).toContain("@bob");
     expect(bobPanel.html).not.toContain("@alice");
     expect(bobPanel.html).not.toContain(aliceSession.csrfToken);
     expect(bobPanel.html).not.toContain("data-revoke-wallet");
     expect(alicePanel.developmentHtml).toContain('data-dev-x-auth="emulator"');
     expect(alicePanel.developmentHtml).not.toMatch(/<button|data-link-wallet|name="csrf"/);
-    expect(bobPanel.developmentHtml).toContain('data-wallet-provider="fixture"');
+    expect(bobPanel.html).toContain('action="/auth/logout"');
+    expect(bobPanel.html).not.toMatch(/aria-label="Wallet"|name="action"|data-link-wallet|data-revoke-wallet/);
+    const priorRecipient = mint!.state.getActiveBinding(aliceSession.identity!.xUserId, mint!.config.chainId)!;
+    for (const html of [alicePanel.html, bobPanel.html]) expect(html).not.toContain(priorRecipient.address);
+    expect(bobPanel.developmentHtml).not.toContain('data-wallet-provider="fixture"');
     expect(bobPanel.developmentHtml).not.toContain(aliceSession.csrfToken);
     expect(bobPanel.html).not.toContain('data-wallet-provider="fixture"');
     const publicHtml = await (await fetch(`${baseUrl}/`, { headers: { Cookie: alice.cookie } })).text();
@@ -723,17 +745,23 @@ describe("fixture account and claim flow", () => {
     expect(await (await fetch(`${baseUrl}/`)).text()).toBe(publicHtml);
   });
 
-  it("offers identity refresh instead of wallet mutations when the X authentication is stale", async () => {
+  it("keeps an older sign-in active without global recipient-management actions", async () => {
     await closeServer();
     await boot(true, true);
     const { cookie } = await localLogin();
     const session = auth.getSession(cookie.split("=")[1])!;
+    const before = await (await fetch(`${baseUrl}/api/v1/account-panel`, { headers: { Cookie: cookie } })).json();
     session.identity!.authenticatedAt = new Date(Date.now() - 16 * 60_000);
     const { html, developmentHtml } = await (await fetch(`${baseUrl}/api/v1/account-panel`, { headers: { Cookie: cookie } })).json();
     expect(developmentHtml).toContain('data-dev-x-auth="emulator"');
     expect(developmentHtml).not.toMatch(/<button|data-link-wallet|name="csrf"/);
-    expect(html).toContain("reauthentication");
-    expect(html).toContain('action="/auth/x/start"');
+    expect(html).toBe(before.html);
+    expect(html).toContain("@alice");
+    expect(html).toContain('<span>Log out</span></button>');
+    expect(html).not.toMatch(/Link wallet|Replace wallet|Revoke wallet|Connect wallet|Change recipient/);
+    expect(html).not.toContain("Reauthenticate with X");
+    expect(html).not.toContain("Refresh your X identity");
+    expect(html).not.toContain('action="/auth/x/start"');
     expect(html).not.toContain("data-link-wallet");
     expect(html).not.toContain("data-revoke-wallet");
   });
@@ -951,7 +979,7 @@ describe("fixture account and claim flow", () => {
     expect(await store.listSignaturesForAccount("1234567890123456789")).toHaveLength(0);
   });
 
-  it("expires local identity before claim review and offers local refresh", async () => {
+  it("does not expire claim review based on the age of the app identity", async () => {
     const started = await beginLocalOAuth(new URLSearchParams({ purpose: "claim", handle: "alice", gr0k: "50" }));
     const callback = await finishLocalOAuth(await decideLocalOAuth(started));
     const cookie = responseCookie(callback);
@@ -959,13 +987,27 @@ describe("fixture account and claim flow", () => {
     const session = auth.getSession(sessionId)!;
     session.identity!.authenticatedAt = new Date(Date.now() - 16 * 60 * 1000);
     const review = await fetch(`${baseUrl}${callback.headers.get("location")!}`, { headers: { Cookie: cookie } });
+    expect(review.status).toBe(200);
+    const html = await review.text();
+    expect(html).not.toContain("Your sign-in session expired.");
+    expect(html).toContain('data-claim-state="confirm"');
+    expect(html).toContain('action="/api/v1/signatures"');
+    expect(html).not.toContain("Refresh local rehearsal identity");
+  });
+
+  it("distinguishes an actually expired app session from an older X sign-in", async () => {
+    const started = await beginLocalOAuth(new URLSearchParams({ purpose: "claim", handle: "alice", gr0k: "50" }));
+    const callback = await finishLocalOAuth(await decideLocalOAuth(started));
+    const cookie = responseCookie(callback);
+    const session = auth.getSession(cookie.split("=")[1])!;
+    session.lastSeenAt = new Date(Date.now() - 8 * 24 * 60 * 60_000);
+    const review = await fetch(`${baseUrl}/claim/review?flow=unused`, { headers: { Cookie: cookie } });
     expect(review.status).toBe(401);
     const html = await review.text();
-    expect(html).toContain("Your sign-in session expired.");
-    expect(html).toContain("Claim with X");
-    expect(html).toContain('data-claim-state="sign-in"');
+    expect(html).toContain("AUTH_REQUIRED");
+    expect(html).toContain("Sign in with X");
     expect(html).not.toContain('action="/api/v1/signatures"');
-    expect(html).not.toContain("Refresh local rehearsal identity");
+    expect(html).not.toContain("Reauthenticate with X");
   });
 
   it("uses the selected local account for account login", async () => {
@@ -1015,10 +1057,12 @@ describe("fixture account and claim flow", () => {
     const rotatedCookie = responseCookie(callback);
     const session = auth.getSession(rotatedCookie.slice(rotatedCookie.indexOf("=") + 1))!;
     session.identity!.authenticatedAt = new Date(Date.now() - 16 * 60 * 1000);
-    const expired = await fetch(`${baseUrl}/claim/review?flow=unused`, { headers: { Cookie: rotatedCookie } });
-    const expiredHtml = await expired.text();
-    expect(expiredHtml).toContain("Reauthenticate with X");
-    expect(expiredHtml).not.toContain("Refresh local rehearsal identity");
+    const collection = await fetch(`${baseUrl}/me`, { headers: { Cookie: rotatedCookie } });
+    expect(collection.status).toBe(200);
+    expect(await collection.text()).not.toContain("Reauthenticate with X");
+    const invalidFlow = await fetch(`${baseUrl}/claim/review?flow=unused`, { headers: { Cookie: rotatedCookie } });
+    expect(invalidFlow.status).toBe(409);
+    expect(await invalidFlow.text()).toContain("CLAIM_FLOW_INVALID");
   });
 
   it("serves a stable permalink and revalidates withdrawable claimed artifacts", async () => {
@@ -1084,6 +1128,27 @@ describe("V2 minting rehearsal", () => {
     return { cookie, csrf, html };
   }
 
+  async function finishPendingFixtureMint() {
+    const included = (await store.listSignaturesForAccount("1234567890123456789"))[1];
+    expect(mint!.state.getProjection(included.signatureId).state).toBe("included_unfinalized");
+    mint!.advanceFixture(included.signatureId, included.xUserId);
+    expect(mint!.state.getProjection(included.signatureId).state).toBe("finalized");
+  }
+
+  async function proveRecipient(cookie: string, target: { signatureId: string; claimInstanceId: string }) {
+    const nextCookie = cookie;
+    const current = auth.getSession(nextCookie.split("=")[1])!;
+    const proof = await postJson("/dev/v2/wallet-bindings/seed", {
+      chainId: mint!.config.chainId.toString(), ...target,
+      recipientConsent: true, previousBindingId: mint!.state.getActiveBinding(current.identity!.xUserId, mint!.config.chainId)?.walletBindingId ?? null,
+    }, nextCookie, current.csrfToken);
+    expect(proof.status).toBe(201);
+    const binding = mint!.state.getActiveBinding(current.identity!.xUserId, mint!.config.chainId)!;
+    expect(current.actionApproval).toBeUndefined();
+    expect(current.mintRecipient).toMatchObject({ ...target, walletBindingId: binding.walletBindingId, address: binding.address });
+    return { cookie: nextCookie, csrf: current.csrfToken, snapshot: { walletBindingId: binding.walletBindingId, recipient: binding.address } };
+  }
+
   it("shows only finalized fixture mints in the Minted gallery", async () => {
     await closeServer();
     await boot(true, true);
@@ -1094,7 +1159,7 @@ describe("V2 minting rehearsal", () => {
     expect(html).not.toContain("GALLERY OF SIGNATURES");
     expect(html).not.toContain("REHEARSAL · SIMULATED");
     expect((html.match(/class="gallery-card"/g) ?? [])).toHaveLength(1);
-    expect(html).toContain("Minted by linked wallet");
+    expect(html).toContain("Initial recipient ·");
     expect(html).toContain('class="rehearsal-watermark"');
     expect(html).not.toContain("Open the V2 mint rehearsal");
     expect(html).not.toContain("environment-notice");
@@ -1115,11 +1180,12 @@ describe("V2 minting rehearsal", () => {
     expect(mint!.state.listGallery()).toHaveLength(1);
   });
 
-  it("separates wallet binding and three useful mint states in the claimant collection", async () => {
+  it("shows the three mint states without global wallet setup in the claimant collection", async () => {
     await closeServer();
     await boot(true, true);
     const { html } = await login();
-    expect(html).toContain("Wallet linked for minting");
+    expect(html).not.toContain("Wallet linked for minting");
+    expect(html).not.toMatch(/Link wallet|Replace wallet|Revoke wallet|data-link-wallet/);
     expect(html).toContain("Not minted");
     expect(html).toContain('<span class="signature-tag">Confirming</span>');
     expect(html).toContain('<span class="signature-tag">Minted</span>');
@@ -1150,9 +1216,11 @@ describe("V2 minting rehearsal", () => {
   it("renders exact mint review and requires explicit permanence acknowledgment", async () => {
     await closeServer();
     await boot(true, true);
-    const { cookie } = await login();
+    const signedIn = await login();
     const signatures = await store.listSignaturesForAccount("1234567890123456789");
     const unminted = signatures[0];
+    await finishPendingFixtureMint();
+    const { cookie, snapshot } = await proveRecipient(signedIn.cookie, unminted);
     const review = await fetch(`${baseUrl}/signatures/${unminted.signatureId}/mint`, { headers: { Cookie: cookie } });
     const html = await review.text();
     expect(review.status).toBe(200);
@@ -1162,8 +1230,32 @@ describe("V2 minting rehearsal", () => {
     expect(html).toContain("Grok origin is declared, not independently verified");
     expect(html).toContain("Metadata SHA-256");
     expect(html).toContain("data-metadata-sha256=");
+    expect(html).toContain(`data-wallet-binding-id="${snapshot.walletBindingId}"`);
+    expect(html).toContain(`data-wallet="${snapshot.recipient}"`);
+    expect(html).toContain(`data-claim-instance-id="${unminted.claimInstanceId}"`);
     expect(html).toContain('name="permanence_acknowledged"');
     expect(html).not.toContain('name="permanence_acknowledged" value="yes" checked');
+  });
+
+  it("blocks a new recipient while an earlier mint is unresolved, then still requires a fresh exact proof", async () => {
+    await closeServer();
+    await boot(true, true);
+    const { cookie } = await login();
+    const target = (await store.listSignaturesForAccount("1234567890123456789"))[0];
+    const blocked = await (await fetch(`${baseUrl}/signatures/${target.signatureId}/mint`, { headers: { Cookie: cookie } })).text();
+    expect(blocked).toContain('data-mint-entry="pending"');
+    expect(blocked).not.toContain('class="mint-authorization-form"');
+    expect(blocked).not.toContain('data-link-wallet');
+    await finishPendingFixtureMint();
+    const entry = await (await fetch(`${baseUrl}/signatures/${target.signatureId}/mint`, { headers: { Cookie: cookie } })).text();
+    expect(entry).toContain('data-mint-entry="wallet"');
+    expect(entry).toContain('<span>Connect wallet</span>');
+    expect(entry).not.toContain('name="action" value="mint_recipient"');
+    expect(entry).toContain('data-link-wallet');
+    expect(entry).toContain(`data-signature-id="${target.signatureId}"`);
+    expect(entry).toContain(`data-claim-instance-id="${target.claimInstanceId}"`);
+    expect(entry).not.toContain('class="mint-authorization-form"');
+    expect(auth.getSession(cookie.split("=")[1])!.mintRecipient).toBeUndefined();
   });
 
   it("returns the specified V2 error contract and does not authorize without consent", async () => {
@@ -1194,12 +1286,13 @@ describe("V2 minting rehearsal", () => {
     const signatures = await store.listSignaturesForAccount("1234567890123456789");
     const unminted = signatures[0];
     const finalized = signatures[2];
+    const binding = mint!.state.getActiveBinding(unminted.xUserId, mint!.config.chainId)!;
     mint!.state.suppress(unminted.signatureId);
     mint!.state.suppress(finalized.signatureId);
 
     const authorization = await postJson(
       `/api/v2/signatures/${unminted.signatureId}/mint-authorizations`,
-      {},
+      { walletBindingId: binding.walletBindingId, recipient: binding.address },
       cookie,
       csrf,
       { "X-Mint-Permanence-Acknowledged": "1" },
@@ -1232,11 +1325,13 @@ describe("V2 minting rehearsal", () => {
   it("keeps a transaction hint non-authoritative and publishes only after finality", async () => {
     await closeServer();
     await boot(true, true);
-    const { cookie, csrf } = await login();
+    const signedIn = await login();
     const unminted = (await store.listSignaturesForAccount("1234567890123456789"))[0];
+    await finishPendingFixtureMint();
+    const { cookie, csrf, snapshot } = await proveRecipient(signedIn.cookie, unminted);
     const authorization = await postJson(
       `/api/v2/signatures/${unminted.signatureId}/mint-authorizations`,
-      {},
+      snapshot,
       cookie,
       csrf,
       { "X-Mint-Permanence-Acknowledged": "1" },
@@ -1267,7 +1362,7 @@ describe("V2 minting rehearsal", () => {
       expect(status.state).toBe(expected);
     }
     const home = await (await fetch(`${baseUrl}/?tab=minted`)).text();
-    expect((home.match(/class="gallery-card"/g) ?? [])).toHaveLength(2);
+    expect((home.match(/class="gallery-card"/g) ?? [])).toHaveLength(3);
     const permalink = await (await fetch(`${baseUrl}/signatures/${unminted.signatureId}`)).text();
     expect(permalink).toContain('<meta name="robots" content="noindex">');
     expect(permalink).toContain("Simulated chain provenance");

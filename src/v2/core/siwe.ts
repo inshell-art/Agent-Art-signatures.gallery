@@ -3,6 +3,7 @@ import { getAddress, hashMessage, type Address, type Hex } from "viem";
 import { requireCanonicalSignatureFrom } from "./ethereumSignature.js";
 
 export const SIWE_LINK_STATEMENT = "Link this wallet to your X-authenticated signatures.gallery account for minting.";
+export const SIWE_MINT_RECIPIENT_STATEMENT = "Prove control of this recipient for this signature's mint. This does not submit a transaction.";
 export const SIWE_NONCE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 export const SIWE_NONCE_LENGTH = 22;
 
@@ -20,6 +21,7 @@ export interface ExactSiweMessageFields {
   expirationTime: Date | string;
   challengeId: string;
   publicAccountId: string;
+  mintTarget?: { signatureId: string; claimInstanceId: string };
 }
 
 export interface ParsedExactSiweMessage {
@@ -32,6 +34,7 @@ export interface ParsedExactSiweMessage {
   expirationTime: string;
   challengeId: string;
   publicAccountId: string;
+  mintTarget?: { signatureId: string; claimInstanceId: string };
 }
 
 function requireCanonicalTimestamp(value: Date | string, field: string): string {
@@ -92,10 +95,12 @@ export function generateSiweNonce(entropy: (length: number) => Uint8Array = rand
   return nonce;
 }
 
-export function siweChallengeExpiry(now: Date, xAuthenticatedAt: Date): Date {
-  const tenMinutesFromNow = now.getTime() + 10 * 60 * 1000;
-  const xFreshnessLimit = xAuthenticatedAt.getTime() + 15 * 60 * 1000;
-  return new Date(Math.min(tenMinutesFromNow, xFreshnessLimit));
+export function siweChallengeExpiry(now: Date): Date {
+  if (!Number.isFinite(now.getTime())) throw new Error("current time must be a valid instant.");
+  // Wallet proof is its own one-time challenge, not an extension of X token or
+  // app-session lifetime. Mint issuance requires explicit session-bound selection;
+  // legacy generic wallet setup still requires its action-specific X consent.
+  return new Date(now.getTime() + 10 * 60 * 1000);
 }
 
 export function buildExactSiweMessage(input: ExactSiweMessageFields): string {
@@ -112,12 +117,17 @@ export function buildExactSiweMessage(input: ExactSiweMessageFields): string {
   }
   const challengeId = requireOpaquePathValue(input.challengeId, "challengeId");
   const publicAccountId = requireOpaquePathValue(input.publicAccountId, "publicAccountId");
+  const mintTarget = input.mintTarget;
+  if (mintTarget) {
+    requireOpaquePathValue(mintTarget.signatureId, "signatureId");
+    requireOpaquePathValue(mintTarget.claimInstanceId, "claimInstanceId");
+  }
 
   return [
     `${input.appHost} wants you to sign in with your Ethereum account:`,
     address,
     "",
-    SIWE_LINK_STATEMENT,
+    mintTarget ? SIWE_MINT_RECIPIENT_STATEMENT : SIWE_LINK_STATEMENT,
     "",
     `URI: ${input.appOrigin}`,
     "Version: 1",
@@ -128,6 +138,10 @@ export function buildExactSiweMessage(input: ExactSiweMessageFields): string {
     `Request ID: ${challengeId}`,
     "Resources:",
     `- ${input.appOrigin}/account-ref/${publicAccountId}`,
+    ...(mintTarget ? [
+      `- ${input.appOrigin}/signatures/${mintTarget.signatureId}`,
+      `- ${input.appOrigin}/claim-instances/${mintTarget.claimInstanceId}`,
+    ] : []),
   ].join("\n");
 }
 
@@ -141,7 +155,8 @@ export function parseExactSiweMessage(message: string): ParsedExactSiweMessage {
     throw new Error("SIWE message must use LF line endings and have no trailing newline.");
   }
   const lines = message.split("\n");
-  if (lines.length !== 14 || lines[2] !== "" || lines[3] !== SIWE_LINK_STATEMENT || lines[4] !== "" || lines[6] !== "Version: 1" || lines[12] !== "Resources:") {
+  const isMintRecipient = lines.length === 16 && lines[3] === SIWE_MINT_RECIPIENT_STATEMENT;
+  if ((!isMintRecipient && (lines.length !== 14 || lines[3] !== SIWE_LINK_STATEMENT)) || lines[2] !== "" || lines[4] !== "" || lines[6] !== "Version: 1" || lines[12] !== "Resources:") {
     throw new Error("SIWE message does not match the frozen signatures.gallery layout.");
   }
 
@@ -170,6 +185,10 @@ export function parseExactSiweMessage(message: string): ParsedExactSiweMessage {
     expirationTime,
     challengeId,
     publicAccountId,
+    ...(isMintRecipient ? { mintTarget: {
+      signatureId: requireOpaquePathValue(afterPrefix(lines[14], `- ${appOrigin}/signatures/`, "signature resource"), "signatureId"),
+      claimInstanceId: requireOpaquePathValue(afterPrefix(lines[15], `- ${appOrigin}/claim-instances/`, "claim instance resource"), "claimInstanceId"),
+    } } : {}),
   };
 
   // Rebuilding catches every noncanonical spelling or spacing that a parser

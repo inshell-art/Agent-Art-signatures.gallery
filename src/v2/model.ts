@@ -37,6 +37,10 @@ export interface WalletBindingChallenge {
   publicAccountId: string;
   address: `0x${string}`;
   chainId: bigint;
+  /** Exact binding approved by X; absent only on legacy, unusable challenges. */
+  previousWalletBindingId?: `0x${string}` | null;
+  /** Optional only for historical account-link challenges; mint proofs are exact-work scoped. */
+  mintTarget?: { signatureId: string; claimInstanceId: string };
   nonce: string;
   message: string;
   issuedAt: Date;

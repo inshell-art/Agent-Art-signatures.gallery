@@ -76,10 +76,10 @@ describe("read-only collection state fixtures", () => {
     expect(html).not.toMatch(/href="\/signatures\//);
     expect(html).not.toMatch(/src="\/artifacts\//);
     expect(html.match(/class="rehearsal-watermark"/g)).toHaveLength(1);
-    const empty = ["empty", "signed-out", "gallery-claimed-empty", "gallery-minted-empty"].includes(key);
+    const empty = ["empty", "wrong-claimant", "signed-out", "gallery-claimed-empty", "gallery-minted-empty"].includes(key);
     expect(html.includes("data-grok-handoff")).toBe(empty);
     expect(html.includes("/assets/grok-prompt.js")).toBe(empty);
-    if (empty) expect(html).toContain(`${base}/s/${key === "empty" ? "newcomer" : "HANDLE"}/GR0K`);
+    if (empty) expect(html).toContain(`${base}/s/${key === "empty" ? "newcomer" : key === "wrong-claimant" ? "bob" : "HANDLE"}/GR0K`);
     if (!empty) expect(html).toContain('class="collection-card"');
   });
 
@@ -102,7 +102,7 @@ describe("read-only collection state fixtures", () => {
     expect(await store.listClaimedSignatures(100)).toEqual([]);
   });
 
-  it("has distinct mint, transfer, pause, rename, and reauthentication views", async () => {
+  it("has distinct mint, transfer, pause, rename, and action-confirmation views", async () => {
     const { base } = await boot(true);
     const page = async (state: string) => (await fetch(`${base}/dev/collection-states?state=${state}`)).text();
     expect(await page("minted")).toContain("Current holder · 0x11111…11111");
@@ -110,15 +110,17 @@ describe("read-only collection state fixtures", () => {
     expect(await page("transferred")).toContain("@alice");
     expect(await page("confirming")).toContain('class="signature-tag">Confirming<');
     expect(await page("mint-paused")).toContain("Minting paused");
-    expect(await page("reauthenticate")).toContain("Wallet management is available after reauthentication");
+    expect(await page("reauthenticate")).not.toMatch(/Replace wallet|Revoke wallet|Link wallet|data-link-wallet/);
+    expect(await page("reauthenticate")).not.toContain("Wallet management is available after reauthentication");
     const renamed = await page("renamed");
     expect(renamed).toContain("@alice_studio");
     expect(renamed).toContain(`<strong>${xProfileLink("alice")}</strong>`);
   });
 
   it.each([
-    ["signed-out", "sign-in"], ["claimed", "wallet"], ["wallet-linked", "ready"], ["authorized", "ready"],
-    ["mint-paused", "paused"], ["reauthenticate", "reauthenticate"], ["renamed", "ready"],
+    ["signed-out", "sign-in"], ["claimed", "wallet"], ["wallet-linked", "wallet"], ["recipient-verified", "ready"], ["authorized", "pending"],
+    ["submitted", "pending"], ["confirming", "pending"], ["validation-pending", "pending"], ["wrong-claimant", "wrong-account"],
+    ["mint-paused", "paused"], ["reauthenticate", "wallet"], ["renamed", "wallet"],
   ])("previews the next mint step from %s without enabling writes", async (state, stage) => {
     const { base, store } = await boot(true);
     const response = await fetch(`${base}/dev/collection-states?state=${state}&view=mint`);
@@ -132,10 +134,22 @@ describe("read-only collection state fixtures", () => {
     expect(html).not.toContain('class="mint-authorization-form"');
     expect(html).toContain(`href="/dev/collection-states?state=${state}"`);
     expect(await store.listClaimedSignatures(100)).toEqual([]);
-    if (!["signed-out", "authorized"].includes(state)) {
+    if (!["signed-out", "wrong-claimant", "authorized", "submitted", "confirming", "validation-pending"].includes(state)) {
       const collection = await (await fetch(`${base}/dev/collection-states?state=${state}`)).text();
       expect(collection).toContain(`href="/dev/collection-states?state=${state}&amp;view=mint"`);
     }
+  });
+
+  it("does not turn an earlier recipient into a new mint approval", async () => {
+    const { base } = await boot(true);
+    const html = await (await fetch(`${base}/dev/collection-states?state=wallet-linked&view=mint`)).text();
+    expect(html).toContain('data-mint-entry="wallet"');
+    expect(html).not.toContain('name="action" value="mint_recipient"');
+    expect(html).toContain('<span>Connect wallet</span>');
+    expect(html).toContain('data-link-wallet');
+    expect(html).toContain('data-wallet-provider');
+    expect(html).not.toContain('class="mint-authorization-form"');
+    expect(html).toContain('This new mint still requires a fresh wallet proof, without another X sign-in for an active claimant session.');
   });
 
   it("supports HEAD, rejects unknown/duplicate states and POST, and keeps fixtures out of production", async () => {

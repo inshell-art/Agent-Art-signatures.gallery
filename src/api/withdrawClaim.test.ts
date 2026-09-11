@@ -15,6 +15,7 @@ import { withdrawClaim } from "../v1/withdrawClaim.js";
 import { LocalMintRuntime } from "../local/mintRuntime.js";
 import { createLocalClaimWithdrawalRunner } from "../local/claimWithdrawalRuntime.js";
 import { V2Error } from "../v2/errors.js";
+import { SESSION_IDLE_TTL_MS } from "../v1/authPolicy.js";
 
 const claimant = "1234567890123456789";
 let server: ReturnType<typeof startServer>, base: string, auth: MemoryAuthState, store: MemorySignatureStore;
@@ -40,9 +41,18 @@ beforeEach(async () => {
 });
 afterEach(async () => { await new Promise<void>(resolve => server.close(() => resolve())); vi.restoreAllMocks(); });
 
-function login(xUserId = claimant, stale = false) {
+function login(xUserId = claimant, olderIdentity = false, actionConfirmed = true) {
   const { session } = auth.getOrCreateSession(null);
-  session.identity = { xUserId, username: "alice", handleNormalized: "alice", authenticatedAt: new Date(Date.now() - (stale ? 16 * 60_000 : 0)) };
+  session.identity = { xUserId, username: "alice", handleNormalized: "alice", authenticatedAt: new Date() };
+  const who = { session, cookie: `sg_dev_session=${session.id}` };
+  const result = actionConfirmed ? confirmWithdrawal(who) : who;
+  if (olderIdentity) result.session.identity!.authenticatedAt = new Date(Date.now() - 16 * 60_000);
+  return result;
+}
+function confirmWithdrawal(who: { session: ReturnType<MemoryAuthState["getOrCreateSession"]>["session"]; cookie: string }, target = signature) {
+  const { flow } = auth.startFlow(who.session, "sensitive_action", null, "test-verifier");
+  flow.actionIntent = { kind: "claim_withdraw", signatureId: target.signatureId, claimInstanceId: target.claimInstanceId };
+  const session = auth.authenticate(flow, { ...who.session.identity!, authenticatedAt: new Date() }, who.session);
   return { session, cookie: `sg_dev_session=${session.id}` };
 }
 function request(who = login(), overrides: Record<string, string> = {}, origin = base) {
@@ -140,13 +150,15 @@ describe("claim withdrawal", () => {
   });
 
   it("creates a genuinely new claim and refuses a stale withdrawal form", async () => {
-    const who = login(); expect((await request(who)).status).toBe(200);
+    let who = login(); expect((await request(who)).status).toBe(200);
     const next = await store.claim({ ...signature, claimedAt: new Date() });
     expect(next.existing).toBe(false);
     expect(next.signature.signatureId).toBe(signature.signatureId);
     expect(next.signature.claimInstanceId).not.toBe(signature.claimInstanceId);
-    expect((await request(who)).status).toBe(409);
+    expect((await request(who)).status).toBe(401);
     expect(await store.getSignature(signature.signatureId)).toEqual(next.signature);
+    expect((await request(who, { claim_instance: next.signature.claimInstanceId })).status).toBe(401);
+    who = confirmWithdrawal(who, next.signature);
     expect((await request(who, { claim_instance: next.signature.claimInstanceId })).status).toBe(200);
   });
 
@@ -203,10 +215,12 @@ describe("claim withdrawal", () => {
     }
   });
 
-  it("rejects signed-out, wrong-account (even same handle), stale, cross-site, and unconfirmed requests", async () => {
+  it("rejects signed-out, wrong-account (even same handle), missing action approval, cross-site, and unconfirmed requests", async () => {
     expect((await fetch(`${base}/signatures/${signature.signatureId}/withdraw`, { method: "POST" })).status).toBe(401);
     expect((await request(login("999"))).status).toBe(403);
-    expect((await request(login(claimant, true))).status).toBe(401);
+    const unconfirmed = await request(login(claimant, false, false));
+    expect(unconfirmed.status).toBe(401);
+    expect((await unconfirmed.json()).error.code).toBe("X_ACTION_CONFIRMATION_REQUIRED");
     expect((await request(login(), {}, "https://attacker.example")).status).toBe(403);
     expect((await request(login(), { csrf: "wrong" })).status).toBe(403);
     expect((await request(login(), { confirm: "" })).status).toBe(403);
@@ -260,24 +274,78 @@ describe("claim withdrawal", () => {
     expect(persist).toHaveBeenCalledOnce();
   });
 
-  it("requires reauthentication instead of rendering a stale owner's delete form", async () => {
-    const who = login(claimant, true);
+  it.each([false, true])("requires action-specific confirmation regardless of identity age (older=%s)", async olderIdentity => {
+    const who = login(claimant, olderIdentity, false);
     const page = await (await fetch(`${base}/signatures/${signature.signatureId}`, { headers: { Cookie: who.cookie } })).text();
     expect(page).toContain("<summary>Withdraw claim</summary>");
-    expect(page).toContain("Sign in with X again");
+    expect(page).toContain('<span>Withdraw claim</span></button>');
     expect(page).toContain('class="signature-mint-entry"');
-    expect(page).toContain('name="purpose" value="account_login"');
+    expect(page).toContain('name="purpose" value="sensitive_action"');
+    expect(page).toContain('name="action" value="claim_withdraw"');
+    expect(page).not.toContain("Reauthenticate with X");
     expect(page).not.toContain("data-withdraw-confirmation");
     expect(page).not.toContain('name="confirm" value="withdraw"');
+    expect(await store.getSignature(signature.signatureId)).toEqual(signature);
+  });
+
+  it("accepts a sixteen-minute-old identity with exact action consent and consumes the approval", async () => {
+    const who = login(claimant, true);
+    expect((await request(who)).status).toBe(200);
+    expect(who.session.actionApproval).toBeUndefined();
+    expect(who.session.identity).not.toBeNull();
+  });
+
+  it.each(["expired", "other_signature", "replacement_claim", "wallet_action"])("rejects %s action consent without deleting the claim", async mismatch => {
+    const who = login();
+    if (mismatch === "expired") who.session.actionApproval!.expiresAt = new Date(Date.now() - 1);
+    if (mismatch === "other_signature") who.session.actionApproval!.intent = { kind: "claim_withdraw", signatureId: "another-signature", claimInstanceId: signature.claimInstanceId };
+    if (mismatch === "replacement_claim") who.session.actionApproval!.intent = { kind: "claim_withdraw", signatureId: signature.signatureId, claimInstanceId: "another-claim-instance" };
+    if (mismatch === "wallet_action") who.session.actionApproval!.intent = { kind: "wallet_link", chainId: mint.config.chainId.toString(), previousBindingId: null };
+    const response = await request(who);
+    expect(response.status).toBe(401);
+    expect((await response.json()).error.code).toBe("X_ACTION_CONFIRMATION_REQUIRED");
+    expect(await store.getSignature(signature.signatureId)).toEqual(signature);
+    expect(persist).not.toHaveBeenCalled();
+  });
+
+  it("distinguishes an expired app session from missing action consent", async () => {
+    const who = login();
+    who.session.lastSeenAt = new Date(Date.now() - SESSION_IDLE_TTL_MS - 1);
+    const response = await request(who);
+    expect(response.status).toBe(401);
+    expect((await response.json()).error.code).toBe("AUTH_REQUIRED");
+    expect(who.session.identity).toBeNull();
+    expect(who.session.actionApproval).toBeUndefined();
+  });
+
+  it("rechecks the held session after a confirmed withdrawal waits in the local queue", async () => {
+    const who = login();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const earlier = queue.run(async () => { await gate; });
+    const queued = vi.spyOn(queue, "run");
+    const pending = request(who);
+    try {
+      await vi.waitFor(() => expect(queued).toHaveBeenCalledOnce());
+      auth.logout(who.session.id);
+    } finally { release(); }
+    await earlier;
+    const response = await pending;
+    expect(response.status).toBe(401);
+    expect((await response.json()).error.code).toBe("AUTH_REQUIRED");
     expect(await store.getSignature(signature.signatureId)).toEqual(signature);
   });
 
   it("accepts only one of two concurrent confirmations for the same claim", async () => {
     const who = login();
     const responses = await Promise.all([request(who), request(who)]);
-    expect(responses.map(r => r.status).sort()).toEqual([200, 409]);
+    expect(responses.filter(response => response.status === 200)).toHaveLength(1);
+    // A replay arriving after consumption fails at the action guard; one
+    // already queued with the original grant fails at the claim-instance lock.
+    expect([401, 409]).toContain(responses.find(response => response.status !== 200)!.status);
     expect(await store.getSignature(signature.signatureId)).toBeNull();
-    expect((await request(who)).status).toBe(409);
+    expect((await request(who)).status).toBe(401);
+    expect(persist).toHaveBeenCalledOnce();
   });
 
   it.each(["authorized", "finalized"] as MintState[])("exposes no usable withdrawal form for %s claims", async state => {

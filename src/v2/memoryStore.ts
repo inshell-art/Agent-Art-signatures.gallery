@@ -175,13 +175,19 @@ export class MemoryMintStore {
   }
 
   private assertBindingMayChange(xUserId: string, chainId: bigint, now: Date): void {
+    if (this.hasUnresolvedBindingAuthorization(xUserId, chainId)) throw new Error("LIVE_AUTHORIZATION_EXISTS");
+  }
+
+  /** A prior mint's safety lock remains even after its wall-clock deadline. */
+  hasUnresolvedBindingAuthorization(xUserId: string, chainId: bigint): boolean {
     const active = this.getActiveBinding(xUserId, chainId);
-    if (!active) return;
+    if (!active) return false;
     for (const authorization of this.authorizations.values()) {
       if (authorization.walletBindingId === active.walletBindingId && unresolvedAuthorization(authorization)) {
-        throw new Error("LIVE_AUTHORIZATION_EXISTS");
+        return true;
       }
     }
+    return false;
   }
 
   putMetadata(next: FrozenTokenMetadata): FrozenTokenMetadata {

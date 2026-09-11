@@ -19,7 +19,9 @@ export const ACCOUNT_PANEL_SCRIPT = `(() => {
     body.inert = true;
     if (devTools) devTools.inert = true;
     try {
-      const response = await fetch("/api/v1/account-panel", {credentials:"same-origin",cache:"no-store",headers:{Accept:"application/json"}});
+      const pathname = location.pathname;
+      const returnTo = pathname === "/me" || new RegExp("^/signatures/sg1_[a-z2-7]{52}(?:/mint)?$").test(pathname) ? pathname : "/me";
+      const response = await fetch("/api/v1/account-panel?return_to=" + encodeURIComponent(returnTo), {credentials:"same-origin",cache:"no-store",headers:{Accept:"application/json"}});
       const payload = await response.json();
       if (!response.ok || typeof payload.html !== "string") throw new Error("Account controls unavailable");
       if (id !== requestId) return;

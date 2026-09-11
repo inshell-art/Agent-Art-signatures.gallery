@@ -9,7 +9,7 @@ function element() {
     addEventListener: (type: string, listener: (event: any) => void) => handlers.set(type, listener),
     fire: (type: string, event: any = {}) => handlers.get(type)?.(event) };
 }
-function boot(supportsDialog: boolean | "missing-method" = true) {
+function boot(supportsDialog: boolean | "missing-method" = true, hash = "") {
   const trigger = element(), label = element(), fallback = element(), form = element();
   const cancel = element(), confirm = element(), window = element();
   cancel.hidden = true;
@@ -18,11 +18,22 @@ function boot(supportsDialog: boolean | "missing-method" = true) {
   const root = { append: vi.fn(), insertBefore: vi.fn(), querySelector: (selector: string) => selector === "details" ? fallback : content };
   const document = { querySelectorAll: () => [root], createElement: (tag: string) => tag === "button" ? trigger : tag === "dialog" ? dialog : label };
   const fetch = vi.fn();
-  runInNewContext(WITHDRAW_CLAIM_DIALOG_SCRIPT, { document, window, fetch, HTMLDialogElement: supportsDialog === "missing-method" ? { prototype: {} } : supportsDialog ? { prototype: { showModal() {} } } : undefined });
+  runInNewContext(WITHDRAW_CLAIM_DIALOG_SCRIPT, { document, window, fetch, location: { hash }, HTMLDialogElement: supportsDialog === "missing-method" ? { prototype: {} } : supportsDialog ? { prototype: { showModal() {} } } : undefined });
   return { trigger, label, content, fallback, form, cancel, confirm, dialog, root, window, fetch };
 }
 
 describe("withdrawal confirmation dialog", () => {
+  it.each([true, false, "missing-method"] as const)("reveals the disclosure after X returns without opening or submitting confirmation (dialog=%s)", support => {
+    const f = boot(support, "#withdraw");
+    expect(f.fallback.open).toBe(true);
+    expect(f.dialog.showModal).not.toHaveBeenCalled();
+    expect(f.dialog.open).toBe(false);
+    expect(f.form.setAttribute).not.toHaveBeenCalled();
+    expect(f.fetch).not.toHaveBeenCalled();
+    expect(boot(support).fallback.open).toBe(false);
+    expect(boot(support, "#claim").fallback.open).toBe(false);
+  });
+
   it("moves only confirmation content, preserving the disclosure for the warning and CTA", () => {
     const f = boot();
     expect(f.dialog.append.mock.calls).toEqual([[f.content]]);

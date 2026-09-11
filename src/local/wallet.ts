@@ -87,8 +87,8 @@ export class LocalTestWallet {
   async signChallenge(challenge: WalletBindingChallenge): Promise<Hex> {
     if (challenge.status !== "pending" || challenge.chainId !== 31337n || getAddress(challenge.address) !== this.address || challenge.expiresAt.getTime() <= Date.now() || challenge.issuedAt.getTime() > Date.now()) throw new Error("Local TEST wallet challenge is expired, consumed, or addressed to another wallet/chain.");
     const origin = new URL(this.options.appOrigin);
-    const exact = buildExactSiweMessage({ appOrigin: origin.origin, appHost: origin.host, walletAddress: this.address, chainId: 31337n, nonce: challenge.nonce, issuedAt: challenge.issuedAt, expirationTime: challenge.expiresAt, challengeId: challenge.challengeId, publicAccountId: challenge.publicAccountId });
-    if (challenge.message !== exact) throw new Error("Local TEST wallet signs only the exact local wallet-link challenge.");
+    const exact = buildExactSiweMessage({ appOrigin: origin.origin, appHost: origin.host, walletAddress: this.address, chainId: 31337n, nonce: challenge.nonce, issuedAt: challenge.issuedAt, expirationTime: challenge.expiresAt, challengeId: challenge.challengeId, publicAccountId: challenge.publicAccountId, ...(challenge.mintTarget ? { mintTarget: challenge.mintTarget } : {}) });
+    if (challenge.message !== exact) throw new Error("Local TEST wallet signs only the exact local recipient-control challenge.");
     await this.assertReady();
     return mintAccount.signMessage({ message: exact });
   }

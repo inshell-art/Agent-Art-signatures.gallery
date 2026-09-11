@@ -7,7 +7,7 @@ import { HOME_LINK, HOME_ICON } from "./navigation.js";
 import { FAVICON_LINK } from "../brand/favicon.js";
 import { LOCAL_TEST_RECIPIENT, LOCAL_TEST_WALLET } from "../local/wallet.js";
 import { accountPanelShell, walletLinkControls, developmentWalletControls, developmentAuthenticationNotice, type AccountPanelView } from "./accountPanel.js";
-import { MINT_SCRIPT_URL, ACCOUNT_PANEL_SCRIPT_URL, REHEARSAL_SCRIPT_URL, ACTION_TOOLTIP_SCRIPT_URL, CLAIM_NOTICE_SCRIPT_URL, WITHDRAW_CLAIM_DIALOG_SCRIPT_URL } from "./scriptAssets.js";
+import { MINT_SCRIPT_URL, ACCOUNT_PANEL_SCRIPT_URL, REHEARSAL_SCRIPT_URL, ACTION_TOOLTIP_SCRIPT_URL, CLAIM_NOTICE_SCRIPT_URL, WITHDRAW_CLAIM_DIALOG_SCRIPT_URL, X_ACTION_PROGRESS_SCRIPT_URL } from "./scriptAssets.js";
 import { claimNoticeShell } from "./claimNotice.js";
 import { grokPrompt, GROK_URL } from "./grokPrompt.js";
 import { COLLECTION_STATE_FIXTURES } from "./collectionStateCatalog.js";
@@ -71,7 +71,7 @@ export function layout(options: LayoutOptions): string {
   const robots = options.preview || options.fixtureMode || options.localChainRehearsal || options.localOAuthMode ? "noindex" : options.robots ?? "index";
   const bodyClass = (options.bookPage ? ' class="book-page"' : "") + (options.preview ? ' data-state-preview' : "");
   const sloganScript = options.sloganTooltip ? '<script src="/assets/slogan-tooltip.js" defer></script>' : "";
-  const mintScript = options.preview ? "" : `<script src="${MINT_SCRIPT_URL}" defer></script>`;
+  const mintScript = options.preview ? "" : [MINT_SCRIPT_URL, X_ACTION_PROGRESS_SCRIPT_URL].map(src => `<script src="${src}" defer></script>`).join("");
   const promptScript = options.grokHandoff ? '<script src="/assets/grok-prompt.js" defer></script>' : "";
   const rehearsal = options.fixtureMode || options.localChainRehearsal || options.localOAuthMode || options.preview;
   const rehearsalScript = rehearsal ? `<script src="${REHEARSAL_SCRIPT_URL}" defer></script>` : "";
@@ -132,7 +132,7 @@ function galleryCards(entries: Array<GalleryCardView | ClaimedGalleryCardView>, 
     const message = tab === "claimed" ? "No claimed signatures yet." : "No finalized signatures yet.";
     return `<div class="collection-empty gallery-empty"><h2>${message}</h2>${participationGuidance({ publicOrigin })}</div>`;
   }
-  const walletLabel = "Minted by linked wallet";
+  const walletLabel = "Initial recipient";
   return `<div class="public-gallery-grid">${entries.map((entry) => {
     const minted = "finalizedAt" in entry;
     const provenance = minted
@@ -147,7 +147,7 @@ export function homePage(fixtureMode: boolean, entries: Array<GalleryCardView | 
   const tabs = `<nav class="gallery-tabs" aria-label="Signature galleries"><a href="/?tab=claimed"${tab === "claimed" ? ' aria-current="page"' : ""}><span>Claimed</span></a><span aria-hidden="true">|</span><a href="/?tab=minted"${tab === "minted" ? ' aria-current="page"' : ""}><span>Minted</span></a></nav>`;
   const sloganText = escapeHtml(SLOGAN_DISPLAY_TEXT);
   const body = `<section class="home-grid"><div class="intro-panel"><div class="slogan-lockup"><h1 id="slogan-heading" class="visually-hidden">${sloganText}</h1><figure class="slogan-signature" title="${sloganText}" tabindex="0" role="img" aria-labelledby="slogan-heading" data-slogan-signature-version="${escapeHtml(SLOGAN_SIGNATURE_MANIFEST.version)}" data-shape-lock-schema="${escapeHtml(SLOGAN_SIGNATURE_MANIFEST.shapeLockSchema)}" data-source-renderer="${escapeHtml(SLOGAN_SIGNATURE_MANIFEST.sourceRendererVersion)}" data-source-gr0k="22"><span class="slogan-signature-layout slogan-signature-desktop">${SLOGAN_SIGNATURE_SVG}</span><span class="slogan-signature-layout slogan-signature-mobile">${SLOGAN_SIGNATURE_MOBILE_SVG}</span></figure><span id="slogan-tooltip" class="slogan-tooltip" role="tooltip" aria-hidden="true" hidden>${sloganText}</span></div></div><aside class="gallery-shell">${tabs}${galleryCards(entries, fixtureMode, localChainRehearsal, tab, options.publicOrigin)}${more}</aside></section>`;
-  return layout({ title: "Signatures Gallery · Agent Art project 01", description: "The inaugural project presented by Agent Art: signatures claimed through X and minted by linked wallets.", body, fixtureMode, localChainRehearsal, robots: fixtureMode || tab === "claimed" ? "noindex" : "index", bookPage: true, sloganTooltip: true, grokHandoff: entries.length === 0, preview: options.preview, accountPanel: options.preview ? { fixtureMode, localOAuthMode: fixtureMode, mintEnabled: false, mintChainId: "31337", previewOnly: true } : undefined });
+  return layout({ title: "Signatures Gallery · Agent Art project 01", description: "The inaugural project presented by Agent Art: signatures claimed through X and minted on Ethereum.", body, fixtureMode, localChainRehearsal, robots: fixtureMode || tab === "claimed" ? "noindex" : "index", bookPage: true, sloganTooltip: true, grokHandoff: entries.length === 0, preview: options.preview, accountPanel: options.preview ? { fixtureMode, localOAuthMode: fixtureMode, mintEnabled: false, mintChainId: "31337", previewOnly: true } : undefined });
 }
 
 export interface PreviewPageParams {
@@ -260,7 +260,7 @@ function mintProvenance(mint: SignatureMintView, fixtureMode: boolean, localChai
   return `<section class="signature-provenance-section"><h2>Mint</h2><dl class="signature-facts"><div><dt>Initially minted to</dt><dd>${escapeHtml(mint.mintWallet ?? "")}</dd></div><div><dt>Current token holder</dt><dd>${escapeHtml(mint.currentTokenHolder ?? "")}</dd></div><div><dt>Network</dt><dd>${escapeHtml(mint.chainName ?? "Ethereum")}</dd></div><div><dt>Transaction</dt><dd>${tx}</dd></div><div><dt>Contract</dt><dd>${contract}</dd></div><div><dt>Token ID</dt><dd>${escapeHtml(mint.tokenId ?? "")}</dd></div><div><dt>Token URI</dt><dd>${escapeHtml(mint.tokenUri ?? "")}</dd></div><div><dt>Metadata SHA-256</dt><dd>${escapeHtml(mint.metadataSha256 ?? "")}</dd></div><div><dt>Finality</dt><dd>${finality}</dd></div><div><dt>Finalized at</dt><dd>${escapeHtml(mint.finalizedAt?.toISOString() ?? "")}</dd></div></dl><p>The contract record is irreversible. IPFS availability still depends on retention and pinning. A later token holder is not implied to control the claimant’s X account.</p></section>`;
 }
 
-export function signaturePage(signature: SignatureView, fixtureMode: boolean, mint?: SignatureMintView, publicOrigin = "", localChainRehearsal = false, withdrawal?: { csrfToken: string; claimInstanceId: string; reauthRequired: boolean; allowed: boolean }): string {
+export function signaturePage(signature: SignatureView, fixtureMode: boolean, mint?: SignatureMintView, publicOrigin = "", localChainRehearsal = false, withdrawal?: { csrfToken: string; claimInstanceId: string; requiresXConfirmation: boolean; allowed: boolean }, mintRecipientVerified = false): string {
   const handle = escapeHtml(signature.handleAtClaim);
   const gr0k = formatGr0k(signature.gr0kRaw);
   const mintSection = mint ? mintProvenance(mint, fixtureMode, localChainRehearsal) : "";
@@ -268,7 +268,7 @@ export function signaturePage(signature: SignatureView, fixtureMode: boolean, mi
   const galleryTab: GalleryTab = finalized ? "minted" : "claimed";
   const claimedAt = escapeHtml(signature.claimedAt.toISOString());
   const claimTitle = "Claimed with explicit consent and account authentication.";
-  const mintTitle = "Minted by the claimant’s linked wallet.";
+  const mintTitle = "Minted to the claimant’s verified recipient.";
   const mintTag = finalized
     ? `<span class="signature-tag" data-signature-status="minted" title="${mintTitle}">Minted</span>`
     : mint && mint.state !== "unminted" ? `<span class="signature-pending">${escapeHtml(signatureMintLabel(mint))}</span>` : "";
@@ -282,12 +282,17 @@ export function signaturePage(signature: SignatureView, fixtureMode: boolean, mi
   const artworkSection = `<section class="signature-provenance-section"><h2>Artwork</h2><p>The SVG is the canonical artwork. The PNG is an immutable derivative used only for social link previews through <code>og:image</code>.</p><dl class="signature-facts"><div><dt>Artwork renderer</dt><dd>${escapeHtml(signature.rendererVersion)}</dd></div><div><dt>Canonical SVG SHA-256</dt><dd>${escapeHtml(signature.svgSha256)}</dd></div><div><dt>Social-image renderer</dt><dd>${escapeHtml(signature.cardRendererVersion)}</dd></div><div><dt>Social-image PNG SHA-256</dt><dd>${escapeHtml(signature.pngSha256)}</dd></div></dl></section>`;
   const withdrawAction = !withdrawal || finalized ? "" : !withdrawal.allowed
     ? '<div class="claim-withdrawal"><button class="auth-action auth-action-quiet" disabled title="Wait for the pending mint or authorization to resolve."><span>Withdraw claim</span></button></div>'
-    : withdrawal.reauthRequired
-      ? `<details class="auth-disclosure claim-withdrawal"><summary>Withdraw claim</summary><p>Sign in again, then confirm withdrawal.</p><form method="post" action="/auth/x/start"><input type="hidden" name="purpose" value="account_login"><input type="hidden" name="return_to" value="/signatures/${escapeHtml(signature.signatureId)}"><button class="auth-action" type="submit"><span>Sign in with X again</span></button></form></details>`
-      : `<section class="claim-withdrawal" data-withdraw-control><details class="auth-disclosure"><summary>Withdraw claim</summary><p id="withdraw-description">This removes the claim from Claimed and My Collection. You can make a new claim later.</p><div data-withdraw-confirmation><h2 id="withdraw-title">Withdraw this claim?</h2><p id="withdraw-work">@${handle} · gr0k ${gr0k}</p><form method="post" action="/signatures/${escapeHtml(signature.signatureId)}/withdraw"><input type="hidden" name="csrf" value="${escapeHtml(withdrawal.csrfToken)}"><input type="hidden" name="claim_instance" value="${escapeHtml(withdrawal.claimInstanceId)}"><div class="auth-actions"><button class="auth-action auth-action-quiet" type="button" data-withdraw-cancel hidden><span>Cancel</span></button><button class="auth-action" type="submit" name="confirm" value="withdraw"><span>Confirm withdrawal</span></button></div></form></div></details></section>`;
+    : withdrawal.requiresXConfirmation
+      ? `<details class="auth-disclosure claim-withdrawal" id="withdraw"><summary>Withdraw claim</summary><p>This removes the claim from Claimed and My Collection. You can make a new claim later.</p><form method="post" action="/auth/x/start" data-x-action-form><input type="hidden" name="purpose" value="sensitive_action"><input type="hidden" name="action" value="claim_withdraw"><input type="hidden" name="signature_id" value="${escapeHtml(signature.signatureId)}"><input type="hidden" name="claim_instance" value="${escapeHtml(withdrawal.claimInstanceId)}"><input type="hidden" name="csrf" value="${escapeHtml(withdrawal.csrfToken)}"><input type="hidden" name="return_to" value="/signatures/${escapeHtml(signature.signatureId)}"><button class="auth-action" type="submit"><span>Withdraw claim</span></button><p class="inline-feedback" data-x-action-feedback role="status" aria-live="polite"></p></form></details>`
+      : `<section class="claim-withdrawal" id="withdraw" data-withdraw-control><details class="auth-disclosure"><summary>Withdraw claim</summary><p id="withdraw-description">This removes the claim from Claimed and My Collection. You can make a new claim later.</p><div data-withdraw-confirmation><h2 id="withdraw-title">Withdraw this claim?</h2><p id="withdraw-work">@${handle} · gr0k ${gr0k}</p><form method="post" action="/signatures/${escapeHtml(signature.signatureId)}/withdraw"><input type="hidden" name="csrf" value="${escapeHtml(withdrawal.csrfToken)}"><input type="hidden" name="claim_instance" value="${escapeHtml(withdrawal.claimInstanceId)}"><div class="auth-actions"><button class="auth-action auth-action-quiet" type="button" data-withdraw-cancel hidden><span>Cancel</span></button><button class="auth-action" type="submit" name="confirm" value="withdraw"><span>Confirm withdrawal</span></button></div></form></div></details></section>`;
   // The server supplies owner controls only when the X account ID matches.
+  const mintTooltip = mint?.state === "authorized"
+    ? "Review the mint and confirm the transaction in the wallet you selected."
+    : mintRecipientVerified
+      ? "Review the mint and confirm it in the wallet you verified to receive the token."
+      : "Connect a wallet to receive the token. You’ll prove you control it, then review and confirm the mint.";
   const mintEntry = (withdrawal && (!mint || ["unminted", "authorized", "expired"].includes(mint.state))
-    ? `<div class="signature-mint-entry"><a class="auth-action" href="/signatures/${escapeHtml(signature.signatureId)}/mint" data-action-tooltip="mint-tooltip" aria-describedby="mint-tooltip" title="Link a wallet if needed, then review and confirm the mint in your wallet."><span>Mint this signature →</span></a><span class="action-tooltip" id="mint-tooltip" role="tooltip" hidden>Link a wallet if needed, then review and confirm the mint in your wallet.</span></div>` : "");
+    ? `<div class="signature-mint-entry"><a class="auth-action" href="/signatures/${escapeHtml(signature.signatureId)}/mint" data-action-tooltip="mint-tooltip" aria-describedby="mint-tooltip" title="${mintTooltip}"><span>Mint this signature →</span></a><span class="action-tooltip" id="mint-tooltip" role="tooltip" hidden>${mintTooltip}</span></div>` : "");
 const body = `<a class="gallery-return" href="/?tab=${galleryTab}" title="Gallery" aria-label="Gallery">${HOME_ICON}</a><article class="signature-page" aria-labelledby="signature-heading"><div class="signature-sheet"><figure class="signature-art"><img src="/artifacts/${escapeHtml(signature.signatureId)}.svg" alt="Signature claimed as @${handle}"></figure><div class="signature-record"><div class="signature-heading"><h1 id="signature-heading">${xProfileLink(signature.handleAtClaim)}</h1><span class="signature-gr0k">gr0k ${gr0k}</span><div class="signature-tags" aria-label="Signature status"><span class="signature-tag" data-signature-status="claimed" title="${claimTitle}">Claimed</span>${mintTag}</div></div>${mintEntry}<div class="signature-tools"><details class="signature-provenance"><summary>Provenance</summary><div class="signature-provenance-body">${claimSection}${artworkSection}${mintSection}</div></details><a class="signature-svg" href="/artifacts/${escapeHtml(signature.signatureId)}.svg" title="Open canonical SVG" aria-label="Open canonical SVG">SVG ↗</a></div>${withdrawAction}</div></div></article>`;
   const artifactPath = `/artifacts/${signature.signatureId}.png`;
   return layout({ title: `@${signature.handleAtClaim} · signature`, description: fixtureMode ? `A development rehearsal signature for @${signature.handleAtClaim}.` : `A signature claimed via X by @${signature.handleAtClaim}.`, body, fixtureMode, localChainRehearsal, robots: !fixtureMode && finalized ? "index" : "noindex", ogImage: `${publicOrigin.replace(/\/$/, "")}${artifactPath}`, bookPage: true, developmentNotes, claimNoticeSignatureId: signature.signatureId });
@@ -304,7 +309,8 @@ export interface CollectionPageParams {
   mintBySignature?: ReadonlyMap<string, CollectionMintView>;
   localOAuthMode?: boolean;
   localChainRehearsal?: boolean;
-  reauthRequired?: boolean;
+  walletLinkConfirmed?: boolean;
+  walletRevokeConfirmed?: boolean;
   publicOrigin?: string;
   preview?: PagePreview;
 }
@@ -365,7 +371,7 @@ export function collectionPage(params: CollectionPageParams): string {
   return layout({ title: `@${params.currentHandle} · My collection`, description: params.localChainRehearsal ? "Durable local claims, real Anvil mints and transfers, and automatic local event projection." : "Your claimed signatures and Ethereum mint status.", body, fixtureMode: params.fixtureMode, localChainRehearsal: params.localChainRehearsal, robots: "noindex", bookPage: true, accountPanel: { ...params, previewOnly: Boolean(params.preview) }, grokHandoff: params.signatures.length === 0, preview: params.preview, developmentTools: developmentTools.join(""), localOAuthMode: params.localOAuthMode ?? params.fixtureMode, developmentNotes: localIdentityNotes(params.localOAuthMode ?? params.fixtureMode) });
 }
 
-export type MintEntryStage = "sign-in" | "reauthenticate" | "wrong-account" | "wallet" | "paused" | "pending" | "ready";
+export type MintEntryStage = "sign-in" | "wrong-account" | "wallet" | "paused" | "pending" | "ready";
 
 /** Read-only entry guidance. No metadata is frozen and no mint is authorized here. */
 export function mintEntryPage(params: {
@@ -373,42 +379,46 @@ export function mintEntryPage(params: {
   stage: MintEntryStage;
   account: AccountPanelView;
   statusLabel?: string;
+  pendingElsewhere?: boolean;
   preview?: PagePreview;
 }): string {
   const { signature, stage, account, preview } = params;
   const localOAuth = account.localOAuthMode ?? account.fixtureMode;
   const returnTo = `/signatures/${signature.signatureId}/mint`;
-  const needsIdentity = ["sign-in", "reauthenticate", "wrong-account"].includes(stage);
+  const needsIdentity = ["sign-in", "wrong-account"].includes(stage);
   const message = {
     "sign-in": "Sign in with the X account that originally claimed this signature.",
-    reauthenticate: "Confirm your X sign-in before minting. This security check does not change your claim or wallet.",
     "wrong-account": "This signature belongs to another X account. Switch to the original claimant to continue.",
-    wallet: "Link a wallet and prove ownership to continue. Linking does not mint or send a transaction.",
+    wallet: "Connect a wallet to receive the token and prove you control it. No transaction is sent yet.",
     paused: "Minting is paused. Your claim remains available; no wallet action is needed until minting resumes.",
-    pending: "This mint is awaiting confirmation or verification. No new mint can be started while it is being resolved.",
-    ready: "Your wallet is linked. Next, review the exact artwork and permanent publication before authorizing.",
+    pending: params.pendingElsewhere ? "Another mint is still pending. Finish or resolve it before choosing a recipient for this signature." : "This mint is awaiting confirmation or verification. No new mint can be started while it is being resolved.",
+    ready: "The recipient is verified for this mint. Review the exact artwork, recipient, and fees before authorizing.",
   }[stage];
-  const signInLabel = stage === "wrong-account" ? "Switch X account" : stage === "reauthenticate" ? "Confirm X sign-in" : "Sign in with X";
+  const signInLabel = stage === "wrong-account" ? "Switch X account" : "Sign in with X";
   const action = needsIdentity
     ? `<form class="auth-actions" method="post" action="/auth/x/start"><input type="hidden" name="purpose" value="account_login"><input type="hidden" name="return_to" value="${escapeHtml(returnTo)}"><button class="auth-action" type="submit"><span>${signInLabel}</span></button></form>`
     : stage === "wallet" ? walletLinkControls(account)
     : `<div class="auth-actions"><button class="auth-action" type="button" disabled><span>${stage === "paused" ? "Minting paused" : stage === "pending" ? "Await mint verification" : "Review and authorize"}</span></button></div>`;
-  const remainingSteps = ["wallet", "reauthenticate", "ready"].includes(stage)
-    ? [...(!account.wallet ? ["Link and verify your wallet"] : []), "Review the mint details", "Confirm the transaction in your wallet"]
+  const remainingSteps = ["wallet", "ready"].includes(stage)
+    ? [...(stage === "wallet" ? ["Connect your wallet and prove control"] : []), "Review the mint details", "Confirm the transaction in your wallet"]
     : [];
   const steps = remainingSteps.length
     ? `<ol class="mint-entry-steps" aria-label="Remaining mint steps">${remainingSteps.map(step => `<li>${step}</li>`).join("")}</ol>`
     : "";
   const artwork = preview ? "/dev/collection-states/artwork.svg" : `/artifacts/${escapeHtml(signature.signatureId)}.svg`;
   const back = preview ? `/dev/collection-states?state=${escapeHtml(preview.state)}` : `/signatures/${escapeHtml(signature.signatureId)}`;
-  const content = `<h1>Mint this signature</h1><div class="signature-heading"><span>${xProfileLink(signature.handleAtClaim)}</span><span class="signature-gr0k">gr0k ${formatGr0k(signature.gr0kRaw)}</span></div><img class="mint-entry-art" src="${artwork}" alt="Signature claimed as @${escapeHtml(signature.handleAtClaim)}">${steps}<p>${escapeHtml(message)}</p>${params.statusLabel ? `<p class="auth-note">${escapeHtml(params.statusLabel)}</p>` : ""}${preview ? `<fieldset class="preview-controls" disabled>${action}</fieldset>` : action}<p class="auth-note">Minting is optional. Only an explicit authorization and wallet transaction can mint the work.</p><a class="auth-action auth-action-quiet" href="${back}"><span>Back to signature →</span></a>`;
-  return authPage({ title: `Mint @${signature.handleAtClaim} signature`, description: "Link a wallet if needed, then review and confirm the mint in your wallet.", body: `<div data-mint-entry="${stage}">${content}</div>`, fixtureMode: account.fixtureMode, localChainRehearsal: account.localChainRehearsal, accountPanel: { ...account, previewOnly: Boolean(preview) }, preview, localOAuthMode: localOAuth, developmentNotes: localIdentityNotes(localOAuth) });
+  const content = `<h1>Mint this signature</h1><div class="signature-heading"><span>${xProfileLink(signature.handleAtClaim)}</span><span class="signature-gr0k">gr0k ${formatGr0k(signature.gr0kRaw)}</span></div><img class="mint-entry-art" src="${artwork}" alt="Signature claimed as @${escapeHtml(signature.handleAtClaim)}">${steps}<p>${escapeHtml(message)}</p>${params.statusLabel && !params.pendingElsewhere ? `<p class="auth-note">${escapeHtml(params.statusLabel)}</p>` : ""}${preview ? `<fieldset class="preview-controls" disabled>${action}</fieldset>` : action}<p class="auth-note">Minting is optional. Only an explicit authorization and wallet transaction can mint the work.</p><a class="auth-action auth-action-quiet" href="${back}"><span>Back to signature →</span></a>`;
+  return authPage({ title: `Mint @${signature.handleAtClaim} signature`, description: "Connect a wallet to receive the token. You’ll prove you control it, then review and confirm the mint.", body: `<div data-mint-entry="${stage}">${content}</div>`, fixtureMode: account.fixtureMode, localChainRehearsal: account.localChainRehearsal, accountPanel: { ...account, mintRecipientConfirmed: stage === "wallet" && account.mintRecipientConfirmed, previewOnly: Boolean(preview) }, preview, localOAuthMode: localOAuth, developmentNotes: localIdentityNotes(localOAuth) });
 }
 
 export function mintReviewPage(params: {
   signature: SignatureView;
   currentHandle: string;
   wallet: WalletView;
+  walletBindingId: string;
+  claimInstanceId: string;
+  /** An unresolved authorization must keep its exact recipient. */
+  resumeAuthorization?: boolean;
   csrfToken: string;
   chainName: string;
   metadataUri: string;
@@ -430,7 +440,9 @@ export function mintReviewPage(params: {
     : "Minting permanently publishes a link among this historical X handle, signature, opaque account reference, wallet address, and Ethereum transaction. Blockchain records cannot be deleted. IPFS copies may remain available even if signatures.gallery later removes its own listing or pins.";
   const permanence = "Minting permanently publishes a link among this historical X handle, signature, opaque account reference, wallet address, and Ethereum transaction. Blockchain records cannot be deleted. IPFS copies may remain available even if signatures.gallery later removes its own listing or pins.";
   const usesLocalTestWallet = params.localChainRehearsal && params.wallet.address.toLowerCase() === LOCAL_TEST_WALLET.toLowerCase();
-  const body = `<section class="mint-review"${params.localChainRehearsal ? " data-local-chain-rehearsal" : ""}><div class="mint-art"><div class="art-label"><span>EXACT V1 ARTWORK</span><span>${escapeHtml(signature.signatureId.slice(0, 13))}…</span></div><img src="/artifacts/${escapeHtml(signature.signatureId)}.svg" alt="Exact stored signature for @${escapeHtml(signature.handleAtClaim)}"></div><article class="mint-review-copy"><p class="eyebrow">Mint review</p><h1>Authorize this exact work.</h1><dl class="facts"><div><dt>Handle at claim</dt><dd>${xProfileLink(signature.handleAtClaim)}</dd></div>${handleChanged}<div><dt>gr0k</dt><dd>${formatGr0k(signature.gr0kRaw)}</dd></div><div><dt>Renderer</dt><dd>${escapeHtml(signature.rendererVersion)}</dd></div><div><dt>SVG SHA-256</dt><dd>${escapeHtml(signature.svgSha256)}</dd></div><div><dt>Metadata URI preview</dt><dd>${escapeHtml(params.metadataUri)}</dd></div><div><dt>Metadata SHA-256</dt><dd>${escapeHtml(params.metadataSha256)}</dd></div><div><dt>Linked wallet</dt><dd>${escapeHtml(params.wallet.address)}</dd></div><div><dt>Network</dt><dd>${escapeHtml(params.chainName)}</dd></div><div><dt>Project fee</dt><dd>None</dd></div><div><dt>Network gas</dt><dd>Estimated separately by your wallet before submission</dd></div></dl><div class="notice permanence"><strong>This publication cannot be undone</strong><p>${permanence}</p></div><p class="trust-copy">The linked wallet will submit the transaction and initially receive the token. The token is transferable. Grok origin is declared, not independently verified.</p><form id="mint-authorization" class="mint-authorization-form" data-local-chain-rehearsal="${params.localChainRehearsal === true}" data-local-wallet="${Boolean(usesLocalTestWallet)}" method="post" action="/api/v2/signatures/${escapeHtml(signature.signatureId)}/mint-authorizations" data-signature-id="${escapeHtml(signature.signatureId)}" data-signature-digest="${escapeHtml(params.signatureDigest)}" data-wallet="${escapeHtml(params.wallet.address)}" data-chain-id="${escapeHtml(params.wallet.chainId)}" data-contract="${escapeHtml(params.contract)}" data-svg-sha256="${escapeHtml(signature.svgSha256)}" data-png-sha256="${escapeHtml(signature.pngSha256)}" data-metadata-sha256="${escapeHtml(params.metadataSha256)}" data-token-uri="${escapeHtml(params.metadataUri)}" data-token-uri-hash="${escapeHtml(params.tokenUriHash)}"><input type="hidden" name="csrf" value="${escapeHtml(params.csrfToken)}"><label class="consent-line"><input required type="checkbox" name="permanence_acknowledged" value="yes"> I understand the public and irreversible record described above.</label><button class="auth-action" type="submit"><span>Authorize mint</span></button></form><p class="inline-feedback" data-mint-feedback role="status" aria-live="polite"></p><noscript><p class="fine-print">JavaScript is required to verify the authorization and ask your wallet to submit the mint.</p></noscript><a class="quiet-link" href="/me">Cancel and return to my collection</a></article></section>`;
+  const changeRecipient = params.resumeAuthorization ? "" : `<a class="auth-action auth-action-quiet" href="/signatures/${escapeHtml(signature.signatureId)}/mint?recipient=change"><span>Change recipient</span></a>`;
+  const authorizeLabel = params.resumeAuthorization ? "Confirm in wallet" : "Authorize mint";
+  const body = `<section class="mint-review"${params.localChainRehearsal ? " data-local-chain-rehearsal" : ""}><div class="mint-art"><div class="art-label"><span>EXACT V1 ARTWORK</span><span>${escapeHtml(signature.signatureId.slice(0, 13))}…</span></div><img src="/artifacts/${escapeHtml(signature.signatureId)}.svg" alt="Exact stored signature for @${escapeHtml(signature.handleAtClaim)}"></div><article class="mint-review-copy"><p class="eyebrow">Mint review</p><h1>${params.resumeAuthorization ? "Complete this mint." : "Authorize this exact work."}</h1><dl class="facts"><div><dt>Handle at claim</dt><dd>${xProfileLink(signature.handleAtClaim)}</dd></div>${handleChanged}<div><dt>gr0k</dt><dd>${formatGr0k(signature.gr0kRaw)}</dd></div><div><dt>Renderer</dt><dd>${escapeHtml(signature.rendererVersion)}</dd></div><div><dt>SVG SHA-256</dt><dd>${escapeHtml(signature.svgSha256)}</dd></div><div><dt>Metadata URI preview</dt><dd>${escapeHtml(params.metadataUri)}</dd></div><div><dt>Metadata SHA-256</dt><dd>${escapeHtml(params.metadataSha256)}</dd></div><div><dt>Recipient</dt><dd>${escapeHtml(params.wallet.address)}</dd></div><div><dt>Network</dt><dd>${escapeHtml(params.chainName)}</dd></div><div><dt>Project fee</dt><dd>None</dd></div><div><dt>Network gas</dt><dd>Estimated separately by your wallet before submission</dd></div></dl>${changeRecipient}<div class="notice permanence"><strong>This publication cannot be undone</strong><p>${permanence}</p></div><p class="trust-copy">The verified recipient will submit the transaction and initially receive the token. The token is transferable. Grok origin is declared, not independently verified.</p><form id="mint-authorization" class="mint-authorization-form" data-local-chain-rehearsal="${params.localChainRehearsal === true}" data-local-wallet="${Boolean(usesLocalTestWallet)}" method="post" action="/api/v2/signatures/${escapeHtml(signature.signatureId)}/mint-authorizations" data-signature-id="${escapeHtml(signature.signatureId)}" data-signature-digest="${escapeHtml(params.signatureDigest)}" data-wallet="${escapeHtml(params.wallet.address)}" data-recipient="${escapeHtml(params.wallet.address)}" data-wallet-binding-id="${escapeHtml(params.walletBindingId)}" data-claim-instance-id="${escapeHtml(params.claimInstanceId)}" data-chain-id="${escapeHtml(params.wallet.chainId)}" data-contract="${escapeHtml(params.contract)}" data-svg-sha256="${escapeHtml(signature.svgSha256)}" data-png-sha256="${escapeHtml(signature.pngSha256)}" data-metadata-sha256="${escapeHtml(params.metadataSha256)}" data-token-uri="${escapeHtml(params.metadataUri)}" data-token-uri-hash="${escapeHtml(params.tokenUriHash)}"><input type="hidden" name="csrf" value="${escapeHtml(params.csrfToken)}"><label class="consent-line"><input required type="checkbox" name="permanence_acknowledged" value="yes"> I understand the public and irreversible record described above.</label><button class="auth-action" type="submit"><span>${authorizeLabel}</span></button></form><p class="inline-feedback" data-mint-feedback role="status" aria-live="polite"></p><noscript><p class="fine-print">JavaScript is required to verify the authorization and ask your wallet to submit the mint.</p></noscript><a class="quiet-link" href="/me">Cancel and return to my collection</a></article></section>`;
   return layout({ title: `Mint @${signature.handleAtClaim} signature`, description: params.localChainRehearsal ? "Review and submit the exact claimed signature on the local Anvil chain." : "Review and authorize the exact claimed signature for Ethereum minting.", body, fixtureMode: params.fixtureMode, localChainRehearsal: params.localChainRehearsal, robots: "noindex", developmentTools: usesLocalTestWallet ? '<section class="rehearsal-page-note" data-dev-mint-controls><h2>Local wallet mint</h2><p>First acknowledge the publication disclosure on the page, then use the TEST wallet below. Anvil 31337 only; never send real funds.</p><button class="auth-action" type="submit" form="mint-authorization" data-wallet-provider="local"><span>Authorize with local TEST wallet</span></button><p data-mint-feedback role="status" aria-live="polite"></p></section>' : "", developmentNotes: params.fixtureMode || params.localChainRehearsal ? [{ title: "Mint rehearsal", paragraphs: [rehearsalPermanence] }] : [] });
 }
 
@@ -440,24 +452,23 @@ export function signInRequiredPage(fixtureMode: boolean, localOAuthMode = fixtur
   return authPage({ collection: true, title: "Sign in · Signatures Gallery", description: "Sign in to view your collection.", fixtureMode, localChainRehearsal, preview, grokHandoff: true, localOAuthMode, developmentNotes: localIdentityNotes(localOAuthMode), accountPanel: preview ? { fixtureMode, localOAuthMode, mintEnabled: true, mintChainId: "31337", previewOnly: true } : undefined, body: `<div class="collection-intro"><div class="signature-heading"><h1>My Collection</h1></div></div><div class="signed-out-participation">${participationGuidance({ publicOrigin })}</div><section class="signed-out-access" aria-label="Access your collection"><p class="auth-note">Already have a collection?</p>${action}<details class="auth-disclosure"><summary>About sign-in</summary><p>${explanation}</p></details></section>` });
 }
 
-export function errorPage(status: number, code: string, message: string, fixtureMode = false, localOAuthMode = fixtureMode, localChainRehearsal = false): string {
-  const reauthenticate = code === "X_REAUTH_REQUIRED" || code === "AUTH_EXPIRED"
-    ? `<form method="post" action="/auth/x/start"><input type="hidden" name="purpose" value="account_login"><button class="auth-action" type="submit"><span>Reauthenticate with X</span></button></form>`
+export function errorPage(status: number, code: string, message: string, fixtureMode = false, localOAuthMode = fixtureMode, localChainRehearsal = false, returnTo?: string): string {
+  const signIn = code === "AUTH_REQUIRED" || code === "AUTH_EXPIRED"
+    ? `<form method="post" action="/auth/x/start"><input type="hidden" name="purpose" value="account_login">${returnTo ? `<input type="hidden" name="return_to" value="${escapeHtml(returnTo)}">` : ""}<button class="auth-action" type="submit"><span>Sign in with X</span></button></form>`
     : "";
   const localMessage: Record<string, string> = {
     LOCAL_OAUTH_DENIED: "Sign-in was cancelled. Start again when you are ready.",
     LOCAL_OAUTH_UNAVAILABLE: "Sign-in could not be completed. Please try again.",
     LOCAL_OAUTH_REQUEST_INVALID: "This sign-in request is invalid or expired. Start sign-in again.",
-    AUTH_REQUIRED: "Sign in with X to continue.",
-    AUTH_EXPIRED: "Your sign-in has expired. Reauthenticate with X to continue.",
-    X_REAUTH_REQUIRED: "Refresh your X sign-in to continue.",
+    AUTH_REQUIRED: "Session expired. Sign in to continue.",
+    AUTH_EXPIRED: "Session expired. Sign in to continue.",
     INVALID_OAUTH_STATE: "This sign-in request is invalid or expired. Start sign-in again.",
   };
   const productMessage = localOAuthMode ? localMessage[code] ?? message : message;
   const developmentError = localOAuthMode && code.startsWith("LOCAL_");
   const developmentNotes = [...localIdentityNotes(localOAuthMode), ...(developmentError || productMessage !== message ? [{ title: "Authentication test details", paragraphs: [code, message] }] : [])];
   const details = developmentError ? "" : `<details class="auth-disclosure"><summary>Details</summary><p>${escapeHtml(code)}</p></details>`;
-  const body = `<h1>${status}</h1><p>${escapeHtml(productMessage)}</p><div class="auth-actions">${reauthenticate}<a class="auth-action auth-action-quiet" href="/"><span>Return home</span></a></div>${details}`;
+  const body = `<h1>${status}</h1><p>${escapeHtml(productMessage)}</p><div class="auth-actions">${signIn}<a class="auth-action auth-action-quiet" href="${returnTo ? escapeHtml(returnTo) + (code === "X_ACTION_CONFIRMATION_REQUIRED" ? "#withdraw" : "") : "/"}"><span>${returnTo ? "Back to signature" : "Return home"}</span></a></div>${details}`;
   return authPage({ title: `${status} · ${code}`, description: productMessage, body, fixtureMode, localChainRehearsal, localOAuthMode, developmentNotes });
 }
 

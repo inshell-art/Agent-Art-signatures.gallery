@@ -41,6 +41,7 @@ const durable = new LocalPostgresState(pool);
 const releaseWriter = await durable.acquireExclusiveWriter();
 await pool.query(readFileSync(new URL("../store/migrations/003_claim_withdrawal.sql", import.meta.url), "utf8"));
 await pool.query(readFileSync(new URL("../store/migrations/004_formal_algorithm.sql", import.meta.url), "utf8"));
+await pool.query(readFileSync(new URL("../store/migrations/005_action_auth_policy.sql", import.meta.url), "utf8"));
 const mintState = await durable.loadMintStore();
 let indexer = await durable.loadIndexer();
 if (!indexer) throw new Error("No durable local indexer snapshot. Run npm run local:up.");

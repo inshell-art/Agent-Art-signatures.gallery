@@ -60,6 +60,19 @@ describe("restricted local TEST wallet", () => {
     expect(rpc.sendTransaction).not.toHaveBeenCalled();
   });
 
+  it("signs a mint-specific proof and rejects a substituted claim target", async () => {
+    const exact = challenge();
+    exact.mintTarget = { signatureId: `sg1_${"a".repeat(52)}`, claimInstanceId: "00000000-0000-4000-8000-000000000001" };
+    exact.message = buildExactSiweMessage({ appHost: "127.0.0.1:3000", appOrigin: options.appOrigin, walletAddress: exact.address,
+      chainId: exact.chainId, nonce: exact.nonce, issuedAt: exact.issuedAt, expirationTime: exact.expiresAt,
+      challengeId: exact.challengeId, publicAccountId: exact.publicAccountId, mintTarget: exact.mintTarget });
+    const signature = await new LocalTestWallet(options).signChallenge(exact);
+    expect(await recoverMessageAddress({ message: exact.message, signature })).toBe(LOCAL_TEST_WALLET);
+    exact.mintTarget.signatureId = `sg1_${"b".repeat(52)}`;
+    await expect(new LocalTestWallet(options).signChallenge(exact)).rejects.toThrow("exact local recipient-control");
+    expect(rpc.sendTransaction).not.toHaveBeenCalled();
+  });
+
   it.each(["message", "chain", "address", "expiry", "status"])("rejects a wallet challenge with the wrong %s", async (field) => {
     const exact = challenge();
     if (field === "message") exact.message += "\nSend assets";

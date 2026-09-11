@@ -135,6 +135,79 @@ try {
   if (new Set(concurrent.map((entry) => entry.account.publicAccountId)).size !== 1) {
     throw new Error("Concurrent first claims did not converge on one PostgreSQL account.");
   }
+  // Exercise the additive policy migration over existing data, without touching
+  // the application's database. Only the two identity-age CHECKs may disappear.
+  const walletConstraints = async () => (await pool!.query<{ relation: string; name: string; definition: string }>(`
+    SELECT conrelid::regclass::text AS relation, conname AS name,
+           pg_get_constraintdef(oid) AS definition FROM pg_constraint
+    WHERE conrelid IN ('wallet_binding_challenges'::regclass, 'wallet_bindings'::regclass,
+                      'wallet_binding_heads'::regclass, 'mint_authorizations'::regclass)
+    ORDER BY conrelid::regclass::text, conname
+  `)).rows;
+  const beforePolicyConstraints = await walletConstraints();
+  const obsoleteDefinitions = new Set([
+    "CHECK ((expires_at <= (x_authenticated_at + '00:15:00'::interval)))",
+    "CHECK ((proved_at <= (x_authenticated_at + '00:15:00'::interval)))",
+  ]);
+  if (beforePolicyConstraints.filter(row => obsoleteDefinitions.has(row.definition)).length !== 2) {
+    throw new Error("Expected exactly two pre-policy X identity-age constraints.");
+  }
+  const insertChallenge = (name: string, nonceByte: string, created: string, expires: string) => pool!.query(`
+    INSERT INTO wallet_binding_challenges (
+      challenge_id, bound_session_id_digest, x_user_id, public_account_id, wallet_address,
+      chain_id, purpose, nonce_digest, exact_siwe_message, status,
+      x_authenticated_at, created_at, expires_at
+    ) VALUES ($1, decode(repeat('01', 32), 'hex'), $2, $3, decode(repeat('11', 20), 'hex'),
+      11155111, 'mint_wallet_binding_v1', decode(repeat($4, 32), 'hex'), 'exact test SIWE',
+      'pending', '2026-09-05T00:00:00Z', $5, $6)
+  `, [name, concurrent[0]!.account.xUserId, concurrent[0]!.account.publicAccountId, nonceByte, created, expires]);
+  await insertChallenge("before-policy", "02", "2026-09-05T00:01:00Z", "2026-09-05T00:10:00Z");
+  const beforeChallenge = (await pool.query("SELECT to_jsonb(c) AS data FROM wallet_binding_challenges c WHERE challenge_id = 'before-policy'")).rows;
+  const applyPolicyMigration = () => run(binary("psql"), [...base, "-d", database, "-v", "ON_ERROR_STOP=1", "-f", resolve(repoRoot, "src/store/migrations/005_action_auth_policy.sql")]);
+  applyPolicyMigration();
+  const afterPolicyConstraints = await walletConstraints();
+  if (JSON.stringify(afterPolicyConstraints) !== JSON.stringify(beforePolicyConstraints.filter(row => !obsoleteDefinitions.has(row.definition)))) {
+    throw new Error("Action policy migration changed constraints beyond the two obsolete identity-age checks.");
+  }
+  applyPolicyMigration();
+  if (JSON.stringify(await walletConstraints()) !== JSON.stringify(afterPolicyConstraints)
+      || JSON.stringify((await pool.query("SELECT to_jsonb(c) AS data FROM wallet_binding_challenges c WHERE challenge_id = 'before-policy'")).rows) !== JSON.stringify(beforeChallenge)) {
+    throw new Error("Action policy migration reapplication changed existing schema or wallet evidence.");
+  }
+  // X confirms near flow start; issuing SIWE near the flow deadline still gives
+  // that separate proof its full ten minutes, without a second X freshness cap.
+  await insertChallenge("independent-proof", "03", "2026-09-05T00:14:00Z", "2026-09-05T00:24:00Z");
+  for (const [name, nonce, created, expires] of [
+    ["too-long-proof", "04", "2026-09-05T00:14:00Z", "2026-09-05T00:24:01Z"],
+    ["future-identity", "05", "2026-09-04T23:59:00Z", "2026-09-05T00:05:00Z"],
+  ]) {
+    let rejected = false;
+    try { await insertChallenge(name!, nonce!, created!, expires!); }
+    catch (error) { if ((error as { code?: string }).code === "23514") rejected = true; else throw error; }
+    if (!rejected) throw new Error(`Action policy migration weakened the ${name} constraint.`);
+  }
+  const bindingClient = await pool.connect();
+  try {
+    await bindingClient.query("BEGIN");
+    await bindingClient.query("INSERT INTO wallet_binding_heads(x_user_id, chain_id) VALUES ($1, 11155111)", [concurrent[0]!.account.xUserId]);
+    await bindingClient.query(`
+      INSERT INTO wallet_bindings (
+        wallet_binding_id, x_user_id, chain_id, wallet_address, proof_scheme,
+        siwe_message, siwe_message_hash, wallet_proof, verification_block_number,
+        verification_block_hash, x_authenticated_at, proved_at, activated_at
+      ) VALUES (decode(repeat('31', 32), 'hex'), $1, 11155111, decode(repeat('11', 20), 'hex'),
+        'eoa_siwe_v1', 'exact test SIWE', decode(repeat('32', 32), 'hex'),
+        decode(repeat('01', 64) || '1b', 'hex'), 1, decode(repeat('33', 32), 'hex'),
+        '2026-09-05T00:00:00Z', '2026-09-05T00:24:00Z', '2026-09-05T00:24:00Z')
+    `, [concurrent[0]!.account.xUserId]);
+    await bindingClient.query("UPDATE wallet_binding_heads SET active_wallet_binding_id = decode(repeat('31', 32), 'hex'), version = version + 1 WHERE x_user_id = $1 AND chain_id = 11155111", [concurrent[0]!.account.xUserId]);
+    await bindingClient.query("COMMIT");
+  } catch (error) {
+    await bindingClient.query("ROLLBACK");
+    throw error;
+  } finally {
+    bindingClient.release();
+  }
   const duplicate = await Promise.all([signatures.claim(input(33)), signatures.claim(input(33))]);
   if (duplicate.filter((entry) => entry.existing).length !== 1) {
     throw new Error("Concurrent identical PostgreSQL claims were not idempotent.");
@@ -249,7 +322,7 @@ try {
   run(binary("psql"), [...base, "-d", database, "-v", "ON_ERROR_STOP=1", "-f", resolve(repoRoot, "src/store/migrations/004_formal_algorithm.sql")]);
   await pool.end();
   pool = null;
-  console.log(JSON.stringify({ migrated: true, repositoriesExercised: true, withdrawalExercised: true, caseSensitiveArtworkExercised: true, ...result }, null, 2));
+  console.log(JSON.stringify({ migrated: true, repositoriesExercised: true, withdrawalExercised: true, caseSensitiveArtworkExercised: true, actionAuthPolicyExercised: true, ...result }, null, 2));
 } catch (error) {
   if (existsSync(log)) console.error(readFileSync(log, "utf8"));
   throw error;

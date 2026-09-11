@@ -1,5 +1,7 @@
 # V2 implementation status
 
+Authentication and mint UX checkpoint, 2026-09-11: an active app session established with X is sufficient for owned-claim mint setup; there is no routine extra X OAuth round trip per recipient or mint. Exact session-bound wallet proof, explicit recipient/work review, CSRF, replay/race defenses, and pending-authorization locks remain mandatory. Withdrawal and legacy generic wallet-management actions retain their separate X confirmation requirements. See [authentication policy](authentication-policy.md) for unchanged lifetimes and the accepted session-theft trade-off, and [current handoff](../HANDOFF.md) for verification and runtime safety.
+
 Formal algorithm update, 2026-09-10: artwork now uses the approved **Signature Algorithm v1.0.0**, pinned to upstream commit `1e1dab4ec093261006feb7879c109413c0b3ac6d`. Inputs are exact-case handles and integer seeds `1–100` (default `22`), not decimal ratios. `sg-renderer-1.0.0` and `sg-card-1.0.0` produce the formal artwork; prior decimal-seed claims and permalinks are retired, not silently re-rendered. Account authorization still compares handles case-insensitively. This resolves the obsolete-algorithm blocker, not the external infrastructure and deployment gates below. See [formal algorithm adoption](formal-algorithm-v1.md).
 
 Claim-flow update, 2026-09-09: the explicit **Claim with X** CTA binds consent to the exact preview. Matching OAuth authentication persists the claim before redirecting directly to its permanent signature page, with a success notice. Ordinary account sign-in does not claim; failed persistence offers an explicit CSRF-protected retry. Legacy cached forms retain their final confirmation because they do not carry the new consent. Minting remains a separate wallet action.
@@ -32,7 +34,7 @@ The executable local surface includes:
 - V1 preview, render assets, fixture/X-auth flow boundary, explicit claim creation, account collection, permalink, and immutable artifact responses;
 - a presentation-only homepage composition that captures exact case-preserving words or an underscore-joined phrase through the formal renderer boundary at fixed integer `gr0k 22`, using the release's expanded-canvas policy for long text, then lays stored drawings out without renderer calls or non-uniform stretching; it creates no X-handle artifact, claim, or mint provenance (see `docs/slogan-composition.md`);
 - a fixture account with three V2 states: unminted, included but unfinalized, and finalized;
-- V2 wallet challenge/confirmation endpoints, binding revocation, guided fresh-X reauthentication, mint review and consent, authorization creation, advisory transaction reporting, mint status, finalized-position Gallery keyset reads, claimant transaction/current-holder detail, fixture-only lifecycle advancement in `npm run dev`, and actual Anvil mint/transfer controls in `local:serve`;
+- V2 wallet challenge/confirmation endpoints, binding revocation, active-session mint recipient selection, action-specific X confirmation for legacy generic wallet management and claim withdrawal, mint review and consent, authorization creation, advisory transaction reporting, mint status, finalized-position Gallery keyset reads, claimant transaction/current-holder detail, fixture-only lifecycle advancement in `npm run dev`, and actual Anvil mint/transfer controls in `local:serve`;
 - exact SIWE and EIP-712 construction/verification, V1 digest-to-token-ID conversion, canonical signature checks, deterministic metadata bytes, SHA-256 commitments, and deterministic UnixFS CID calculation;
 - system-following light/dark theme behavior and the complete fixture UI.
 
@@ -83,7 +85,7 @@ Sepolia issuance remains blocked until all of the following are real and indepen
 - a dedicated non-exportable staging signer, signer request idempotency, local recovery verification, audit reconciliation, and alerting;
 - approved distinct deployer/admin Safe/authorizer manager/pauser/revoker/online-authorizer assignments;
 - approved canonical collection metadata bytes and commitments;
-- a fresh-X → SIWE → authorization → Sepolia mint → finality → Gallery → transfer end-to-end rehearsal, including all specified failure cases;
+- active claimant session → explicit recipient selection → exact SIWE proof → reviewed authorization → Sepolia mint → finality → Gallery → transfer end-to-end rehearsal, including expired sessions/flows, replayed or wrong-target proofs, superseded recipients, and the existing mint/indexer failure cases;
 - source verification, independently reproduced initcode/runtime hashes, a real manifest, monitoring, incident/runbook work, and security review;
 - separate explicit approval to broadcast the Sepolia deployment and mint transactions.
 
@@ -123,7 +125,7 @@ npm run local:verify
 npm run local:serve
 ```
 
-Open <http://127.0.0.1:3000/s/alice/73> → **Claim with X** → approve **@alice** in the simulator → the permanent claimed signature page → **My Collection** → open DEV and use **Use local TEST wallet** → approve SIWE proof → **Mint this signature** → confirm the transaction → **Transfer local token** after automatic indexing. The claim needs no second confirmation after OAuth. Keep the canonical `http://127.0.0.1:3000` origin across restarts; unfinished frozen metadata is not silently regenerated if the port changes. Native-form origin handling uses `Referrer-Policy: same-origin` while retaining strict Origin and CSRF checks.
+Open <http://127.0.0.1:3000/s/alice/73> → **Claim with X** → approve **@alice** in the simulator → the permanent claimed signature page → **Mint this signature** → **Connect wallet** (or open DEV on that exact mint page and use **Use local TEST wallet**) → approve the exact SIWE proof → review the work/recipient and acknowledge publication → confirm the transaction → **Transfer local token** after automatic indexing. The claim needs no second confirmation after OAuth, and an active claimant session does not repeat X sign-in for mint setup. Keep the canonical `http://127.0.0.1:3000` origin across restarts; unfinished frozen metadata is not silently regenerated if the port changes. Native-form origin handling uses `Referrer-Policy: same-origin` while retaining strict Origin and CSRF checks.
 
 For real X authentication instead, configure the separate X developer app and git-ignored `.env.local`, run `npm run local:auth:check`, then start `npm run local:serve:x`. Use your own exact-case handle and an integer seed from 1 through 100 in the preview URL. The simulator's Alice account is not available in real-X mode. See [Real X + local app](real-x-local.md).
 

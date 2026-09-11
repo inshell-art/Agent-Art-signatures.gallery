@@ -1,10 +1,11 @@
 import { createHash, randomBytes } from "node:crypto";
-import type { OAuthPurpose } from "./types.js";
+import { V2Error } from "../v2/errors.js";
+import { isSessionActive } from "./authPolicy.js";
+import type { OAuthPurpose, SensitiveActionIntent } from "./types.js";
 
 export const CLAIM_ON_RETURN_INTENT = "claim-on-return-v1";
 
 const FLOW_TTL_MS = 15 * 60 * 1000;
-const SESSION_IDLE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 function token(bytes = 24): string {
   return randomBytes(bytes).toString("base64url");
@@ -29,6 +30,31 @@ export interface BrowserSession {
   lastSeenAt: Date;
   /** Short-lived, session-bound feedback; never part of a public signature response. */
   claimNotice?: { signatureId: string; expiresAt: Date };
+  /** Only the latest explicitly selected mint recipient may complete its proof. */
+  mintRecipientChallengeId?: string;
+  /** A fresh recipient proof for one exact mint, never general wallet authority. */
+  mintRecipient?: {
+    signatureId: string;
+    claimInstanceId: string;
+    xUserId: string;
+    sessionId: string;
+    walletBindingId: string;
+    address: string;
+    chainId: string;
+    provedAt: Date;
+    expiresAt: Date;
+    /** Once reserved, this proof may only retry this exact authorization. */
+    authorizationId?: string;
+  };
+  /** One-time action consent from X, restricted to this rotated session and target. */
+  actionApproval?: {
+    intent: SensitiveActionIntent;
+    sessionId: string;
+    xUserId: string;
+    confirmedAt: Date;
+    /** Reuses the initiating OAuth flow deadline; this is not an identity-age timer. */
+    expiresAt: Date;
+  };
 }
 
 export type FlowStatus = "pending" | "processing" | "authenticated" | "completed" | "failed";
@@ -38,6 +64,9 @@ export interface OAuthFlow {
   purpose: OAuthPurpose;
   /** Server-validated canonical mint route, bound to this one-time OAuth flow. */
   returnTo?: string;
+  actionIntent?: SensitiveActionIntent;
+  /** Stable account ID expected on an action callback, regardless of handle changes. */
+  actionXUserId?: string;
   stateDigest: string;
   boundSessionIdDigest: string;
   pkceVerifier: string;
@@ -72,11 +101,11 @@ export class MemoryAuthState {
 
   getOrCreateSession(id: string | null, now = new Date()): { session: BrowserSession; created: boolean } {
     const existing = id ? this.sessions.get(id) : undefined;
-    if (existing && now.getTime() - existing.lastSeenAt.getTime() <= SESSION_IDLE_TTL_MS) {
+    if (existing && isSessionActive(existing, now)) {
       existing.lastSeenAt = now;
       return { session: existing, created: false };
     }
-    if (id) this.sessions.delete(id);
+    if (id) this.logout(id);
     const session: BrowserSession = { id: token(), csrfToken: token(), identity: null, createdAt: now, lastSeenAt: now };
     this.sessions.set(session.id, session);
     return { session, created: true };
@@ -85,8 +114,8 @@ export class MemoryAuthState {
   getSession(id: string | null, now = new Date()): BrowserSession | null {
     if (!id) return null;
     const session = this.sessions.get(id);
-    if (!session || now.getTime() - session.lastSeenAt.getTime() > SESSION_IDLE_TTL_MS) {
-      if (id) this.sessions.delete(id);
+    if (!session || !isSessionActive(session, now)) {
+      this.logout(id);
       return null;
     }
     session.lastSeenAt = now;
@@ -98,6 +127,7 @@ export class MemoryAuthState {
     const flow: OAuthFlow = {
       id: token(18),
       purpose,
+      ...(purpose === "sensitive_action" && session.identity ? { actionXUserId: session.identity.xUserId } : {}),
       stateDigest: digest(state),
       boundSessionIdDigest: digest(session.id),
       pkceVerifier: verifier,
@@ -123,20 +153,38 @@ export class MemoryAuthState {
     const flowId = this.states.get(stateDigest);
     if (!flowId) return null;
     const flow = this.flows.get(flowId);
-    if (!flow || flow.status !== "pending" || flow.expiresAt < now) {
+    if (!flow || flow.status !== "pending" || !Number.isFinite(now.getTime()) || flow.expiresAt <= now) {
       this.states.delete(stateDigest);
       return null;
     }
     // A guessed/stolen state presented from a different browser must not burn
     // the legitimate browser's callback capability.
-    if (flow.boundSessionIdDigest !== digest(session.id)) return null;
+    if (this.sessions.get(session.id) !== session || !isSessionActive(session, now)
+      || flow.boundSessionIdDigest !== digest(session.id)) return null;
     this.states.delete(stateDigest);
     flow.status = "processing";
     return flow;
   }
 
   authenticate(flow: OAuthFlow, identity: AuthenticatedIdentity, session: BrowserSession, now = new Date()): BrowserSession {
-    if (flow.status !== "processing" && flow.status !== "pending") throw new Error("Flow cannot be authenticated.");
+    if (this.flows.get(flow.id) !== flow || this.sessions.get(session.id) !== session
+      || !isSessionActive(session, now) || flow.boundSessionIdDigest !== digest(session.id)
+      || (flow.status !== "processing" && flow.status !== "pending")
+      || !Number.isFinite(flow.createdAt.getTime()) || flow.createdAt > now
+      || !Number.isFinite(flow.expiresAt.getTime()) || flow.expiresAt <= now
+      || !Number.isFinite(identity.authenticatedAt.getTime()) || identity.authenticatedAt > now) {
+      throw new Error("Flow cannot be authenticated.");
+    }
+    if (flow.purpose === "sensitive_action") {
+      if (!flow.actionIntent || (!flow.actionXUserId && (session.identity || flow.actionIntent.kind !== "wallet_link"))) {
+        this.fail(flow);
+        throw new Error("Sensitive action requires a bound target and account.");
+      }
+      if (flow.actionXUserId !== undefined && flow.actionXUserId !== identity.xUserId) {
+        this.fail(flow);
+        throw new V2Error(403, "NOT_CLAIMANT", "Confirm this action with the same X account that started it.");
+      }
+    }
     const rotated: BrowserSession = {
       id: token(),
       csrfToken: token(),
@@ -144,8 +192,18 @@ export class MemoryAuthState {
       createdAt: session.createdAt,
       lastSeenAt: now,
     };
-    this.sessions.delete(session.id);
+    if (flow.purpose === "sensitive_action") {
+      rotated.actionApproval = {
+        intent: { ...flow.actionIntent! },
+        sessionId: rotated.id,
+        xUserId: identity.xUserId,
+        confirmedAt: new Date(now.getTime()),
+        expiresAt: new Date(flow.expiresAt.getTime()),
+      };
+    }
+    this.logout(session.id);
     this.sessions.set(rotated.id, rotated);
+    this.states.delete(flow.stateDigest);
     flow.boundSessionIdDigest = digest(rotated.id);
     flow.identity = identity;
     flow.pkceVerifier = "";
@@ -155,7 +213,10 @@ export class MemoryAuthState {
 
   getBoundFlow(session: BrowserSession, flowId: string, requiredStatus: FlowStatus, now = new Date()): OAuthFlow | null {
     const flow = this.flows.get(flowId);
-    if (!flow || flow.expiresAt < now || flow.status !== requiredStatus || flow.boundSessionIdDigest !== digest(session.id)) return null;
+    if (!flow || this.sessions.get(session.id) !== session || !isSessionActive(session, now)
+      || !Number.isFinite(flow.createdAt.getTime()) || !Number.isFinite(flow.expiresAt.getTime())
+      || flow.createdAt > now || flow.expiresAt <= now || flow.expiresAt <= flow.createdAt
+      || flow.status !== requiredStatus || flow.boundSessionIdDigest !== digest(session.id)) return null;
     return flow;
   }
 
@@ -182,10 +243,22 @@ export class MemoryAuthState {
   fail(flow: OAuthFlow): void {
     flow.status = "failed";
     flow.pkceVerifier = "";
+    this.states.delete(flow.stateDigest);
   }
 
   logout(sessionId: string | null): void {
-    if (sessionId) this.sessions.delete(sessionId);
+    if (!sessionId) return;
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      // Async wallet/claim operations may still hold this object after the map
+      // entry disappears. Revoke its authority as well as the browser cookie.
+      session.identity = null;
+      delete session.actionApproval;
+      delete session.claimNotice;
+      delete session.mintRecipient;
+      delete session.mintRecipientChallengeId;
+    }
+    this.sessions.delete(sessionId);
   }
 
   clearClaimNotices(signatureId: string): void {

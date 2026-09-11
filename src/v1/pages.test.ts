@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MINT_STATE_LABELS } from "../v2/model.js";
-import { collectionPage, homePage, mintEntryPage, mintReviewPage, signaturePage, type SignatureMintView, type SignatureView } from "./pages.js";
+import { collectionPage, errorPage, homePage, mintEntryPage, mintReviewPage, signaturePage, type SignatureMintView, type SignatureView } from "./pages.js";
 import { LOCAL_TEST_RECIPIENT, LOCAL_TEST_WALLET } from "../local/wallet.js";
 import { SITE_CSS } from "./siteCss.js";
 import { xProfileLink } from "./xProfile.js";
@@ -45,7 +45,7 @@ describe("compact public gallery captions", () => {
     expect(card).not.toContain("2026-09-06");
     expect(card).toContain(`/signatures/${signature.signatureId}`);
     expect(card).toContain(`/artifacts/${signature.signatureId}.svg`);
-    expect(card).toContain(tab === "minted" ? "Minted by linked wallet" : "Claimed via X");
+    expect(card).toContain(tab === "minted" ? "Initial recipient" : "Claimed via X");
     expect(SITE_CSS).toMatch(/\.gallery-card-copy\{[^}]*grid-template-columns:minmax\(0,1fr\) auto/);
     expect(SITE_CSS).toMatch(/\.gallery-card-copy>span\{[^}]*grid-column:2;grid-row:1;white-space:nowrap/);
     expect(SITE_CSS).toMatch(/\.gallery-card-copy>strong\{[^}]*text-overflow:ellipsis;white-space:nowrap/);
@@ -60,22 +60,79 @@ function provenance(html: string): string {
 }
 
 describe("minimal shared signature detail", () => {
-  it.each(["wallet", "reauthenticate", "ready"] as const)("shows only remaining mint steps for %s", stage => {
+  it.each([false, true])("offers the wallet proof only to the active original claimant (eligible=%s)", confirmed => {
+    const html = mintEntryPage({ signature, stage: "wallet", account: {
+      currentHandle: "historical_name", csrfToken: "private-csrf", mintEnabled: true,
+      mintChainId: "31337", fixtureMode: false, mintRecipientConfirmed: confirmed,
+      mintSignatureId: signature.signatureId, mintClaimInstanceId: "claim-instance", mintPreviousBindingId: null,
+    } });
+    const main = html.match(/<main>[\s\S]*?<\/main>/)![0];
+    expect(main.includes("data-link-wallet")).toBe(confirmed);
+    expect(main).not.toContain('name="purpose" value="sensitive_action"');
+    expect(main).toContain("Connect a wallet to receive the token and prove you control it. No transaction is sent yet.");
+    expect(main.includes('<span>Connect wallet</span></button>')).toBe(confirmed);
+    expect(main).not.toMatch(/Confirm with X to|X confirmed\./);
+    expect(main).not.toContain('action="/auth/x/start"');
+    if (confirmed) {
+      expect(main).toContain(`data-signature-id="${signature.signatureId}"`);
+      expect(main).toContain('data-claim-instance-id="claim-instance"');
+      expect(main).toContain('data-csrf="private-csrf"');
+      expect(main).toContain('data-previous-binding-id=""');
+    }
+  });
+
+  it.each([false, true])("retains the collapsed withdrawal warning and binds X confirmation to the exact claim (confirmed=%s)", confirmed => {
+    const html = signaturePage(signature, false, undefined, "", false, {
+      csrfToken: 'csrf"value', claimInstanceId: 'claim"instance', requiresXConfirmation: !confirmed, allowed: true,
+    });
+    expect(html).toContain("<summary>Withdraw claim</summary>");
+    expect(html.match(/id="withdraw"/g)).toHaveLength(1);
+    expect(html).toContain("This removes the claim from Claimed and My Collection. You can make a new claim later.");
+    expect(html).toContain('name="csrf" value="csrf&quot;value"');
+    expect(html).toContain('name="claim_instance" value="claim&quot;instance"');
+    expect(html).not.toContain("Confirm this withdrawal with X, then confirm removal here.");
+    expect(html).not.toContain("Confirm with X to withdraw claim");
+    if (confirmed) {
+      expect(html).toContain("data-withdraw-control");
+      expect(html).toContain(`action="/signatures/${signature.signatureId}/withdraw"`);
+      expect(html).toContain('name="confirm" value="withdraw"');
+    } else {
+      expect(html).toContain('name="purpose" value="sensitive_action"');
+      expect(html).toContain('name="action" value="claim_withdraw"');
+      expect(html).toContain(`name="signature_id" value="${signature.signatureId}"`);
+      expect(html).toContain('<span>Withdraw claim</span></button>');
+      expect(html).toContain('action="/auth/x/start" data-x-action-form');
+      expect(html).toContain('<p class="inline-feedback" data-x-action-feedback role="status" aria-live="polite"></p>');
+      expect(html).not.toContain(`action="/signatures/${signature.signatureId}/withdraw"`);
+    }
+  });
+
+  it("distinguishes session expiry from an expired OAuth request and action confirmation", () => {
+    for (const code of ["AUTH_REQUIRED", "AUTH_EXPIRED"]) {
+      const html = errorPage(401, code, "Internal message", true, true);
+      expect(html).toContain("Session expired. Sign in to continue.");
+      expect(html).toContain('name="purpose" value="account_login"');
+      expect(html).not.toContain("Reauthenticate with X");
+    }
+    const expiredFlow = errorPage(400, "INVALID_OAUTH_STATE", "Expired state", true, true);
+    expect(expiredFlow).toContain("This sign-in request is invalid or expired.");
+    expect(expiredFlow).not.toContain("Session expired");
+    const action = errorPage(403, "X_ACTION_CONFIRMATION_REQUIRED", "Confirm this wallet action with X.");
+    expect(action).toContain("Confirm this wallet action with X.");
+    expect(action).not.toContain('name="purpose" value="account_login"');
+  });
+
+  it.each(["wallet", "ready"] as const)("shows only remaining mint steps for %s", stage => {
     for (const linked of [false, true]) {
       const html = mintEntryPage({ signature, stage, account: {
         currentHandle: "historical_name", mintEnabled: true, mintChainId: "31337", fixtureMode: false,
         wallet: linked ? { address: LOCAL_TEST_WALLET, chainId: "31337", chainName: "Anvil", provedAt: new Date() } : null,
       } });
       const steps = html.match(/<ol class="mint-entry-steps"[^>]*>([\s\S]*?)<\/ol>/)![1];
-      expect(steps.includes("Link and verify your wallet")).toBe(!linked);
+      expect(steps.includes("Connect your wallet and prove control")).toBe(stage === "wallet");
       expect(steps).toContain("<li>Review the mint details</li><li>Confirm the transaction in your wallet</li>");
       expect(steps).not.toContain("Sign in");
-      if (stage === "reauthenticate") {
-        expect(html).toContain("This security check does not change your claim or wallet.");
-        expect(html).toContain(">Confirm X sign-in</span>");
-        expect(html).toContain('name="purpose" value="account_login"');
-        expect(html).toContain(`name="return_to" value="/signatures/${signature.signatureId}/mint"`);
-      }
+      expect(html).not.toMatch(/Reauthenticate|Confirm your X sign-in before minting/);
     }
   });
   it.each(["sign-in", "wrong-account", "paused", "pending"] as const)("does not solicit new mint steps during %s", stage => {
@@ -85,14 +142,36 @@ describe("minimal shared signature detail", () => {
   });
   it.each([undefined, "unminted", "authorized", "expired"] as const)("places the mint action before provenance with a hidden explanation (%s)", state => {
     const html = signaturePage(signature, false, state ? { state, label: state } : undefined, "", false, {
-      csrfToken: "test", claimInstanceId: "test", reauthRequired: false, allowed: true,
+      csrfToken: "test", claimInstanceId: "test", requiresXConfirmation: false, allowed: true,
     });
     expect(html.indexOf('class="signature-mint-entry"')).toBeLessThan(html.indexOf('class="signature-tools"'));
     expect(html).toContain('data-action-tooltip="mint-tooltip" aria-describedby="mint-tooltip"');
-    expect(html).toContain('id="mint-tooltip" role="tooltip" hidden>Link a wallet if needed, then review and confirm the mint in your wallet.</span>');
+    expect(html).toContain(`id="mint-tooltip" role="tooltip" hidden>${state === "authorized" ? "Review the mint and confirm the transaction in the wallet you selected." : "Connect a wallet to receive the token. You’ll prove you control it, then review and confirm the mint."}</span>`);
     expect(html).not.toContain("Sign-in and wallet linking come next.");
     expect(html).not.toContain('<p class="auth-note">Only the original claimant can mint.');
     expect(html).toMatch(/src="\/assets\/action-tooltip.js/);
+  });
+  it.each([
+    ["unminted", false, "Connect a wallet to receive the token. You’ll prove you control it, then review and confirm the mint."],
+    ["unminted", true, "Review the mint and confirm it in the wallet you verified to receive the token."],
+    ["authorized", false, "Review the mint and confirm the transaction in the wallet you selected."],
+    ["authorized", true, "Review the mint and confirm the transaction in the wallet you selected."],
+  ] as const)("adapts the accessible mint tooltip to state=%s, exact draft=%s", (state, verified, copy) => {
+    const html = signaturePage(signature, false, { state, label: state }, "", false, { csrfToken: "csrf", claimInstanceId: "claim", requiresXConfirmation: false, allowed: state !== "authorized" }, verified);
+    expect(html).toContain('data-action-tooltip="mint-tooltip" aria-describedby="mint-tooltip"');
+    expect(html).toContain(`title="${copy}"`);
+    expect(html).toContain(`id="mint-tooltip" role="tooltip" hidden>${copy}</span>`);
+    expect(html.match(/id="mint-tooltip"/g)).toHaveLength(1);
+    expect(html).toContain(`/signatures/${signature.signatureId}/mint`);
+    expect(html).toMatch(/src="\/assets\/action-tooltip.js/);
+  });
+
+  it("does not infer fresh recipient proof from historical mint data or expose private controls publicly", () => {
+    const history = { state: "unminted", label: "Not minted", mintWallet: LOCAL_TEST_WALLET };
+    const own = signaturePage(signature, false, history, "", false, { csrfToken: "csrf", claimInstanceId: "claim", requiresXConfirmation: false, allowed: true });
+    expect(own).toContain('id="mint-tooltip" role="tooltip" hidden>Connect a wallet to receive the token.');
+    expect(own).not.toContain("the wallet you verified");
+    expect(signaturePage(signature, false, history, "", false, undefined, true)).not.toContain('id="mint-tooltip"');
   });
   it.each([undefined, finalized])("keeps navigation at the top without duplicate destination CTAs below the work (mint=%s)", mint => {
     const html = signaturePage(signature, false, mint);
@@ -248,17 +327,19 @@ describe("minimal shared signature detail", () => {
 
 describe("interactive local rehearsal pages", () => {
   const wallet = { address: LOCAL_TEST_WALLET, chainName: "Local Anvil", chainId: "31337", provedAt: new Date() };
-  const collection = { currentHandle: "alice", signatures: [signature], csrfToken: "csrf", fixtureMode: true, mintEnabled: true, mintChainId: "31337", localChainRehearsal: true, wallet };
+  const collection = { currentHandle: "alice", signatures: [signature], csrfToken: "csrf", fixtureMode: true, mintEnabled: true, mintChainId: "31337", localChainRehearsal: true, wallet, walletLinkConfirmed: true };
 
-  it("offers an explicit local TEST wallet separately from an injected wallet", () => {
-    const html = collectionPage(collection);
+  it("offers an explicit local TEST wallet only within a confirmed mint recipient flow", () => {
+    const html = mintEntryPage({ signature, stage: "wallet", account: { ...collection, mintRecipientConfirmed: true, mintSignatureId: signature.signatureId, mintClaimInstanceId: "claim-instance" } });
     expect(html).toContain("data-local-chain-rehearsal");
     expect(html).toContain('data-wallet-provider="local"');
     expect(html).toContain('data-wallet-provider="injected"');
-    expect(html).toContain("Public test keys. Never send real funds.");
+    expect(html).toContain("Public test keys. Anvil 31337 only. Never send real funds.");
     expect(html).toContain(LOCAL_TEST_WALLET);
     expect(html.match(/<main>[\s\S]*?<\/main>/)![0]).not.toContain("Minting paused");
     expect(html).not.toContain("manually promoted");
+    expect(collectionPage(collection)).not.toContain("data-link-wallet");
+    expect(collectionPage(collection)).not.toContain("Mint recipient test tools");
   });
 
   it.each([false, true])("does not offer local controls outside local-chain rehearsal (fixtures=%s)", (fixtureMode) => {
@@ -295,7 +376,7 @@ describe("interactive local rehearsal pages", () => {
   });
 
   it("states local limits truthfully and offers both local and injected mint submission", () => {
-    const html = mintReviewPage({ signature, currentHandle: "alice", wallet, csrfToken: "csrf", chainName: "Local Anvil", metadataUri: "ipfs://test", metadataSha256: "hash", signatureDigest: "digest", tokenUriHash: "hash", contract: "0xcontract", fixtureMode: true, localChainRehearsal: true });
+    const html = mintReviewPage({ signature, currentHandle: "alice", wallet, walletBindingId: "binding-exact", claimInstanceId: "claim-exact", csrfToken: "csrf", chainName: "Local Anvil", metadataUri: "ipfs://test", metadataSha256: "hash", signatureDigest: "digest", tokenUriHash: "hash", contract: "0xcontract", fixtureMode: true, localChainRehearsal: true });
     expect(html).toContain('data-local-chain-rehearsal="true" data-local-wallet="true"');
     expect(html).toContain("Authorize with local TEST wallet");
     expect(html).toContain('<button class="auth-action" type="submit"><span>Authorize mint</span></button>');
@@ -303,5 +384,91 @@ describe("interactive local rehearsal pages", () => {
     expect(html.match(/<main>[\s\S]*?<\/main>/)![0]).not.toContain("Authorize with local TEST wallet");
     expect(html).toContain("X identity is emulated, IPFS artifacts stay local");
     expect(html).not.toContain("pauses new mint authorization");
+  });
+});
+
+describe("mint-scoped recipient review", () => {
+  const wallet = { address: LOCAL_TEST_WALLET, chainName: "Local Anvil", chainId: "31337", provedAt: new Date() };
+  const review = { signature, currentHandle: "renamed_claimant", wallet, walletBindingId: 'binding"exact', claimInstanceId: 'claim"exact', csrfToken: 'csrf"exact', chainName: "Local Anvil", metadataUri: "ipfs://test", metadataSha256: "hash", signatureDigest: "digest", tokenUriHash: "hash", contract: "0xcontract", fixtureMode: false };
+
+  it("uses ordinary sign-in for signed-out mint entry without another mint-specific OAuth action", () => {
+    const html = mintEntryPage({ signature, stage: "sign-in", account: { mintChainId: "31337", mintEnabled: true, fixtureMode: false, mintSignatureId: signature.signatureId, mintClaimInstanceId: "claim-instance", mintCanStart: true } });
+    const main = html.slice(html.indexOf('<div data-mint-entry="sign-in"'), html.indexOf("</main>"));
+    expect(main).toContain('action="/auth/x/start"');
+    expect(main).not.toContain('name="action" value="mint_recipient"');
+    expect(main).toContain('name="purpose" value="account_login"');
+    expect(main).toContain(`name="return_to" value="/signatures/${signature.signatureId}/mint"`);
+    expect(main).toContain('<span>Sign in with X</span>');
+    expect(main).not.toContain('name="purpose" value="sensitive_action"');
+    expect(main).not.toContain("data-link-wallet");
+  });
+
+  it.each([
+    { mintCanStart: false }, { mintCanStart: undefined }, { mintCanStart: true, mintClaimInstanceId: undefined }, { mintCanStart: true, mintSignatureId: undefined },
+  ])("does not grant signed-out mint authority without server eligibility and exact context (%j)", override => {
+    const html = mintEntryPage({ signature, stage: "sign-in", account: { mintChainId: "31337", mintEnabled: true, fixtureMode: false, mintSignatureId: signature.signatureId, mintClaimInstanceId: "claim-instance", ...override } });
+    const main = html.match(/<main>[\s\S]*?<\/main>/)![0];
+    expect(main).toContain('name="purpose" value="account_login"');
+    expect(main).not.toContain('name="action" value="mint_recipient"');
+  });
+
+  it("switches a wrong account normally even when the mint is startable", () => {
+    const html = mintEntryPage({ signature, stage: "wrong-account", account: { currentHandle: "bob", csrfToken: "csrf", mintChainId: "31337", mintEnabled: true, fixtureMode: false, mintSignatureId: signature.signatureId, mintClaimInstanceId: "claim-instance", mintCanStart: true } });
+    const main = html.match(/<main>[\s\S]*?<\/main>/)![0];
+    expect(main).toContain('name="purpose" value="account_login"');
+    expect(main).toContain('<span>Switch X account</span>');
+    expect(main).not.toContain('name="action" value="mint_recipient"');
+  });
+
+  it("names an unrelated pending mint without assigning its status to this work", () => {
+    const html = mintEntryPage({ signature, stage: "pending", pendingElsewhere: true, statusLabel: "Not minted", account: { currentHandle: "alice", csrfToken: "csrf", mintChainId: "31337", mintEnabled: true, fixtureMode: false, mintSignatureId: signature.signatureId, mintClaimInstanceId: "claim-instance", mintRecipientConfirmed: true } });
+    const main = html.match(/<main>[\s\S]*?<\/main>/)![0];
+    expect(main).toContain("Another mint is still pending. Finish or resolve it before choosing a recipient for this signature.");
+    expect(main).not.toContain("Not minted");
+    expect(main).not.toContain("This mint is awaiting confirmation");
+    expect(main).not.toContain("data-link-wallet");
+    expect(main).not.toContain('name="action" value="mint_recipient"');
+  });
+
+  it("reviews and binds the exact recipient, proof record, signature and claim", () => {
+    const html = mintReviewPage(review);
+    expect(html).toContain(`<dt>Recipient</dt><dd>${wallet.address}</dd>`);
+    expect(html).toContain(`data-recipient="${wallet.address}"`);
+    expect(html).toContain('data-wallet-binding-id="binding&quot;exact"');
+    expect(html).toContain('data-claim-instance-id="claim&quot;exact"');
+    expect(html).toContain('<dt>Project fee</dt><dd>None</dd>');
+    expect(html).toContain('Estimated separately by your wallet before submission');
+    expect(html).toContain('<span>Change recipient</span>');
+    expect(html).not.toContain('name="action" value="mint_recipient"');
+    expect(html).not.toContain('action="/auth/x/start"');
+    expect(html).toContain(`href="/signatures/${signature.signatureId}/mint?recipient=change"`);
+    expect(html).toContain('name="csrf" value="csrf&quot;exact"');
+    expect(html).not.toMatch(/Linked wallet|linked wallet|Replace wallet|Revoke wallet/);
+    expect(html).toContain('href="/me">Cancel and return to my collection</a>');
+    expect(html).toContain('required type="checkbox" name="permanence_acknowledged"');
+    expect(html).toContain('This publication cannot be undone');
+  });
+
+  it("keeps an unresolved authorization on its recipient and only offers transaction resumption", () => {
+    const html = mintReviewPage({ ...review, resumeAuthorization: true });
+    expect(html).toContain("Complete this mint.");
+    expect(html).toContain('<span>Confirm in wallet</span>');
+    expect(html).not.toContain("Change recipient");
+    expect(html).not.toContain('name="action" value="mint_recipient"');
+    expect(html).not.toContain("data-link-wallet");
+    expect(html).toContain('data-wallet-binding-id="binding&quot;exact"');
+    expect(html).toContain('required type="checkbox" name="permanence_acknowledged"');
+    expect(html).toContain('href="/me">Cancel and return to my collection</a>');
+  });
+
+  it.each(["sign-in", "wrong-account", "pending", "paused"] as const)("suppresses recipient tools, even with stale approval, during %s", stage => {
+    const html = mintEntryPage({ signature, stage, account: { currentHandle: "alice", csrfToken: "csrf", mintChainId: "31337", mintEnabled: true, fixtureMode: true, localChainRehearsal: true, wallet, mintSignatureId: signature.signatureId, mintClaimInstanceId: "claim-instance", mintRecipientConfirmed: true } });
+    expect(html).not.toContain("data-link-wallet");
+    expect(html).not.toContain("Change recipient");
+    expect(html).not.toContain('name="action" value="mint_recipient"');
+    if (stage === "sign-in" || stage === "wrong-account") {
+      expect(html).toContain('name="purpose" value="account_login"');
+      expect(html).toContain(`name="return_to" value="/signatures/${signature.signatureId}/mint"`);
+    }
   });
 });

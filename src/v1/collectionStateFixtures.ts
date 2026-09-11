@@ -24,15 +24,17 @@ export function collectionStatePage(key: string, publicOrigin: string, view = "c
   if (!fixture || !["collection", "mint"].includes(view)) return null;
   const preview = { state: key, label: fixture.label, description: fixture.description };
   if (view === "mint") {
-    const stages: Record<string, MintEntryStage> = { "signed-out": "sign-in", claimed: "wallet", "wallet-linked": "ready", authorized: "ready", "mint-paused": "paused", reauthenticate: "reauthenticate", renamed: "ready" };
+    const stages: Record<string, MintEntryStage> = { "signed-out": "sign-in", claimed: "wallet", "wallet-linked": "wallet", "recipient-verified": "ready", authorized: "pending", submitted: "pending", confirming: "pending", "validation-pending": "pending", "mint-paused": "paused", reauthenticate: "wallet", renamed: "wallet", "wrong-claimant": "wrong-account" };
     const stage = stages[key];
     if (!stage) return null;
     return mintEntryPage({ signature: fixtureSignature, stage, preview, account: {
-      currentHandle: key === "signed-out" ? undefined : key === "renamed" ? "alice_studio" : "alice",
+      currentHandle: key === "signed-out" ? undefined : key === "wrong-claimant" ? "bob" : key === "renamed" ? "alice_studio" : "alice",
       csrfToken: key === "signed-out" ? undefined : "ui-fixture-not-a-session-token",
       fixtureMode: true, localOAuthMode: true, mintEnabled: key !== "mint-paused", mintChainId: "1",
-      wallet: ["claimed", "signed-out"].includes(key) ? null : { address: initialWallet, chainId: "1", chainName: "Ethereum · UI fixture", provedAt: new Date("2026-09-01T10:02:00Z") },
-      reauthRequired: key === "reauthenticate", previewOnly: true,
+      wallet: ["claimed", "signed-out", "reauthenticate"].includes(key) ? null : { address: initialWallet, chainId: "1", chainName: "Ethereum · UI fixture", provedAt: new Date("2026-09-01T10:02:00Z") },
+      mintSignatureId: fixtureSignature.signatureId, mintClaimInstanceId: "ui-fixture-claim-instance",
+      mintPreviousBindingId: ["claimed", "signed-out", "reauthenticate"].includes(key) ? null : "ui-fixture-binding",
+      mintRecipientConfirmed: stage === "wallet" || stage === "ready", previewOnly: true,
     } });
   }
   if (key === "signed-out") return signInRequiredPage(true, true, false, preview, publicOrigin);
@@ -47,11 +49,11 @@ export function collectionStatePage(key: string, publicOrigin: string, view = "c
     status.currentTokenHolder = key === "transferred" ? otherHolder : initialWallet;
   }
   return collectionPage({
-    currentHandle: key === "empty" ? "newcomer" : key === "renamed" ? "alice_studio" : "alice",
-    signatures: key === "empty" ? [] : [fixtureSignature], csrfToken: "ui-fixture-not-a-session-token",
+    currentHandle: key === "empty" ? "newcomer" : key === "wrong-claimant" ? "bob" : key === "renamed" ? "alice_studio" : "alice",
+    signatures: ["empty", "wrong-claimant"].includes(key) ? [] : [fixtureSignature], csrfToken: "ui-fixture-not-a-session-token",
     fixtureMode: true, localOAuthMode: true, mintEnabled: key !== "mint-paused", mintChainId: "1",
     wallet: ["empty", "claimed"].includes(key) ? null : { address: initialWallet, chainId: "1", chainName: "Ethereum · UI fixture", provedAt: new Date("2026-09-01T10:02:00Z") },
-    reauthRequired: key === "reauthenticate", mintBySignature: new Map([[fixtureSignature.signatureId, status]]),
+    walletLinkConfirmed: key !== "reauthenticate", mintBySignature: new Map([[fixtureSignature.signatureId, status]]),
     publicOrigin, preview,
   });
 }

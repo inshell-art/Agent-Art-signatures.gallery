@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { getAddress } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 import { SECP256K1, parseCanonicalEcdsaSignature, recoverCanonicalAddress } from "./ethereumSignature.js";
 import {
   buildExactSiweMessage,
@@ -25,6 +26,19 @@ const exactDigest = golden.digest;
 const exactProof = golden.walletProof;
 
 describe("exact signatures.gallery SIWE", () => {
+  it("scopes new recipient proof to an exact work and claim while retaining the legacy proof format", async () => {
+    const signer = privateKeyToAccount("0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d");
+    const fields = { ...fixture, walletAddress: signer.address, mintTarget: { signatureId: "sg1_exact-work", claimInstanceId: "exact-claim" } };
+    const message = buildExactSiweMessage(fields);
+    expect(message).toContain("Prove control of this recipient for this signature's mint.");
+    expect(message).not.toContain("Link this wallet");
+    expect(parseExactSiweMessage(message).mintTarget).toEqual(fields.mintTarget);
+    const proof = await signer.signMessage({ message });
+    expect(await verifyExactSiweProof(message, proof, fields)).toBe(signer.address);
+    await expect(verifyExactSiweProof(message, proof, { ...fields, mintTarget: { ...fields.mintTarget, claimInstanceId: "other-claim" } })).rejects.toThrow(/server-issued/);
+    await expect(verifyExactSiweProof(message, proof, { ...fields, mintTarget: undefined })).rejects.toThrow(/server-issued/);
+    expect(buildExactSiweMessage(fixture)).toBe(exactMessage);
+  });
   it("locks the complete LF/no-trailing-newline golden fixture", async () => {
     const message = buildExactSiweMessage(fixture);
     expect(message).toBe(exactMessage);
@@ -82,10 +96,10 @@ describe("exact signatures.gallery SIWE", () => {
     expect(calls).toBeGreaterThan(1);
   });
 
-  it("caps challenge expiry at both ten minutes and X freshness", () => {
+  it("expires the wallet proof challenge independently ten minutes after issuance", () => {
     const now = new Date("2026-09-04T12:00:00.000Z");
-    expect(siweChallengeExpiry(now, new Date("2026-09-04T11:58:00.000Z")).toISOString()).toBe("2026-09-04T12:10:00.000Z");
-    expect(siweChallengeExpiry(now, new Date("2026-09-04T11:46:00.000Z")).toISOString()).toBe("2026-09-04T12:01:00.000Z");
+    expect(siweChallengeExpiry(now).toISOString()).toBe("2026-09-04T12:10:00.000Z");
+    expect(() => siweChallengeExpiry(new Date(NaN))).toThrow("valid instant");
   });
 
   it("rejects an early or expired challenge at confirmation time", () => {

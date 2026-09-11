@@ -66,7 +66,7 @@ describe("X profile links", () => {
   });
   it("links mint entry and both mint review identities without changing consent controls", () => {
     const entry = mintEntryPage({ signature, stage: "sign-in", account });
-    const review = mintReviewPage({ signature, currentHandle: account.currentHandle, wallet: { address: "0x123", chainId: "1", chainName: "Ethereum", provedAt: new Date() }, csrfToken: "csrf", chainName: "Ethereum", metadataUri: "ipfs://test", metadataSha256: "a", signatureDigest: "b", tokenUriHash: "c", contract: "0x123", fixtureMode: false });
+    const review = mintReviewPage({ signature, currentHandle: account.currentHandle, wallet: { address: "0x123", chainId: "1", chainName: "Ethereum", provedAt: new Date() }, walletBindingId: "binding-exact", claimInstanceId: "claim-exact", csrfToken: "csrf", chainName: "Ethereum", metadataUri: "ipfs://test", metadataSha256: "a", signatureDigest: "b", tokenUriHash: "c", contract: "0x123", fixtureMode: false });
     expect(entry).toContain(xProfileLink(signature.handleAtClaim));
     expect(review).toContain(`<dt>Handle at claim</dt><dd>${xProfileLink(signature.handleAtClaim)}</dd>`);
     expect(review).toContain(`<dt>Current X handle</dt><dd>${xProfileLink(account.currentHandle)}</dd>`);

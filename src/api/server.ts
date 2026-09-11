@@ -4,6 +4,8 @@ import type { LocalTestWallet } from "../local/wallet.js";
 import { LocalOAuthEmulatorError, LocalXOAuthEmulator, type LocalOAuthDecision } from "../claim/localXOAuthEmulator.js";
 import { generateCodeChallenge, generateCodeVerifier, XOAuthRequestError, type XOAuthClient } from "../claim/xOAuthClient.js";
 import { CLAIM_ON_RETURN_INTENT, MemoryAuthState, type BrowserSession, type ClaimFlowInput, type OAuthFlow } from "../v1/authState.js";
+import { consumeActionApproval, hasActionApproval, hasMintRecipient, requireSessionIdentity } from "../v1/authPolicy.js";
+import type { SensitiveActionIntent } from "../v1/types.js";
 import type { ArtifactStore } from "../v1/artifacts.js";
 import { finalizeClaim } from "../v1/claim.js";
 import { withdrawClaim } from "../v1/withdrawClaim.js";
@@ -20,6 +22,7 @@ import { SLOGAN_TOOLTIP_SCRIPT } from "../brand/sloganTooltipScript.js";
 import { ACTION_TOOLTIP_SCRIPT } from "../v1/actionTooltipScript.js";
 import { CLAIM_NOTICE_SCRIPT } from "../v1/claimNotice.js";
 import { WITHDRAW_CLAIM_DIALOG_SCRIPT } from "../v1/withdrawClaimDialog.js";
+import { X_ACTION_PROGRESS_SCRIPT } from "../v1/xActionProgress.js";
 import { accountPanelContent, developmentWalletControls, developmentAuthenticationNotice, type AccountPanelView } from "../v1/accountPanel.js";
 import { ACCOUNT_PANEL_SCRIPT } from "../v1/accountPanelScript.js";
 import { REHEARSAL_OVERLAY_SCRIPT } from "../v1/rehearsalOverlayScript.js";
@@ -42,7 +45,11 @@ const MINT_AUTHORIZATION_PATTERN = /^\/api\/v2\/signatures\/(sg1_[a-z2-7]{52})\/
 const MINT_STATUS_PATTERN = /^\/api\/v2\/signatures\/(sg1_[a-z2-7]{52})\/mint-status\/?$/;
 const MINT_TRANSACTION_PATTERN = /^\/api\/v2\/mint-authorizations\/(0x[0-9a-f]{64})\/transactions\/?$/;
 const DEV_MINT_ADVANCE_PATTERN = /^\/dev\/v2\/signatures\/(sg1_[a-z2-7]{52})\/advance\/?$/;
-const IDENTITY_FRESH_MS = 15 * 60 * 1000;
+const CLAIM_INSTANCE_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
+
+function safeAccountReturn(path: string): boolean {
+  return path === "/me" || ACCOUNT_RETURN_PATTERN.test(path);
+}
 
 function claimPageHref(flow: OAuthFlow): string {
   if (flow.purpose !== "claim" || flow.handleAtClaim === null || flow.gr0kRaw === null) throw new Error("Missing claim destination.");
@@ -117,7 +124,10 @@ function sendErrorResponse(res: ServerResponse, req: IncomingMessage, pathname: 
   if (pathname.startsWith("/api/") || wantsJson(req, pathname)) {
     send(res, req, status, "application/json; charset=utf-8", JSON.stringify({ error: { code, message } }));
   } else {
-    send(res, req, status, "text/html; charset=utf-8", errorPage(status, code, message, fixtureMode, localOAuthMode, localChainRehearsal));
+    const withdrawal = pathname.match(WITHDRAW_CLAIM_PATTERN);
+    const mint = pathname.match(MINT_REVIEW_PATTERN);
+    const returnTo = withdrawal ? `/signatures/${withdrawal[1]}` : mint ? `/signatures/${mint[1]}/mint` : undefined;
+    send(res, req, status, "text/html; charset=utf-8", errorPage(status, code, message, fixtureMode, localOAuthMode, localChainRehearsal, returnTo));
   }
 }
 
@@ -166,7 +176,12 @@ function cookieName(fixtureMode: boolean): string {
 }
 
 function sessionFromRequest(req: IncomingMessage, deps: AppDependencies, fixtureMode: boolean): BrowserSession | null {
-  return deps.auth.getSession(parseCookies(req).get(cookieName(fixtureMode)) ?? null);
+  const session = deps.auth.getSession(parseCookies(req).get(cookieName(fixtureMode)) ?? null);
+  if (session?.identity) {
+    try { requireSessionIdentity(session); }
+    catch { deps.auth.logout(session.id); return null; }
+  }
+  return session;
 }
 
 function ensureSession(req: IncomingMessage, res: ServerResponse, deps: AppDependencies, fixtureMode: boolean): BrowserSession {
@@ -234,15 +249,74 @@ function requireV2Session(req: IncomingMessage, deps: AppDependencies, options: 
   const fixtureMode = options.fixtureMode ?? false;
   const session = sessionFromRequest(req, deps, fixtureMode);
   if (!session?.identity) throw new V2Error(401, "AUTH_REQUIRED", "Sign in with X before using minting.");
-  if (!isFreshIdentity(session)) throw new V2Error(401, "X_REAUTH_REQUIRED", "Reauthenticate with X before using minting.");
-  if (!requireV2SameOrigin(req, options)) throw new V2Error(403, "AUTH_REQUIRED", "The request did not come from this site.");
+  requireSessionIdentity(session);
+  if (!requireV2SameOrigin(req, options)) throw new V2Error(403, "REQUEST_CONFIRMATION_INVALID", "The request did not come from this site.");
   const csrf = req.headers["x-csrf-token"];
-  if (typeof csrf !== "string" || csrf !== session.csrfToken) throw new V2Error(403, "AUTH_REQUIRED", "The minting request is missing its session confirmation.");
+  if (typeof csrf !== "string" || csrf !== session.csrfToken) throw new V2Error(403, "REQUEST_CONFIRMATION_INVALID", "Reload the page before trying this action again.");
   return session;
 }
 
-function isFreshIdentity(session: BrowserSession): boolean {
-  return !!session.identity && Date.now() - session.identity.authenticatedAt.getTime() <= IDENTITY_FRESH_MS;
+function walletActionIntent(deps: AppDependencies, xUserId: string | undefined, kind: "wallet_link" | "wallet_revoke"): Extract<SensitiveActionIntent, { kind: "wallet_link" | "wallet_revoke" }> {
+  if (!deps.mint?.config.enabled) throw new V2Error(503, "MINT_PAUSED", "Wallet management is not enabled.");
+  const previousBindingId = xUserId ? deps.mint.state.getActiveBinding(xUserId, deps.mint.config.chainId)?.walletBindingId ?? null : null;
+  const chainId = deps.mint.config.chainId.toString();
+  if (kind === "wallet_revoke") {
+    if (!previousBindingId) throw new V2Error(409, "WALLET_NOT_LINKED", "There is no linked wallet to revoke.");
+    return { kind, chainId, previousBindingId };
+  }
+  return { kind, chainId, previousBindingId };
+}
+
+function mintRecipientIntent(deps: AppDependencies, signature: Signature): Extract<SensitiveActionIntent, { kind: "mint_recipient" }> {
+  if (!deps.mint?.config.enabled) throw new V2Error(503, "MINT_PAUSED", "Minting is not enabled.");
+  return { kind: "mint_recipient", signatureId: signature.signatureId, claimInstanceId: signature.claimInstanceId,
+    chainId: deps.mint.config.chainId.toString(),
+    previousBindingId: deps.mint.state.getActiveBinding(signature.xUserId, deps.mint.config.chainId)?.walletBindingId ?? null };
+}
+
+function mintRecipientView(session: BrowserSession | null, deps: AppDependencies, signature: Signature): Pick<AccountPanelView, "mintSignatureId" | "mintClaimInstanceId" | "mintRecipientConfirmed" | "mintPreviousBindingId"> {
+  let ownSession = false;
+  try { if (session) ownSession = Boolean(requireSessionIdentity(session, signature.xUserId)); } catch { /* Sign-in/claimant recovery belongs to mint entry. */ }
+  return { mintSignatureId: signature.signatureId, mintClaimInstanceId: signature.claimInstanceId,
+    mintPreviousBindingId: deps.mint?.state.getActiveBinding(signature.xUserId, deps.mint.config.chainId)?.walletBindingId ?? null,
+    mintRecipientConfirmed: Boolean(ownSession && deps.mint?.config.enabled) };
+}
+
+function walletConfirmationView(session: BrowserSession | null, deps: AppDependencies): Pick<AccountPanelView, "walletLinkConfirmed" | "walletRevokeConfirmed"> {
+  if (!session?.identity || !deps.mint?.config.enabled) return {};
+  const link = walletActionIntent(deps, session.identity.xUserId, "wallet_link");
+  return {
+    walletLinkConfirmed: hasActionApproval(session, link),
+    walletRevokeConfirmed: link.kind === "wallet_link" && link.previousBindingId !== null
+      && hasActionApproval(session, { ...link, kind: "wallet_revoke", previousBindingId: link.previousBindingId }),
+  };
+}
+
+/** Recheck the server-bound target on return; OAuth itself never changes it. */
+async function validateActionTarget(deps: AppDependencies, intent: SensitiveActionIntent, xUserId: string): Promise<void> {
+  if (intent.kind === "mint_recipient") {
+    const signature = await deps.store.getSignature(intent.signatureId);
+    if (!signature || signature.claimInstanceId !== intent.claimInstanceId) throw new V2Error(409, "CLAIM_CHANGED", "This claim has changed. Open the current signature before minting.");
+    if (signature.xUserId !== xUserId) throw new V2Error(403, "NOT_CLAIMANT", "Only the original X claimant can mint this signature.");
+    const current = mintRecipientIntent(deps, signature);
+    if (current.chainId !== intent.chainId || current.previousBindingId !== intent.previousBindingId) throw new V2Error(409, "BINDING_TRANSITION", "The recipient changed. Start again from the mint page.");
+    if (deps.mint!.state.isSuppressed(signature.signatureId) || !deps.mint!.state.canWithdrawClaim(signature.signatureId)
+      || deps.mint!.state.hasUnresolvedBindingAuthorization(xUserId, deps.mint!.config.chainId)) {
+      throw new V2Error(409, "LIVE_AUTHORIZATION_EXISTS", "Resolve the current mint before preparing another recipient. An issued mint can be resumed from its signature.");
+    }
+    return;
+  }
+  if (intent.kind === "claim_withdraw") {
+    const signature = await deps.store.getSignature(intent.signatureId);
+    if (!signature || signature.claimInstanceId !== intent.claimInstanceId) throw new V2Error(409, "CLAIM_CHANGED", "This claim has changed. Return to the signature and start again.");
+    if (signature.xUserId !== xUserId) throw new V2Error(403, "NOT_CLAIMANT", "Only the original X claimant can withdraw this signature.");
+    if (deps.mint && !deps.mint.state.canWithdrawClaim(intent.signatureId)) throw new V2Error(409, "CLAIM_WITHDRAWAL_BLOCKED", "This claim cannot be withdrawn while a mint or mint authorization is unresolved.");
+    return;
+  }
+  const current = walletActionIntent(deps, xUserId, intent.kind);
+  if (current.chainId !== intent.chainId || current.previousBindingId !== intent.previousBindingId) {
+    throw new V2Error(409, "BINDING_TRANSITION", "Your linked wallet changed. Start a new X confirmation for the current wallet.");
+  }
 }
 
 function flowRender(deps: AppDependencies, flow: Pick<OAuthFlow, "handleAtClaim" | "gr0kRaw" | "rendererVersion">) {
@@ -539,6 +613,10 @@ export function createApp(deps: AppDependencies, options: AppOptions = {}) {
         send(res, req, 200, "text/javascript; charset=utf-8", ACCOUNT_PANEL_SCRIPT, "public, max-age=300");
         return;
       }
+      if ((method === "GET" || method === "HEAD") && pathname === "/assets/x-action-progress.js") {
+        send(res, req, 200, "text/javascript; charset=utf-8", X_ACTION_PROGRESS_SCRIPT, "public, max-age=300");
+        return;
+      }
       if ((fixtureMode || options.localChainRehearsal) && (method === "GET" || method === "HEAD") && pathname === "/assets/rehearsal-overlay.js") {
         send(res, req, 200, "text/javascript; charset=utf-8", REHEARSAL_OVERLAY_SCRIPT, "public, max-age=300");
         return;
@@ -554,6 +632,9 @@ export function createApp(deps: AppDependencies, options: AppOptions = {}) {
           return;
         }
         const session = sessionFromRequest(req, deps, fixtureMode);
+        const query = new URL(req.url ?? "/", "http://request.invalid").searchParams;
+        const returnTo = query.get("return_to");
+        const actionReturnTo = returnTo && query.getAll("return_to").length === 1 && safeAccountReturn(returnTo) ? returnTo : "/me";
         const identity = session?.identity;
         const account = identity ? await deps.store.getAccount(identity.xUserId) : null;
         const binding = identity && deps.mint ? deps.mint.state.getActiveBinding(identity.xUserId, deps.mint.config.chainId) : null;
@@ -564,8 +645,20 @@ export function createApp(deps: AppDependencies, options: AppOptions = {}) {
           fixtureMode, localOAuthMode, localChainRehearsal: options.localChainRehearsal,
           mintEnabled: deps.mint?.config.enabled ?? false,
           mintChainId: deps.mint?.config.chainId.toString() ?? "",
-          reauthRequired: Boolean(identity && !isFreshIdentity(session!)),
+          ...walletConfirmationView(session, deps),
+          actionReturnTo,
         };
+        // Account controls stay X-only. Only a canonical mint page can expose
+        // its session-bound recipient simulator inside the separate DEV area.
+        const mintContext = actionReturnTo.match(MINT_REVIEW_PATTERN);
+        if (mintContext && identity) {
+          const signature = await deps.store.getSignature(mintContext[1]);
+          if (signature?.xUserId === identity.xUserId && deps.mint?.config.enabled
+            && deps.mint.state.canWithdrawClaim(signature.signatureId)
+            && !deps.mint.state.hasUnresolvedBindingAuthorization(identity.xUserId, deps.mint.config.chainId)) {
+            Object.assign(accountView, mintRecipientView(session, deps, signature));
+          }
+        }
         const html = accountPanelContent(accountView);
         const developmentHtml = developmentAuthenticationNotice(accountView) + developmentWalletControls(accountView);
         res.setHeader("Vary", "Cookie");
@@ -686,7 +779,7 @@ export function createApp(deps: AppDependencies, options: AppOptions = {}) {
           const flow = session && query.getAll("flow").length === 1
             ? deps.auth.getBoundFlow(session, flowId, "authenticated") ?? deps.auth.getBoundFlow(session, flowId, "completed") : null;
           let status = 200;
-          if (!session?.identity || !isFreshIdentity(session)) {
+          if (!session?.identity) {
             status = 401;
             params.notice = "Your sign-in session expired. Sign in again to continue here.";
           } else if (!flow || flow.purpose !== "claim" || flow.handleAtClaim !== handle.renderHandle || flow.handleNormalized !== handle.normalized || flow.gr0kRaw !== gr0k.raw || !flow.rendererVersion || flow.identity?.xUserId !== session.identity.xUserId || session.identity.handleNormalized !== handle.normalized) {
@@ -822,15 +915,58 @@ export function createApp(deps: AppDependencies, options: AppOptions = {}) {
         const form = await readForm(req);
         const purpose = form.get("purpose");
         const claimIntent = form.get("claim_intent");
-        if ((purpose !== "claim" && purpose !== "account_login") || ["purpose", "handle", "gr0k", "claim_intent", "renderer_version", "preview_sha256"].some(key => form.getAll(key).length > 1)
-          || claimIntent !== null && (purpose !== "claim" || claimIntent !== CLAIM_ON_RETURN_INTENT)) {
+        if ((purpose !== "claim" && purpose !== "account_login" && purpose !== "sensitive_action") || ["purpose", "handle", "gr0k", "claim_intent", "renderer_version", "preview_sha256", "action", "signature_id", "claim_instance", "csrf"].some(key => form.getAll(key).length > 1)
+          || claimIntent !== null && (purpose !== "claim" || claimIntent !== CLAIM_ON_RETURN_INTENT)
+          || purpose !== "sensitive_action" && ["action", "signature_id", "claim_instance"].some(key => form.has(key))
+          || purpose === "sensitive_action" && ["handle", "gr0k", "renderer_version", "preview_sha256"].some(key => form.has(key))) {
           sendError(res, req, pathname, 400, "CLAIM_FLOW_INVALID", "The sign-in or claim intent is invalid.", fixtureMode);
           return;
         }
         const returnTo = form.get("return_to");
-        if (form.getAll("return_to").length > 1 || returnTo !== null && (purpose !== "account_login" || !ACCOUNT_RETURN_PATTERN.test(returnTo))) {
+        if (form.getAll("return_to").length > 1 || returnTo !== null && (purpose === "claim" || !safeAccountReturn(returnTo))) {
           sendError(res, req, pathname, 400, "CLAIM_FLOW_INVALID", "The sign-in return destination is invalid.", fixtureMode);
           return;
+        }
+        let actionIntent: SensitiveActionIntent | undefined;
+        let mintClaimantXUserId: string | undefined;
+        if (purpose === "sensitive_action") {
+          const action = form.get("action");
+          if (session.identity) {
+            requireSessionIdentity(session);
+            if (form.get("csrf") !== session.csrfToken) throw new V2Error(403, "REQUEST_CONFIRMATION_INVALID", "Reload the page before confirming this action with X.");
+          } else if (action !== "wallet_link" && action !== "mint_recipient") {
+            throw new V2Error(401, "AUTH_REQUIRED", "Sign in with X to access your account actions.");
+          }
+          const xUserId = session.identity?.xUserId;
+          if (action === "mint_recipient") {
+            const signatureId = form.get("signature_id") ?? "";
+            const claimInstanceId = form.get("claim_instance") ?? "";
+            if (!/^sg1_[a-z2-7]{52}$/.test(signatureId) || !CLAIM_INSTANCE_PATTERN.test(claimInstanceId)
+              || returnTo !== `/signatures/${signatureId}/mint`) {
+              throw new V2Error(400, "REQUEST_CONFIRMATION_INVALID", "Open the exact signature before connecting a mint recipient.");
+            }
+            const signature = await deps.store.getSignature(signatureId);
+            if (!signature || signature.claimInstanceId !== claimInstanceId) throw new V2Error(409, "CLAIM_CHANGED", "This claim has changed. Open the current signature before minting.");
+            actionIntent = mintRecipientIntent(deps, signature);
+            mintClaimantXUserId = signature.xUserId;
+            await validateActionTarget(deps, actionIntent, xUserId ?? signature.xUserId);
+          } else if (action === "wallet_link" || action === "wallet_revoke") {
+            if (form.has("signature_id") || form.has("claim_instance")) throw new V2Error(400, "REQUEST_CONFIRMATION_INVALID", "The wallet action must not contain a claim target.");
+            actionIntent = walletActionIntent(deps, xUserId, action);
+          } else if (action === "claim_withdraw") {
+            const signatureId = form.get("signature_id") ?? "";
+            const claimInstanceId = form.get("claim_instance") ?? "";
+            if (!/^sg1_[a-z2-7]{52}$/.test(signatureId) || !CLAIM_INSTANCE_PATTERN.test(claimInstanceId)
+              || returnTo !== null && returnTo !== `/signatures/${signatureId}`) {
+              throw new V2Error(400, "INVALID_WITHDRAWAL", "Reload the signature before confirming withdrawal with X.");
+            }
+            actionIntent = { kind: action, signatureId, claimInstanceId };
+            await validateActionTarget(deps, actionIntent, xUserId!);
+          } else {
+            throw new V2Error(400, "REQUEST_CONFIRMATION_INVALID", "Choose a valid account action to confirm with X.");
+          }
+          // A logout or account switch during target lookup cannot start a grant.
+          if (xUserId) requireSessionIdentity(session, xUserId);
         }
         let claimInput: ClaimFlowInput | null = null;
         if (purpose === "claim") {
@@ -857,6 +993,16 @@ export function createApp(deps: AppDependencies, options: AppOptions = {}) {
         const verifier = generateCodeVerifier();
         const { flow, state } = deps.auth.startFlow(session, purpose, claimInput, verifier);
         if (returnTo) flow.returnTo = returnTo;
+        if (actionIntent) {
+          flow.actionIntent = actionIntent;
+          if (actionIntent.kind === "claim_withdraw") flow.returnTo = `/signatures/${actionIntent.signatureId}`;
+          if (actionIntent.kind === "mint_recipient") {
+            flow.returnTo = `/signatures/${actionIntent.signatureId}/mint`;
+            // A signed-out entry still has an exact original claimant. Do not
+            // turn this into a grant for whichever account the provider returns.
+            flow.actionXUserId = mintClaimantXUserId;
+          }
+        }
         if (!oauthClient) {
           deps.auth.fail(flow);
           sendError(res, req, pathname, 503, "X_AUTH_UNAVAILABLE", "X authentication is not configured.", fixtureMode);
@@ -929,8 +1075,22 @@ export function createApp(deps: AppDependencies, options: AppOptions = {}) {
             return;
           }
           const identity = { xUserId: user.id, username: user.username, handleNormalized, authenticatedAt: new Date() };
+          if (flow.purpose === "sensitive_action") {
+            if (flow.actionXUserId !== undefined && flow.actionXUserId !== identity.xUserId) throw new V2Error(403, "NOT_CLAIMANT", "Confirm this action with the same X account that started it.");
+            if (!flow.actionIntent) throw new V2Error(400, "REQUEST_CONFIRMATION_INVALID", "This action confirmation has no target. Start again.");
+            if (flow.actionXUserId === undefined && flow.actionIntent.kind === "wallet_link"
+              && deps.mint?.state.getActiveBinding(identity.xUserId, deps.mint.config.chainId)) {
+              // First sign-in may discover an already-linked wallet. Keep that
+              // binding and sign in normally; never upgrade link consent into
+              // replacement consent or trap a returning user in a login loop.
+              flow.purpose = "account_login";
+              delete flow.actionIntent;
+            } else {
+              await validateActionTarget(deps, flow.actionIntent, identity.xUserId);
+            }
+          }
           callbackStage = "account_storage";
-          if (flow.purpose === "account_login") await deps.store.updateExistingAccountLogin(identity.xUserId, identity.username, identity.handleNormalized, identity.authenticatedAt);
+          if (flow.purpose !== "claim") await deps.store.updateExistingAccountLogin(identity.xUserId, identity.username, identity.handleNormalized, identity.authenticatedAt);
           callbackStage = "session_authentication";
           const rotated = deps.auth.authenticate(flow, identity, session);
           setSessionCookie(res, rotated, fixtureMode);
@@ -945,14 +1105,20 @@ export function createApp(deps: AppDependencies, options: AppOptions = {}) {
             redirectClaimSuccess(res, flow, rotated, result.signature.signatureId);
             return;
           }
-          const accountReturn = flow.returnTo && ACCOUNT_RETURN_PATTERN.test(flow.returnTo) ? flow.returnTo : "/me";
-          redirect(res, 303, flow.purpose === "claim" ? claimPageHref(flow) : accountReturn);
+          const accountReturn = flow.returnTo && safeAccountReturn(flow.returnTo) ? flow.returnTo : "/me";
+          redirect(res, 303, flow.purpose === "claim" ? claimPageHref(flow)
+            : accountReturn + (flow.actionIntent?.kind === "claim_withdraw" ? "#withdraw" : ""));
         } catch (error) {
           if (callbackStage === "claim_persistence") {
             // Authentication succeeded. The read-only return checks for a
             // committed record first; otherwise it offers an explicit retry.
             flow.claimFailure = "storage_unavailable";
             redirect(res, 303, claimPageHref(flow));
+            return;
+          }
+          if (error instanceof V2Error) {
+            deps.auth.fail(flow);
+            sendError(res, req, pathname, error.status, error.code, error.message, fixtureMode);
             return;
           }
           if (!localOAuthMode) console.error("X authentication failed", {
@@ -973,10 +1139,7 @@ export function createApp(deps: AppDependencies, options: AppOptions = {}) {
           sendError(res, req, pathname, 401, "AUTH_REQUIRED", localOAuthMode ? "Complete the local OAuth rehearsal to review this claim." : "Sign in with X to review this claim.", fixtureMode, localOAuthMode);
           return;
         }
-        if (!isFreshIdentity(session)) {
-          sendError(res, req, pathname, 401, "AUTH_EXPIRED", localOAuthMode ? "Your local rehearsal identity is too old. Start again." : "Your X identity check is too old. Start again.", fixtureMode, localOAuthMode);
-          return;
-        }
+        requireSessionIdentity(session);
         const flow = deps.auth.getBoundFlow(session, flowId, "authenticated") ?? deps.auth.getBoundFlow(session, flowId, "completed");
         if (!flow || flow.handleNormalized === null || flow.gr0kRaw === null || flow.rendererVersion === null) {
           sendError(res, req, pathname, 409, "CLAIM_FLOW_INVALID", "This claim flow is expired, consumed, or belongs to another session.", fixtureMode);
@@ -993,10 +1156,7 @@ export function createApp(deps: AppDependencies, options: AppOptions = {}) {
           sendError(res, req, pathname, 401, "AUTH_REQUIRED", localOAuthMode ? "Complete the local OAuth rehearsal before claiming." : "Sign in with X before claiming.", fixtureMode, localOAuthMode);
           return;
         }
-        if (!isFreshIdentity(session)) {
-          sendError(res, req, pathname, 401, "AUTH_EXPIRED", localOAuthMode ? "Your local rehearsal identity is too old. Start again." : "Your X identity check is too old. Start again.", fixtureMode, localOAuthMode);
-          return;
-        }
+        requireSessionIdentity(session);
         if (!requireSameOrigin(req, options)) {
           sendError(res, req, pathname, 403, "CLAIM_FLOW_INVALID", "The request did not come from this site.", fixtureMode);
           return;
@@ -1039,20 +1199,24 @@ export function createApp(deps: AppDependencies, options: AppOptions = {}) {
         const mint = deps.mint;
         if ((method === "GET" || method === "HEAD") && pathname === "/api/local/wallet") {
           const session = sessionFromRequest(req, deps, fixtureMode);
-          if (!session?.identity || !isFreshIdentity(session)) throw new V2Error(401, "AUTH_REQUIRED", "Sign in to the local rehearsal first.");
+          if (!session?.identity) throw new V2Error(401, "AUTH_REQUIRED", "Sign in to the local rehearsal first.");
+          requireSessionIdentity(session);
           send(res, req, 200, "application/json; charset=utf-8", JSON.stringify(await wallet.info()));
           return;
         }
         if (method === "POST" && ["/api/local/wallet/sign", "/api/local/wallet/mint", "/api/local/wallet/transfer"].includes(pathname)) {
           const session = requireV2Session(req, deps, options);
+          const xUserId = requireSessionIdentity(session).xUserId;
           if (!limits.consume("local-wallet-actions", session.id, 60, 60_000)) throw new V2Error(429, "RATE_LIMITED", "Too many local wallet actions.");
           const body = await readJson(req);
           const response = await runMintOperation(async () => {
             requireV2Session(req, deps, options);
+            requireSessionIdentity(session, xUserId);
             if (pathname.endsWith("/sign")) {
               const challenge = typeof body.challengeId === "string" ? mint.state.getChallenge(body.challengeId) : null;
-              if (!challenge || challenge.xUserId !== session.identity!.xUserId
+              if (!challenge || challenge.xUserId !== xUserId
                 || challenge.sessionIdDigest !== createHash("sha256").update(session.id).digest("hex")
+                || challenge.mintTarget && session.mintRecipientChallengeId !== challenge.challengeId
                 || challenge.status !== "pending" || challenge.expiresAt <= new Date()) {
                 throw new V2Error(409, "WALLET_CHALLENGE_INVALID", "This local wallet challenge is unavailable for this session.");
               }
@@ -1062,7 +1226,8 @@ export function createApp(deps: AppDependencies, options: AppOptions = {}) {
               if (req.headers["x-mint-permanence-acknowledged"] !== "1") throw new V2Error(409, "AUTHORIZATION_UNAVAILABLE", "Confirm the reviewed local transaction before sending it.");
               const authorization = typeof body.authorizationId === "string" ? mint.state.getAuthorization(body.authorizationId) : null;
               const signature = authorization ? await deps.store.getSignature(authorization.signatureId) : null;
-              if (!authorization || !signature || signature.xUserId !== session.identity!.xUserId || mint.state.isSuppressed(signature.signatureId)) {
+              requireSessionIdentity(session, xUserId);
+              if (!authorization || !signature || signature.xUserId !== xUserId || mint.state.isSuppressed(signature.signatureId)) {
                 throw new V2Error(403, "NOT_CLAIMANT", "This authorization does not belong to the active local claimant.");
               }
               const attempts = mint.state.getStatus(signature.signatureId, true).attempts;
@@ -1072,15 +1237,19 @@ export function createApp(deps: AppDependencies, options: AppOptions = {}) {
               if (!account) throw new V2Error(403, "NOT_CLAIMANT", "The local claimant is unavailable.");
               const exact = await mint.issueAuthorization(signature, account, undefined, session);
               if (exact.authorization.authorizationId !== authorization.authorizationId) throw new V2Error(409, "AUTHORIZATION_UNAVAILABLE", "Review the current local authorization again.");
+              requireSessionIdentity(session, xUserId);
               const txHash = await wallet.submitMint(exact);
-              mint.reportTransaction(session.identity!.xUserId, authorization.authorizationId, txHash).localWalletBroadcast = true;
+              // Once broadcast, retain transaction evidence even if the browser
+              // logs out while awaiting the RPC response.
+              mint.reportTransaction(xUserId, authorization.authorizationId, txHash).localWalletBroadcast = true;
               return { txHash };
             }
             const signature = typeof body.signatureId === "string" ? await deps.store.getSignature(body.signatureId) : null;
-            if (!signature || signature.xUserId !== session.identity!.xUserId || mint.state.isSuppressed(signature.signatureId)) throw new V2Error(403, "NOT_CLAIMANT", "This token is not in the active local claimant's collection.");
+            requireSessionIdentity(session, xUserId);
+            if (!signature || signature.xUserId !== xUserId || mint.state.isSuppressed(signature.signatureId)) throw new V2Error(403, "NOT_CLAIMANT", "This token is not in the active local claimant's collection.");
             const projection = mint.state.getProjection(signature.signatureId);
             if (projection.state !== "finalized" || projection.tokenId === null) throw new V2Error(409, "AUTHORIZATION_UNAVAILABLE", "Wait for local mint confirmation before transferring.");
-            const binding = mint.state.getActiveBinding(session.identity!.xUserId, 31337n);
+            const binding = mint.state.getActiveBinding(xUserId, 31337n);
             if (!binding || binding.verificationScheme === "fixture_seed" || binding.address.toLowerCase() !== wallet.address.toLowerCase()) throw new V2Error(403, "WALLET_NOT_LINKED", "Prove control of the local TEST wallet before transferring.");
             return { txHash: await wallet.transferToRecipient(projection.tokenId) };
           });
@@ -1094,7 +1263,19 @@ export function createApp(deps: AppDependencies, options: AppOptions = {}) {
         const session = requireV2Session(req, deps, options);
         const account = await deps.store.getAccount(session.identity!.xUserId);
         if (!account) throw new V2Error(403, "NOT_CLAIMANT", "Only an account with a V1 claim can link a mint wallet.");
-        const binding = deps.mint.seedFixtureBinding(account.xUserId, account.publicAccountId);
+        requireSessionIdentity(session, account.xUserId);
+        const body = await readJson(req);
+        let binding;
+        if (body.signatureId !== undefined || body.claimInstanceId !== undefined) {
+          const signature = typeof body.signatureId === "string" ? await deps.store.getSignature(body.signatureId) : null;
+          if (!signature || signature.claimInstanceId !== body.claimInstanceId) throw new V2Error(409, "CLAIM_CHANGED", "Open the current signature before verifying a recipient.");
+          requireSessionIdentity(session, signature.xUserId);
+          binding = await deps.mint.seedFixtureMintRecipient(session, signature, account, new Date(), body);
+        } else {
+          // Legacy developer-only binding seeding is not per-mint authority.
+          consumeActionApproval(session, walletActionIntent(deps, account.xUserId, "wallet_link"));
+          binding = deps.mint.seedFixtureBinding(account.xUserId, account.publicAccountId);
+        }
         send(res, req, 201, "application/json; charset=utf-8", JSON.stringify({ walletBindingId: binding.walletBindingId, walletAddress: binding.address, chainId: binding.chainId.toString(), fixture: true }));
         return;
       }
@@ -1110,7 +1291,11 @@ export function createApp(deps: AppDependencies, options: AppOptions = {}) {
         const body = await readJson(req);
         if (typeof body.walletAddress !== "string") throw new V2Error(400, "INVALID_WALLET_ADDRESS", "Enter one exact 20-byte Ethereum address.");
         if (typeof body.chainId !== "string") throw new V2Error(400, "WRONG_CHAIN", `Use ${deps.mint.config.chainName}.`);
-        const challenge = await runMintOperation(() => deps.mint!.createChallenge({ session, account, walletAddress: body.walletAddress as string, chainId: body.chainId as string }));
+        const signature = typeof body.signatureId === "string" ? await deps.store.getSignature(body.signatureId) : undefined;
+        if ((body.signatureId !== undefined || body.claimInstanceId !== undefined)
+          && (!signature || signature.claimInstanceId !== body.claimInstanceId)) throw new V2Error(409, "CLAIM_CHANGED", "Open the current signature before verifying a recipient.");
+        if (signature) requireSessionIdentity(session, signature.xUserId);
+        const challenge = await runMintOperation(() => deps.mint!.createChallenge({ session, account, walletAddress: body.walletAddress as string, chainId: body.chainId as string, ...(signature ? { signature, recipientConsent: body.recipientConsent, previousBindingId: body.previousBindingId } : {}) }));
         send(res, req, 201, "application/json; charset=utf-8", JSON.stringify(challenge));
         return;
       }
@@ -1122,21 +1307,23 @@ export function createApp(deps: AppDependencies, options: AppOptions = {}) {
           throw new V2Error(429, "RATE_LIMITED", "Too many wallet confirmations. Try again later.");
         }
         const body = await readJson(req);
+        const identity = requireSessionIdentity(session);
         if (typeof body.challengeId !== "string" || typeof body.walletProof !== "string") {
           throw new V2Error(409, "WALLET_CHALLENGE_INVALID", "The wallet confirmation is incomplete.");
         }
         const challenge = deps.mint.state.getChallenge(body.challengeId);
         if (
-          challenge?.xUserId === session.identity!.xUserId
+          challenge?.xUserId === identity.xUserId
           && !limits.consume("v2-wallet-confirm-address", challenge.address.toLowerCase(), 5, 60 * 60_000)
         ) {
           throw new V2Error(429, "RATE_LIMITED", "Too many wallet confirmations for this address. Try again later.");
         }
-        const activeBinding = deps.mint.state.getActiveBinding(session.identity!.xUserId, deps.mint.config.chainId);
+        const activeBinding = deps.mint.state.getActiveBinding(identity.xUserId, deps.mint.config.chainId);
         if (
-          challenge?.xUserId === session.identity!.xUserId
+          challenge?.xUserId === identity.xUserId
           && activeBinding
-          && !limits.consume("v2-wallet-change-x", session.identity!.xUserId, 3, 24 * 60 * 60_000)
+          && activeBinding.address.toLowerCase() !== challenge.address.toLowerCase()
+          && !limits.consume("v2-wallet-change-x", identity.xUserId, 3, 24 * 60 * 60_000)
         ) {
           throw new V2Error(429, "RATE_LIMITED", "Too many wallet changes. Try again later.");
         }
@@ -1151,7 +1338,8 @@ export function createApp(deps: AppDependencies, options: AppOptions = {}) {
         if (!limits.consume("v2-wallet-change-x", session.identity!.xUserId, 3, 24 * 60 * 60_000)) {
           throw new V2Error(429, "RATE_LIMITED", "Too many wallet changes. Try again later.");
         }
-        await runMintOperation(() => deps.mint!.revokeBinding(session.identity!.xUserId));
+        const xUserId = requireSessionIdentity(session).xUserId;
+        await runMintOperation(() => deps.mint!.revokeBinding(xUserId, undefined, session));
         send(res, req, 200, "application/json; charset=utf-8", JSON.stringify({ revoked: true }));
         return;
       }
@@ -1175,36 +1363,61 @@ export function createApp(deps: AppDependencies, options: AppOptions = {}) {
         const ownClaim = session?.identity?.xUserId === signature.xUserId;
         const binding = ownClaim && deps.mint ? deps.mint.state.getActiveBinding(account.xUserId, deps.mint.config.chainId) : null;
         const status = ownClaim ? deps.mint?.state.getStatus(signature.signatureId, true) : undefined;
-        const pending = ["submitted", "included_unfinalized", "validation_pending", "quarantined", "finality_revoked"].includes(projection?.state ?? "") || ["prepared", "signing_unknown"].includes(status?.authorization?.status ?? "");
+        const liveAuthorization = binding && deps.mint ? deps.mint.state.getLiveAuthorization(signature.signatureId, binding.walletBindingId) : null;
+        const resumeAuthorization = Boolean(liveAuthorization?.status === "issued" && liveAuthorization.galleryAttestation);
+        const unresolvedBinding = Boolean(deps.mint?.state.hasUnresolvedBindingAuthorization(account.xUserId, deps.mint.config.chainId));
+        const pendingElsewhere = Boolean(ownClaim && unresolvedBinding && !liveAuthorization);
+        const pending = ["submitted", "included_unfinalized", "validation_pending", "quarantined", "finality_revoked"].includes(projection?.state ?? "")
+          || ["prepared", "signing_unknown"].includes(status?.authorization?.status ?? "")
+          || Boolean(ownClaim && unresolvedBinding && !resumeAuthorization);
+        const recipientVerified = Boolean(session && binding && hasMintRecipient(session, signature, binding));
         const stage: MintEntryStage | null = !deps.mint?.config.enabled ? "paused"
           : !session?.identity ? "sign-in"
           : !ownClaim ? "wrong-account"
-          : !isFreshIdentity(session) ? "reauthenticate"
           : pending ? "pending"
-          : !binding ? "wallet" : null;
+          : !binding || !resumeAuthorization && (!recipientVerified || new URL(req.url ?? "/", "http://request.invalid").searchParams.get("recipient") === "change") ? "wallet" : null;
         if (stage) {
           const currentAccount = session?.identity ? await deps.store.getAccount(session.identity.xUserId) : null;
-          send(res, req, stage === "sign-in" || stage === "reauthenticate" ? 401 : stage === "wrong-account" ? 403 : stage === "paused" ? 503 : 200, "text/html; charset=utf-8", mintEntryPage({
+          send(res, req, stage === "sign-in" ? 401 : stage === "wrong-account" ? 403 : stage === "paused" ? 503 : 200, "text/html; charset=utf-8", mintEntryPage({
             signature: signatureView(signature, account.publicAccountId), stage,
-            statusLabel: stage === "pending" ? status?.authorization?.status === "prepared" ? "Authorization preparation pending" : status?.authorization?.status === "signing_unknown" ? "Authorization reconciliation required" : MINT_STATE_LABELS[projection?.state ?? "unminted"] : undefined,
+            pendingElsewhere,
+            statusLabel: stage === "pending" && !pendingElsewhere ? status?.authorization?.status === "prepared" ? "Authorization preparation pending" : status?.authorization?.status === "signing_unknown" ? "Authorization reconciliation required" : MINT_STATE_LABELS[projection?.state ?? "unminted"] : undefined,
             account: { currentHandle: currentAccount?.currentHandle ?? session?.identity?.username, csrfToken: session?.csrfToken,
               wallet: binding && deps.mint ? { address: binding.address, chainId: binding.chainId.toString(), chainName: deps.mint.config.chainName, provedAt: binding.provedAt } : null,
               mintEnabled: deps.mint?.config.enabled ?? false, mintChainId: deps.mint?.config.chainId.toString() ?? "",
-              fixtureMode, localOAuthMode, localChainRehearsal: options.localChainRehearsal, reauthRequired: Boolean(session?.identity && !isFreshIdentity(session)) },
+              mintCanStart: Boolean(deps.mint?.config.enabled && !unresolvedBinding && deps.mint.state.canWithdrawClaim(signature.signatureId)),
+              fixtureMode, localOAuthMode, localChainRehearsal: options.localChainRehearsal,
+              ...mintRecipientView(session, deps, signature), actionReturnTo: `/signatures/${signature.signatureId}/mint` },
           }));
           return;
         }
         // The entry page above is read-only. Exact review still requires every prerequisite.
-        if (!deps.mint?.config.enabled || !session?.identity || !ownClaim || !isFreshIdentity(session) || !binding) throw new V2Error(403, "MINT_INELIGIBLE", "Complete the mint prerequisites first.");
+        if (!deps.mint?.config.enabled || !session?.identity || !ownClaim || !binding) throw new V2Error(403, "MINT_INELIGIBLE", "Complete the mint prerequisites first.");
+        requireSessionIdentity(session, signature.xUserId);
+        if (!resumeAuthorization && !hasMintRecipient(session, signature, binding)) throw new V2Error(401, "MINT_RECIPIENT_REQUIRED", "Verify the wallet for this mint before reviewing it.");
         const metadata = await deps.mint.previewMetadata(signature, account);
+        requireSessionIdentity(session, signature.xUserId);
+        if (deps.mint.state.getActiveBinding(signature.xUserId, deps.mint.config.chainId)?.walletBindingId !== binding.walletBindingId) {
+          throw new V2Error(409, "BINDING_TRANSITION", "Your linked wallet changed. Reload the mint review.");
+        }
         if (deps.mint.state.isSuppressed(signature.signatureId)) {
           sendRemovedSignature(res, req, pathname, fixtureMode);
           return;
         }
+        const currentClaim = await deps.store.getSignature(signature.signatureId);
+        requireSessionIdentity(session, signature.xUserId);
+        if (currentClaim?.claimInstanceId !== signature.claimInstanceId) throw new V2Error(409, "CLAIM_CHANGED", "This claim changed while opening the mint review.");
+        if (deps.mint.state.getActiveBinding(signature.xUserId, deps.mint.config.chainId)?.walletBindingId !== binding.walletBindingId) {
+          throw new V2Error(409, "BINDING_TRANSITION", "The recipient changed while opening the mint review. Reload to review it again.");
+        }
+        if (!resumeAuthorization && !hasMintRecipient(session, signature, binding)) throw new V2Error(401, "MINT_RECIPIENT_REQUIRED", "Wallet verification expired. Open the mint page to start again.");
         send(res, req, 200, "text/html; charset=utf-8", mintReviewPage({
           signature: signatureView(signature, account.publicAccountId),
           currentHandle: account.currentHandle,
           wallet: { address: binding.address, chainId: binding.chainId.toString(), chainName: deps.mint.config.chainName, provedAt: binding.provedAt },
+          walletBindingId: binding.walletBindingId,
+          claimInstanceId: signature.claimInstanceId,
+          resumeAuthorization,
           csrfToken: session.csrfToken,
           chainName: deps.mint.config.chainName,
           metadataUri: metadata.tokenUri,
@@ -1228,13 +1441,14 @@ export function createApp(deps: AppDependencies, options: AppOptions = {}) {
         if (!limits.consume("v2-authorization-x", session.identity!.xUserId, 10, 60 * 60_000) || !limits.consume("v2-authorization-signature", mintAuthorizationMatch[1], 3, 60 * 60_000)) {
           throw new V2Error(429, "RATE_LIMITED", "Too many mint authorization attempts. Try again later.");
         }
-        await readJson(req);
+        const body = await readJson(req);
         const signature = await deps.store.getSignature(mintAuthorizationMatch[1]);
         if (!signature) throw new V2Error(409, "MINT_INELIGIBLE", "That V1 signature does not exist.");
-        if (signature.xUserId !== session.identity!.xUserId) throw new V2Error(403, "NOT_CLAIMANT", "Only the X claimant can mint this signature.");
+        requireSessionIdentity(session, signature.xUserId);
         const account = await deps.store.getAccount(signature.xUserId);
         if (!account) throw new Error("Signature account is missing.");
-        const response = await runMintOperation(() => deps.mint!.issueAuthorization(signature, account, undefined, session));
+        if (typeof body.walletBindingId !== "string" || typeof body.recipient !== "string") throw new V2Error(400, "REQUEST_CONFIRMATION_INVALID", "Review the exact recipient before authorizing this mint.");
+        const response = await runMintOperation(() => deps.mint!.issueAuthorization(signature, account, undefined, session, { walletBindingId: body.walletBindingId as string, recipient: body.recipient as string }));
         send(res, req, 201, "application/json; charset=utf-8", JSON.stringify(response));
         return;
       }
@@ -1248,7 +1462,11 @@ export function createApp(deps: AppDependencies, options: AppOptions = {}) {
         }
         const body = await readJson(req);
         if (typeof body.txHash !== "string") throw new V2Error(400, "INVALID_TRANSACTION_HASH", "Transaction hash must be exactly 32 bytes.");
-        const attempt = await runMintOperation(() => deps.mint!.reportTransaction(session.identity!.xUserId, mintTransactionMatch[1], body.txHash as string));
+        const xUserId = requireSessionIdentity(session).xUserId;
+        const attempt = await runMintOperation(() => {
+          requireSessionIdentity(session, xUserId);
+          return deps.mint!.reportTransaction(xUserId, mintTransactionMatch[1], body.txHash as string);
+        });
         send(res, req, 201, "application/json; charset=utf-8", JSON.stringify({ txHash: attempt.txHash, state: attempt.state }));
         return;
       }
@@ -1273,9 +1491,10 @@ export function createApp(deps: AppDependencies, options: AppOptions = {}) {
         if (!deps.mint?.config.enabled) throw new V2Error(503, "MINT_PAUSED", "The V2 rehearsal is disabled.");
         const session = requireV2Session(req, deps, options);
         const signature = await deps.store.getSignature(devAdvanceMatch[1]);
-        if (!signature || signature.xUserId !== session.identity!.xUserId) throw new V2Error(403, "NOT_CLAIMANT", "Only the fixture claimant can advance this rehearsal.");
+        if (!signature) throw new V2Error(403, "NOT_CLAIMANT", "Only the fixture claimant can advance this rehearsal.");
         await readJson(req);
-        deps.mint.advanceFixture(signature.signatureId, session.identity!.xUserId);
+        const identity = requireSessionIdentity(session, signature.xUserId);
+        deps.mint.advanceFixture(signature.signatureId, identity.xUserId);
         send(res, req, 200, "application/json; charset=utf-8", JSON.stringify(publicMintStatusJson(deps.mint, signature.signatureId, true)));
         return;
       }
@@ -1284,17 +1503,22 @@ export function createApp(deps: AppDependencies, options: AppOptions = {}) {
       if (method === "POST" && withdrawMatch) {
         const session = sessionFromRequest(req, deps, fixtureMode);
         if (!session?.identity) throw new V2Error(401, "AUTH_REQUIRED", "Sign in with X before withdrawing your claim.");
-        if (!isFreshIdentity(session)) throw new V2Error(401, "X_REAUTH_REQUIRED", "Sign in with X again before withdrawing your claim.");
+        const xUserId = requireSessionIdentity(session).xUserId;
         if (!requireSameOrigin(req, options)) throw new V2Error(403, "INVALID_WITHDRAWAL", "The withdrawal request must come from this site.");
         const form = await readForm(req);
         if (["csrf", "claim_instance", "confirm"].some(key => form.getAll(key).length !== 1)
           || form.get("csrf") !== session.csrfToken || form.get("confirm") !== "withdraw"
-          || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(form.get("claim_instance") ?? "")) {
+          || !CLAIM_INSTANCE_PATTERN.test(form.get("claim_instance") ?? "")) {
           throw new V2Error(403, "INVALID_WITHDRAWAL", "Reload the signature and confirm withdrawal.");
         }
-        if (!limits.consume("withdraw-x", session.identity.xUserId, 20, 60 * 60_000)) throw new V2Error(429, "RATE_LIMITED", "Too many withdrawal requests. Try again later.");
-        await runClaimWithdrawalOperation(withdrawMatch[1], () => withdrawClaim({ store: deps.store, artifacts: deps.artifacts, mintState: deps.mint?.state }, {
-          signatureId: withdrawMatch[1], xUserId: session.identity!.xUserId, claimInstanceId: form.get("claim_instance")!,
+        const intent: SensitiveActionIntent = { kind: "claim_withdraw", signatureId: withdrawMatch[1], claimInstanceId: form.get("claim_instance")! };
+        requireSessionIdentity(session, xUserId);
+        if (!hasActionApproval(session, intent)) throw new V2Error(401, "X_ACTION_CONFIRMATION_REQUIRED", "Confirm withdrawal of this signature with X first.");
+        if (!limits.consume("withdraw-x", xUserId, 20, 60 * 60_000)) throw new V2Error(429, "RATE_LIMITED", "Too many withdrawal requests. Try again later.");
+        await runClaimWithdrawalOperation(withdrawMatch[1], () => withdrawClaim({ store: deps.store, artifacts: deps.artifacts, mintState: deps.mint?.state,
+          authorize: () => { requireSessionIdentity(session, xUserId); consumeActionApproval(session, intent); },
+        }, {
+          signatureId: withdrawMatch[1], xUserId, claimInstanceId: intent.claimInstanceId,
         }));
         deps.auth.clearClaimNotices(withdrawMatch[1]);
         if (wantsJson(req, pathname)) send(res, req, 200, "application/json; charset=utf-8", JSON.stringify({ deleted: true, redirect: "/me" }));
@@ -1321,12 +1545,15 @@ export function createApp(deps: AppDependencies, options: AppOptions = {}) {
         }
         const mint = deps.mint ? signatureMintView(deps.mint, signature.signatureId) : undefined;
         const session = sessionFromRequest(req, deps, fixtureMode);
+        const mintBinding = session?.identity?.xUserId === signature.xUserId && deps.mint
+          ? deps.mint.state.getActiveBinding(signature.xUserId, deps.mint.config.chainId) : null;
+        const mintRecipientVerified = Boolean(session && mintBinding && hasMintRecipient(session, signature, mintBinding));
         const withdrawal = session?.identity?.xUserId === signature.xUserId ? {
           csrfToken: session.csrfToken, claimInstanceId: signature.claimInstanceId,
-          reauthRequired: !isFreshIdentity(session), allowed: deps.mint?.state.canWithdrawClaim(signature.signatureId) ?? true,
+          requiresXConfirmation: !hasActionApproval(session, { kind: "claim_withdraw", signatureId: signature.signatureId, claimInstanceId: signature.claimInstanceId }), allowed: deps.mint?.state.canWithdrawClaim(signature.signatureId) ?? true,
         } : undefined;
         res.setHeader("Vary", "Cookie");
-        send(res, req, 200, "text/html; charset=utf-8", signaturePage(signatureView(signature, account.publicAccountId), fixtureMode, mint, originFor(req, options), options.localChainRehearsal, withdrawal), "private, no-store");
+        send(res, req, 200, "text/html; charset=utf-8", signaturePage(signatureView(signature, account.publicAccountId), fixtureMode, mint, originFor(req, options), options.localChainRehearsal, withdrawal, mintRecipientVerified), "private, no-store");
         return;
       }
 
@@ -1402,7 +1629,7 @@ export function createApp(deps: AppDependencies, options: AppOptions = {}) {
           wallet: binding && deps.mint ? { address: binding.address, chainName: deps.mint.config.chainName, chainId: binding.chainId.toString(), provedAt: binding.provedAt } : null,
           mintBySignature,
           localOAuthMode,
-          reauthRequired: !isFreshIdentity(session),
+          ...walletConfirmationView(session, deps),
           localChainRehearsal: options.localChainRehearsal,
           publicOrigin: originFor(req, options),
         }));

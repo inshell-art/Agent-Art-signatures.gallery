@@ -202,7 +202,7 @@ describe("explicit sign-in-and-claim consent", () => {
     const publicHtml = await (await fetch(base + path + "?claimed=true")).text();
     const privateHtml = await (await fetch(base + path, { headers: { Cookie: cookie } })).text();
     const withoutOwnerControls = privateHtml
-      .replace(/<section class="claim-withdrawal" data-withdraw-control>[\s\S]*?<\/section>/, "")
+      .replace(/<details class="auth-disclosure claim-withdrawal"[^>]*>[\s\S]*?<\/details>/, "")
       .replace(/<div class="signature-mint-entry">[\s\S]*?<\/div>/, "")
       .replace(/<script src="[^"]*action-tooltip\.js[^"]*" defer><\/script>/, "");
     expect(withoutOwnerControls).toBe(publicHtml);
@@ -416,7 +416,7 @@ describe("real X authentication in the local app", () => {
     expect(providerCalls).toHaveLength(2);
   });
 
-  it("keeps legacy forms on explicit CSRF-protected Claim before wallet linking", async () => {
+  it("keeps legacy forms on explicit CSRF-protected Claim before mint recipient verification", async () => {
     const prepared = await claim();
     expect(prepared.html).toContain('data-claim-state="confirm"');
     expect(prepared.html).toContain("Signed in as @real_test. Confirm to add this signature");
@@ -429,7 +429,12 @@ describe("real X authentication in the local app", () => {
     expect((await store.listSignaturesForAccount(testUser.id))).toHaveLength(1);
     const entry = await fetch(`${base}/signatures/${payload.signature.id}/mint`, { headers: { Cookie: prepared.cookie } });
     expect(entry.status).toBe(200);
-    expect(await entry.text()).toContain('data-mint-entry="wallet"');
+    const mintHtml = await entry.text();
+    expect(mintHtml).toContain('data-mint-entry="wallet"');
+    expect(mintHtml).toContain('<span>Connect wallet</span>');
+    expect(mintHtml).not.toContain('name="action" value="mint_recipient"');
+    expect(mintHtml).toContain('data-link-wallet');
+    expect(mintHtml).toContain(`data-signature-id="${payload.signature.id}"`);
     const detail = await (await fetch(`${base}/signatures/${payload.signature.id}`)).text();
     expect(detail).toContain("Local claim record");
     expect(detail).not.toContain("Development claim fixture");
@@ -441,6 +446,28 @@ describe("real X authentication in the local app", () => {
     const collection = await (await fetch(`${base}/me`, { headers: { Cookie: prepared.cookie } })).text();
     for (const html of [gallery, collection]) expect(html).toContain(`/signatures/${payload.signature.id}`);
     expect(mint.state.exportSnapshot().authorizations).toEqual([]);
+  });
+
+  it("keeps the app signed in independently of the X token lifetime without global wallet setup", async () => {
+    const response = await callback(await begin());
+    const cookie = cookieOf(response);
+    const session = auth.getSession(cookie.split("=")[1])!;
+    session.identity!.authenticatedAt = new Date(Date.now() - 3 * 60 * 60_000);
+    const collection = await fetch(base + "/me", { headers: { Cookie: cookie } });
+    expect(collection.status).toBe(200);
+    expect(await collection.text()).not.toContain("Reauthenticate with X");
+    const panel = await (await fetch(base + "/api/v1/account-panel", { headers: { Cookie: cookie } })).json();
+    expect(panel.html).toContain("@Real_Test");
+    expect(panel.html).toContain('<span>Log out</span>');
+    expect(panel.html).not.toMatch(/data-link-wallet|data-revoke-wallet|aria-label="Wallet"|Link wallet|Replace wallet|Revoke wallet|Connect wallet/);
+    expect(session.actionApproval).toBeUndefined();
+    expect(providerCalls).toHaveLength(2);
+
+    session.lastSeenAt = new Date(Date.now() - 8 * 24 * 60 * 60_000);
+    const expired = await fetch(base + "/me", { headers: { Cookie: cookie } });
+    expect(expired.status).toBe(401);
+    expect(await expired.text()).toContain("Sign in with X");
+    expect(providerCalls).toHaveLength(2);
   });
 
   it("rejects the wrong X account for a claim", async () => {
@@ -492,7 +519,7 @@ describe("real X authentication in the local app", () => {
     expect(await store.listSignaturesForAccount(testUser.id)).toHaveLength(0);
   });
 
-  it.each(["anonymous", "other-browser", "other-handle", "other-case", "other-gr0k", "duplicate-flow", "expired"])("does not expose confirmation for %s and recovers on the artwork page", async scenario => {
+  it.each(["anonymous", "other-browser", "other-handle", "other-case", "other-gr0k", "duplicate-flow", "expired-session", "expired-flow"])("does not expose confirmation for %s and recovers on the artwork page", async scenario => {
     const prepared = await claim();
     let cookie = prepared.cookie;
     let path = prepared.returnPath;
@@ -502,7 +529,11 @@ describe("real X authentication in the local app", () => {
     if (scenario === "other-case") path = path.replace("real_test", "Real_Test");
     if (scenario === "other-gr0k") path = path.replace("/37?", "/38?");
     if (scenario === "duplicate-flow") path = path.replace("#claim", `&flow=${prepared.flow}#claim`);
-    if (scenario === "expired") auth.getSession(cookie.split("=")[1])!.identity!.authenticatedAt = new Date(0);
+    if (scenario === "expired-session") auth.getSession(cookie.split("=")[1])!.lastSeenAt = new Date(0);
+    if (scenario === "expired-flow") {
+      const session = auth.getSession(cookie.split("=")[1])!;
+      auth.getBoundFlow(session, prepared.flow, "authenticated")!.expiresAt = new Date(0);
+    }
     const response = await fetch(base + path, { headers: { Cookie: cookie } });
     expect([401, 409]).toContain(response.status);
     expect(response.headers.get("cache-control")).toBe("private, no-store");

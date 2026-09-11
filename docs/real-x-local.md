@@ -24,7 +24,7 @@ Open <http://127.0.0.1:3000>. Hover the collection dot → **Sign in with X**. Y
 
 For a fresh claim, open `/s/YOUR_HANDLE/37` using your actual X handle (this sample gr0k is not a verified Grok reading). Choose **Claim with X** and authenticate with that matching account. This click authorizes the permanent public claim. X returns you directly to the permanent signature page with a **Claimed** tag and a brief success toast; there is no second confirmation. Use the top four-square icon for the gallery or the collection dot for My Collection; there are no duplicate destination buttons below the artwork. A failed save offers **Retry claim** without another OAuth round trip. Ordinary account sign-in and previews create no claim. Private flow URLs are session-bound and never publicly cached; share the permanent signature link, not a flow URL.
 
-Choose **Mint this signature** → prove a dedicated test wallet, or use **Use local TEST wallet** inside DEV → review the exact work → explicitly authorize minting. Test-wallet keys are public; never send real funds. Real X does not make the Anvil token or unpublished IPFS metadata a production asset.
+Choose **Mint this signature**, then **Connect wallet**. Your active original-claimant session goes directly to proving control of a dedicated test recipient, or choose **Use local TEST wallet** inside DEV. A previous address does not skip fresh proof for a new mint. Review the exact work, recipient, project fee **None**, network gas, and publication disclosure before explicitly authorizing and submitting. **Change recipient** returns to wallet selection for a new exact-mint proof before issuance, without another X trip; live or unresolved authority blocks recipient changes. A previously issued authorization can be resumed, not replaced. Test-wallet keys are public; never send real funds. Real X does not turn an Anvil token or unpublished IPFS metadata into a production asset.
 
 ## Provider modes
 
@@ -39,6 +39,14 @@ Restart the foreground app to change providers. Sessions/flows are deliberately 
 `npm run local:test -- --execute-local-test-transactions` is an **emulator-mode** test. It must not try to automate real X consent. Its `--verify SIGNATURE_ID` mode remains a read-only chain/projection check usable in either provider mode.
 
 ## Security and limits
+
+### Session versus action confirmation
+
+A signed-out direct mint link uses ordinary **Sign in with X** to establish the app session and return to the mint page. The active original-claimant session then connects the wallet directly, without a second X trip. Existing issued/pending mints also use ordinary sign-in for safe resumption; wrong-account recovery first switches to the original claimant. If another work has unresolved authority, the page identifies it as another pending mint.
+
+The app session retains seven-day idle expiry, independently of X's token lifetime. There is no new shorter TTL or routine per-mint X prompt. Minting uses the session's stable numeric X account ID to establish original-claimant authority and requires a fresh wallet proof for the exact work. A stolen valid app session can therefore be used to attempt minting to an attacker's wallet: proving that wallet does not prove the session holder is the rightful X user. Same-origin/CSRF checks, explicit recipient consent, fresh exact SIWE proof, and exact review matching remain required, but are not protection against every form of session theft. The account panel remains X-only; withdrawal still requires its separate action-bound X and final confirmations.
+
+The 15-minute OAuth flow, one-use withdrawal approval expiring with that flow, 10-minute SIWE proof, 15-minute exact-mint recipient review draft, and 900-second chain-time mint authorization retain their separate existing deadlines. Recipient/work/binding changes invalidate stale review authority. After authorization issuance, cancellation only navigates away and retry preserves the exact capability while unresolved. See [the authentication policy](authentication-policy.md). Scopes remain unchanged; `offline.access` is not requested. Internal binding/proof records and historical provenance remain durable; Ethereum token transfers require no X authentication. This introduces neither a pricing change nor a one-token-per-user limit.
 
 ### Why X asks to read posts and accounts
 

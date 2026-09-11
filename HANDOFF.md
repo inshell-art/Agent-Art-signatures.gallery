@@ -1,10 +1,50 @@
-# signatures.gallery — V1 Implementation Handoff
+# signatures.gallery — Current Agent Handoff
 
-**Status:** implementation-ready
-**Audience:** the agent or engineer updating the already-implemented `signatures.gallery` service
-**Implementation target:** **V1 only**
-**V2:** **TBD — do not implement**
-**Supersedes:** `signatures-gallery-handoff.md` for all new development
+## Checkpoint: 2026-09-11
+
+The current implementation includes V1 claims and local V2 minting. **The historical V1-only specification below is archived context, not the next agent's instructions.** In particular, its decimal seeds, lowercase rendering, separate claim-confirmation flow, and “V2 TBD” restrictions are superseded.
+
+Start with [README.md](README.md), [authentication policy](docs/authentication-policy.md), [V2 implementation status and external gates](docs/v2-implementation-status.md), and [formal renderer adoption](docs/formal-algorithm-v1.md).
+
+### Current product and security decisions
+
+- The formal renderer is locked at `sg-renderer-1.0.0`, vendored from upstream release v1.0.0 / commit `1e1dab4ec093261006feb7879c109413c0b3ac6d`. Rendering preserves handle case and uses integer `gr0k` seeds 1–100. Do not change its bytes, repoint its version, or resurrect retired decimal-seed claims/permalinks. Run `npm run renderer:verify`.
+- “Claim with X” includes explicit consent for the exact preview. A matching OAuth return saves the claim and redirects to its permalink. Ordinary sign-in never claims. Ownership uses the stable numeric X user ID, not the handle.
+- An active app session is the site-wide X identity authority, independent of X access-token expiry. The existing lifetime is seven days of inactivity; no new absolute or periodic identity-age limit was introduced. Sessions are currently in memory and end on app restart.
+- Minting an owned claim does **not** routinely repeat X OAuth. It still requires same-origin/CSRF-protected explicit selection, a fresh exact-work/claim-instance/chain/recipient SIWE proof, a matching reviewed recipient snapshot, publication consent, and wallet transaction approval. Saved wallet records alone are never permission for another mint.
+- Only the latest mint-recipient challenge in a session can finish; a new selection invalidates earlier unfinished proofs, including in-flight verification. Issued or unresolved mint authority retains its exact recipient and blocks changes until safely resolved. Existing proof/review/authorization deadlines are unchanged.
+- This deliberately accepts a security trade-off: a stolen valid app session can attempt to mint to an attacker-controlled wallet. Wallet proof proves that wallet, not the legitimate user's presence. Do not describe this as equivalent to fresh X authentication.
+- Withdrawal remains separately protected by action-bound X confirmation, exact claim-instance checks, collapsed warning/disclosure, explicit final confirmation, and mint-history guards. Do not remove these when editing mint login behavior.
+- The account panel is X-only; its dot and “My Collection” heading both link directly to `/me`. Wallet controls belong to mint pages. Mint tooltips distinguish new, already-verified, and already-issued mint states. Developer fixture controls/notes stay in the distinct DEV overlay.
+
+### Verification at handoff
+
+- `npm test`: 1,598 tests across 82 files passed.
+- `npm run typecheck`, `npm run build`, renderer lock, and `git diff --check` passed.
+- `npm run test:postgres:local` passed on a separate disposable PostgreSQL 16.15 cluster, including migration 005 and the retained withdrawal/artwork/repository checks; the user's database was not used.
+- Desktop and 390px mobile browser rehearsal: one initial simulator sign-in/claim, direct wallet setup, review, recipient change, and return to canonical review without another OAuth round trip. Consent starts unchecked; the tooltip fits; no horizontal overflow or failed browser requests.
+- The latest UX validation used isolated in-memory fixtures, not the user's real X identity, durable claims, or a real transaction. Unit/API tests cover missing/expired/wrong sessions, CSRF, replay, changed claim/recipient, superseded proofs, async races, and unresolved authority.
+- There is currently no checked-in `.github/workflows` pipeline. Do not confuse local test success with a hosted CI or production-readiness result.
+
+### Local runtime and data safety
+
+- User-facing app: `http://127.0.0.1:3000`, started with `npm run local:serve:x` (real X OAuth + repo-owned Anvil).
+- Separate disposable fixture app: `http://localhost:3001`; it uses the X simulator and in-memory records. Its data is not durable or production provenance.
+- Existing durable rehearsal uses PostgreSQL on port 55432 and Anvil chain 31337 on port 18545. Consult ignored `.local/rehearsal/runtime.json` and `npm run local:status`; do not assume old port 8545. Read-only checks showed both services healthy after a transient RPC interruption.
+- `.env.local` contains real OAuth credentials and is ignored. Never commit, print, copy into handoff text, or transmit its values. `.local/`, logs, and generated builds also remain ignored.
+- Keep existing claims, artifacts, wallet proofs, contract deployment, and chain history. No reset/reseed/redeployment or public-network transaction is authorized by this handoff. App-only restart clears login sessions, not durable state. Stop the existing app writer and wait for exit before restarting; the PostgreSQL advisory lock prevents simultaneous writers.
+- Additive migration `src/store/migrations/005_action_auth_policy.sql` removes only the two obsolete wallet-proof constraints tied to X authentication age. Keep applied migration 002 byte-identical; preserve SIWE chronology/deadlines and authorization/binding safety constraints. The local entrypoints apply migration 005.
+- `npm run local:test -- --execute-local-test-transactions` is **not** a read-only smoke test: it creates a claim, mints, and transfers on Anvil. Do not run it against user state without authorization. `npm run test:postgres:local` uses a separate disposable test cluster.
+
+### Next-agent boundary
+
+Continue from `main` after fetching the pushed checkpoint; check `git status` before editing. The user will choose the next task/agent. No further task, deployment, release tag, or remote CI configuration is implied. Remaining production/Sepolia work and external approval gates are listed in [V2 implementation status](docs/v2-implementation-status.md); production startup is intentionally refused. Durable production sessions/repositories, independent RPC/finality evidence, IPFS retention, signer infrastructure, audits, and explicit broadcast approval remain outstanding.
+
+---
+
+# Historical V1 Implementation Specification (superseded)
+
+**Status:** archived initial specification. The current checkpoint above and linked implementation/policy documents take precedence over conflicting historical instructions below.
 
 The previous handoff described canonical signatures, instances, readings, offsets, clusters, source Posts, and creation during a `GET`. That implementation is now the legacy design. Refactor it to the model below without deleting legacy data.
 
@@ -567,8 +607,8 @@ The home page and `/me` must support a separate `purpose=account_login` branch t
 - On success, the callback creates an authenticated local session and redirects with `303` to `/me`.
 - If `x_accounts` already has this numeric X ID, update only `current_handle`, `handle_normalized`, and `last_authenticated_at` from the new OAuth observation.
 - If the X ID has never claimed a signature, do not create an empty account row; `/me` shows an empty collection from the authenticated session.
-- A normal account session lasts at most seven days of inactivity. Viewing `/me` may use that session; creating a new claim still requires an X identity observation no older than 15 minutes.
-- Reauthentication replaces the session identity and rotates the session ID.
+- A normal account session lasts at most seven days of inactivity. It is independent of X access-token expiry and has no blanket 15-minute identity-age requirement. A new claim uses its own unexpired, exact-input claim OAuth flow rather than authority from ordinary account login.
+- A successful X callback replaces the session identity and rotates the session ID. Wallet changes and claim withdrawal use separate one-use, target-bound approvals from `purpose=sensitive_action`; minting with an existing proved wallet requires an active claimant session, not another X login solely because of age. See [the current authentication policy](docs/authentication-policy.md), which supersedes any historical blanket-freshness guidance.
 
 ### 12.3 OAuth callback
 
@@ -636,7 +676,7 @@ The claim action is:
 It must:
 
 1. Require the authenticated server session.
-2. Require a fresh identity observation, recommended maximum age 15 minutes.
+2. Require the X identity authenticated for this exact claim flow, not a generic account-login identity. The flow's 15-minute deadline remains a flow-expiry bound, not an app-wide identity-freshness timer.
 3. Validate CSRF.
 4. Load the unexpired, authenticated flow bound to that session.
 5. Recheck the OAuth username against the bound handle.

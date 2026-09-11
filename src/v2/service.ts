@@ -9,6 +9,7 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import type { BrowserSession } from "../v1/authState.js";
+import { consumeActionApproval, hasMintRecipient, MINT_RECIPIENT_REVIEW_TTL_MS, requireSessionIdentity } from "../v1/authPolicy.js";
 import type { ArtifactStore } from "../v1/artifacts.js";
 import { signatureIdentityPayload } from "../v1/identity.js";
 import { sha256Hex as v1Sha256Hex } from "../v1/renderer.js";
@@ -47,7 +48,6 @@ import type {
 const FIXTURE_GALLERY_PRIVATE_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" as Hex;
 export const FIXTURE_WALLET = getAddress("0x70997970C51812dc3A010C7d01b50e0d17dc79C8");
 const ZERO_TX_VALUE = "0x0" as const;
-const X_IDENTITY_FRESH_MS = 15 * 60 * 1_000;
 
 const MINT_ABI = parseAbi([
   "function mintAuthorized((bytes32 signatureDigest,bytes32 walletBindingId,address mintWallet,bytes32 svgSha256,bytes32 pngSha256,bytes32 metadataSha256,bytes32 tokenURIHash,bytes32 authorizationId,uint64 validAfter,uint64 deadline,uint32 authorizerEpoch) a,string tokenURI,bytes galleryAttestation)",
@@ -90,6 +90,8 @@ export interface MintAuthorizationResponse {
   fixture?: true;
   localChainRehearsal?: true;
 }
+
+export interface ReviewedMintRecipient { walletBindingId: string; recipient: string }
 
 export interface MintServiceAdapters {
   eoaVerifier?: EoaVerifier;
@@ -257,19 +259,6 @@ export class V2MintService {
     }
   }
 
-  private requireFreshIdentity(session: BrowserSession, expectedXUserId: string, at: Date): NonNullable<BrowserSession["identity"]> {
-    const identity = session.identity;
-    if (!identity) throw v2Error(401, "AUTH_REQUIRED", "Sign in with X before using minting.");
-    if (identity.xUserId !== expectedXUserId) {
-      throw v2Error(403, "NOT_CLAIMANT", "The active X session does not own this minting action.");
-    }
-    const age = at.getTime() - identity.authenticatedAt.getTime();
-    if (age < 0 || age > X_IDENTITY_FRESH_MS) {
-      throw v2Error(401, "X_REAUTH_REQUIRED", "Reauthenticate with X before using minting.");
-    }
-    return identity;
-  }
-
   private requireEnabled(): void {
     if (!this.config.enabled) throw v2Error(503, "MINT_PAUSED", "Minting is disabled.");
   }
@@ -279,11 +268,14 @@ export class V2MintService {
     account: XAccount;
     walletAddress: string;
     chainId: string;
+    signature?: Signature;
+    recipientConsent?: unknown;
+    previousBindingId?: unknown;
     now?: Date;
   }): Promise<{ challengeId: string; message: string; expiresAt: string; chainId: string; walletAddress: Address }> {
     this.requireEnabled();
     const now = params.now ?? this.clock();
-    const identity = this.requireFreshIdentity(params.session, params.account.xUserId, now);
+    const identity = requireSessionIdentity(params.session, params.account.xUserId, now);
     if (identity.xUserId !== params.account.xUserId || params.account.publicAccountId.length === 0) {
       throw v2Error(403, "NOT_CLAIMANT", "Only the authenticated X account can link its mint wallet.");
     }
@@ -296,8 +288,23 @@ export class V2MintService {
     } catch {
       throw v2Error(400, "INVALID_WALLET_ADDRESS", "Enter one exact 20-byte Ethereum address.");
     }
-    const expiresAt = siweChallengeExpiry(now, identity.authenticatedAt);
-    if (expiresAt <= now) throw v2Error(401, "X_REAUTH_REQUIRED", "Reauthenticate with X before linking a wallet.");
+    const expiresAt = siweChallengeExpiry(now);
+    const previousWalletBindingId = this.state.getActiveBinding(identity.xUserId, this.config.chainId)?.walletBindingId ?? null;
+    if (params.signature) {
+      this.requireRecipientConsent(params, previousWalletBindingId);
+      if (this.state.hasUnresolvedBindingAuthorization(identity.xUserId, this.config.chainId)) {
+        throw v2Error(409, "LIVE_AUTHORIZATION_EXISTS", "Finish or reconcile the pending mint before choosing a recipient.");
+      }
+      await this.requireMintTarget(params.signature, identity.xUserId);
+      requireSessionIdentity(params.session, identity.xUserId, params.now ?? this.clock());
+      if (this.state.hasUnresolvedBindingAuthorization(identity.xUserId, this.config.chainId)) {
+        throw v2Error(409, "LIVE_AUTHORIZATION_EXISTS", "Finish or reconcile the pending mint before choosing a recipient.");
+      }
+      if ((this.state.getActiveBinding(identity.xUserId, this.config.chainId)?.walletBindingId ?? null) !== previousWalletBindingId) {
+        throw v2Error(409, "BINDING_TRANSITION", "The recipient changed. Start again.");
+      }
+    }
+    const mintTarget = params.signature ? { signatureId: params.signature.signatureId, claimInstanceId: params.signature.claimInstanceId } : undefined;
     const challengeId = opaqueId("wc1_");
     const nonce = generateSiweNonce();
     const message = buildExactSiweMessage({
@@ -310,6 +317,7 @@ export class V2MintService {
       expirationTime: expiresAt,
       challengeId,
       publicAccountId: params.account.publicAccountId,
+      ...(mintTarget ? { mintTarget } : {}),
     });
     const challenge: WalletBindingChallenge = {
       challengeId,
@@ -318,12 +326,23 @@ export class V2MintService {
       publicAccountId: params.account.publicAccountId,
       address: walletAddress,
       chainId: this.config.chainId,
+      previousWalletBindingId,
+      ...(mintTarget ? { mintTarget } : {}),
       nonce,
       message,
       issuedAt: now,
       expiresAt,
       status: "pending",
     };
+    // Mint setup is an explicit same-origin, CSRF-protected session action.
+    // Generic wallet management still requires its separate X action grant.
+    if (!mintTarget) consumeActionApproval(params.session, {
+      kind: "wallet_link",
+      chainId: this.config.chainId.toString(),
+      previousBindingId: previousWalletBindingId,
+    }, params.now ?? this.clock());
+    delete params.session.mintRecipient;
+    if (mintTarget) params.session.mintRecipientChallengeId = challengeId;
     this.state.putChallenge(challenge);
     return { challengeId, message, expiresAt: expiresAt.toISOString(), chainId: this.config.chainId.toString(), walletAddress };
   }
@@ -338,51 +357,132 @@ export class V2MintService {
     const now = params.now ?? this.clock();
     const identity = params.session.identity;
     if (!identity) throw v2Error(401, "AUTH_REQUIRED", "Sign in with X before confirming a wallet.");
-    this.requireFreshIdentity(params.session, identity.xUserId, now);
+    requireSessionIdentity(params.session, identity.xUserId, now);
     const xUserId = identity.xUserId;
+    const candidate = this.state.getChallenge(params.challengeId);
+    if (candidate?.mintTarget && params.session.mintRecipientChallengeId !== candidate.challengeId) {
+      throw v2Error(409, "WALLET_CHALLENGE_INVALID", "This recipient selection was replaced. Use the latest wallet request.");
+    }
     const challenge = this.state.beginChallenge(params.challengeId, sha256(params.session.id), xUserId, now);
     if (!challenge) throw v2Error(409, "WALLET_CHALLENGE_INVALID", "The wallet challenge expired, was replayed, or belongs to another session.");
-    try {
-      await verifyExactSiweProof(challenge.message, params.walletProof, {
-        appHost: this.config.appHost,
-        appOrigin: this.config.appOrigin,
-        walletAddress: challenge.address,
-        chainId: challenge.chainId,
-        nonce: challenge.nonce,
-        issuedAt: challenge.issuedAt,
-        expirationTime: challenge.expiresAt,
-        challengeId: challenge.challengeId,
-        publicAccountId: challenge.publicAccountId,
-      });
-      const verification = await this.eoaVerifier.verify(challenge.address, challenge.chainId);
-      const completedAt = params.now ?? this.clock();
-      this.requireFreshIdentity(params.session, challenge.xUserId, completedAt);
-      if (challenge.expiresAt <= completedAt) {
-        throw v2Error(409, "WALLET_CHALLENGE_INVALID", "The wallet challenge expired before verification completed.");
+    const confirm = async () => {
+      try {
+        this.requireChallengeBinding(challenge);
+        await verifyExactSiweProof(challenge.message, params.walletProof, {
+          appHost: this.config.appHost,
+          appOrigin: this.config.appOrigin,
+          walletAddress: challenge.address,
+          chainId: challenge.chainId,
+          nonce: challenge.nonce,
+          issuedAt: challenge.issuedAt,
+          expirationTime: challenge.expiresAt,
+          challengeId: challenge.challengeId,
+          publicAccountId: challenge.publicAccountId,
+          ...(challenge.mintTarget ? { mintTarget: challenge.mintTarget } : {}),
+        });
+        const verification = await this.eoaVerifier.verify(challenge.address, challenge.chainId);
+        if (challenge.mintTarget) await this.requireMintTarget(challenge.mintTarget, challenge.xUserId);
+        const completedAt = params.now ?? this.clock();
+        requireSessionIdentity(params.session, challenge.xUserId, completedAt);
+        if (challenge.mintTarget && params.session.mintRecipientChallengeId !== challenge.challengeId) {
+          throw v2Error(409, "WALLET_CHALLENGE_INVALID", "This recipient selection was replaced. Use the latest wallet request.");
+        }
+        this.requireChallengeBinding(challenge);
+        if (challenge.expiresAt <= completedAt) {
+          throw v2Error(409, "WALLET_CHALLENGE_INVALID", "The wallet challenge expired before verification completed.");
+        }
+        const binding: WalletBinding = {
+          walletBindingId: randomNonzeroBytes32(),
+          xUserId,
+          publicAccountId: challenge.publicAccountId,
+          chainId: challenge.chainId,
+          address: challenge.address,
+          siweMessage: challenge.message,
+          walletProof: asHex(params.walletProof),
+          verificationScheme: "eip191_eoa_65byte_low_s",
+          verificationBlockNumber: verification.blockNumber,
+          verificationBlockHash: verification.blockHash,
+          provedAt: completedAt,
+          status: "active",
+          version: (this.state.getActiveBinding(xUserId, challenge.chainId)?.version ?? 0) + 1,
+        };
+        const activated = this.state.activateBinding(challenge.challengeId, binding, completedAt);
+        if (challenge.mintTarget) {
+          delete params.session.mintRecipientChallengeId;
+          this.setMintRecipient(params.session, challenge.mintTarget, activated, completedAt);
+        }
+        return activated;
+      } catch (error) {
+        if (params.session.mintRecipientChallengeId === challenge.challengeId) delete params.session.mintRecipientChallengeId;
+        this.state.failChallenge(challenge.challengeId);
+        if (error instanceof V2Error) throw error;
+        if (error instanceof Error && error.message === "LIVE_AUTHORIZATION_EXISTS") {
+          throw v2Error(409, "LIVE_AUTHORIZATION_EXISTS", "Wait for the current mint authorization to finish before changing wallets.");
+        }
+        throw v2Error(422, "WALLET_UNSUPPORTED", "The wallet proof is invalid or the address is not a supported EOA.");
       }
-      const binding: WalletBinding = {
-        walletBindingId: randomNonzeroBytes32(),
-        xUserId,
-        publicAccountId: challenge.publicAccountId,
-        chainId: challenge.chainId,
-        address: challenge.address,
-        siweMessage: challenge.message,
-        walletProof: asHex(params.walletProof),
-        verificationScheme: "eip191_eoa_65byte_low_s",
-        verificationBlockNumber: verification.blockNumber,
-        verificationBlockHash: verification.blockHash,
-        provedAt: completedAt,
-        status: "active",
-        version: (this.state.getActiveBinding(xUserId, challenge.chainId)?.version ?? 0) + 1,
-      };
-      return this.state.activateBinding(challenge.challengeId, binding, completedAt);
-    } catch (error) {
-      this.state.failChallenge(challenge.challengeId);
-      if (error instanceof V2Error) throw error;
-      if (error instanceof Error && error.message === "LIVE_AUTHORIZATION_EXISTS") {
-        throw v2Error(409, "LIVE_AUTHORIZATION_EXISTS", "Wait for the current mint authorization to finish before changing wallets.");
-      }
-      throw v2Error(422, "WALLET_UNSUPPORTED", "The wallet proof is invalid or the address is not a supported EOA.");
+    };
+    // Serialize the existence check and proof activation with claim withdrawal.
+    return challenge.mintTarget && this.signatures.withClaimLock
+      ? this.signatures.withClaimLock(challenge.mintTarget.signatureId, confirm) : confirm();
+  }
+
+  private async requireMintTarget(target: { signatureId: string; claimInstanceId: string }, xUserId: string): Promise<Signature> {
+    const current = await this.signatures.getSignature(target.signatureId);
+    if (!current || current.claimInstanceId !== target.claimInstanceId || this.state.isSuppressed(target.signatureId)) {
+      throw v2Error(409, "MINT_INELIGIBLE", "This claim changed. Return to the signature and start again.");
+    }
+    if (current.xUserId !== xUserId) throw v2Error(403, "NOT_CLAIMANT", "Only the original X claimant can mint this signature.");
+    if (this.state.getProjection(target.signatureId).state !== "unminted") {
+      throw v2Error(409, "LIVE_AUTHORIZATION_EXISTS", "Finish or reconcile the current mint before choosing a recipient.");
+    }
+    return current;
+  }
+
+  private setMintRecipient(session: BrowserSession, target: { signatureId: string; claimInstanceId: string }, binding: WalletBinding, now: Date): void {
+    session.mintRecipient = {
+      ...target, sessionId: session.id, xUserId: binding.xUserId,
+      walletBindingId: binding.walletBindingId, address: binding.address, chainId: binding.chainId.toString(),
+      provedAt: now, expiresAt: new Date(now.getTime() + MINT_RECIPIENT_REVIEW_TTL_MS),
+    };
+  }
+
+  private requireRecipientConsent(consent: { recipientConsent?: unknown; previousBindingId?: unknown } | undefined, previousBindingId: string | null): void {
+    if (consent?.recipientConsent !== true) {
+      throw v2Error(400, "REQUEST_CONFIRMATION_INVALID", "Choose a wallet for this exact mint before requesting a proof.");
+    }
+    if (consent.previousBindingId !== previousBindingId) {
+      throw v2Error(409, "BINDING_TRANSITION", "The recipient changed. Reload the mint page before choosing a wallet.");
+    }
+  }
+
+  /** Dev fixture proof only; never available for actual local-chain or production mints. */
+  async seedFixtureMintRecipient(session: BrowserSession, signature: Signature, account: XAccount, now = new Date(), consent?: { recipientConsent?: unknown; previousBindingId?: unknown }): Promise<WalletBinding> {
+    this.requireEnabled();
+    if (!this.config.fixtureMode || this.config.localChainRehearsal) throw new Error("Fixture recipients are disabled.");
+    requireSessionIdentity(session, account.xUserId, now);
+    if (this.state.hasUnresolvedBindingAuthorization(account.xUserId, this.config.chainId)) {
+      throw v2Error(409, "LIVE_AUTHORIZATION_EXISTS", "Finish or reconcile the pending mint before choosing a recipient.");
+    }
+    await this.requireMintTarget(signature, account.xUserId);
+    requireSessionIdentity(session, account.xUserId, now);
+    if (this.state.hasUnresolvedBindingAuthorization(account.xUserId, this.config.chainId)) {
+      throw v2Error(409, "LIVE_AUTHORIZATION_EXISTS", "Finish or reconcile the pending mint before choosing a recipient.");
+    }
+    const prior = this.state.getActiveBinding(account.xUserId, this.config.chainId);
+    this.requireRecipientConsent(consent, prior?.walletBindingId ?? null);
+    delete session.mintRecipientChallengeId;
+    const binding = this.seedFixtureBinding(account.xUserId, account.publicAccountId, now);
+    this.setMintRecipient(session, signature, binding, now);
+    return binding;
+  }
+
+  private requireChallengeBinding(challenge: WalletBindingChallenge): void {
+    const currentBindingId = this.state.getActiveBinding(challenge.xUserId, challenge.chainId)?.walletBindingId ?? null;
+    // A missing snapshot identifies a legacy challenge that never received
+    // action-specific consent. It must also be restarted, not silently upgraded.
+    if (challenge.previousWalletBindingId === undefined || challenge.previousWalletBindingId !== currentBindingId) {
+      throw v2Error(409, "BINDING_TRANSITION", "The recipient changed. Choose and verify it again.");
     }
   }
 
@@ -410,8 +510,20 @@ export class V2MintService {
     return binding;
   }
 
-  revokeBinding(xUserId: string, now = new Date()): void {
+  revokeBinding(xUserId: string, now = new Date(), session?: BrowserSession): void {
     this.requireEnabled();
+    if (session) {
+      requireSessionIdentity(session, xUserId, now);
+      const binding = this.state.getActiveBinding(xUserId, this.config.chainId);
+      if (!binding) throw v2Error(403, "WALLET_NOT_LINKED", "There is no linked wallet to revoke.");
+      consumeActionApproval(session, {
+        kind: "wallet_revoke",
+        chainId: this.config.chainId.toString(),
+        previousBindingId: binding.walletBindingId,
+      }, now);
+    } else if (!this.config.fixtureMode) {
+      throw v2Error(401, "AUTH_REQUIRED", "Sign in with X before revoking a wallet.");
+    }
     try {
       this.state.revokeBinding(xUserId, this.config.chainId, now);
     } catch (error) {
@@ -493,13 +605,14 @@ export class V2MintService {
     account: XAccount,
     now?: Date,
     session?: BrowserSession,
+    reviewedRecipient?: ReviewedMintRecipient,
   ): Promise<MintAuthorizationResponse> {
     const issue = async () => {
       const current = await this.signatures.getSignature(signature.signatureId);
       if (!current || current.claimInstanceId !== signature.claimInstanceId) {
         throw v2Error(409, "MINT_INELIGIBLE", "This claim no longer exists. Open the current signature before minting.");
       }
-      return this.issueAuthorizationLocked(current, account, now, session);
+      return this.issueAuthorizationLocked(current, account, now, session, reviewedRecipient);
     };
     return this.signatures.withClaimLock ? this.signatures.withClaimLock(signature.signatureId, issue) : issue();
   }
@@ -509,21 +622,35 @@ export class V2MintService {
     account: XAccount,
     now?: Date,
     session?: BrowserSession,
+    reviewedRecipient?: ReviewedMintRecipient,
   ): Promise<MintAuthorizationResponse> {
     this.requireEnabled();
     const startedAt = now ?? this.clock();
     if (account.xUserId !== signature.xUserId) {
       throw v2Error(403, "NOT_CLAIMANT", "Only the stable numeric X claimant can authorize this signature.");
     }
-    if (session) this.requireFreshIdentity(session, account.xUserId, startedAt);
-    else if (!this.config.fixtureMode) throw v2Error(401, "AUTH_REQUIRED", "A fresh X session is required before minting.");
+    if (session) requireSessionIdentity(session, account.xUserId, startedAt);
+    else if (!this.config.fixtureMode) throw v2Error(401, "AUTH_REQUIRED", "Sign in with X before minting.");
     if (this.state.isSuppressed(signature.signatureId)) {
       throw v2Error(409, "MINT_INELIGIBLE", "This signature is unavailable for mint authorization.");
     }
     const binding = this.state.getActiveBinding(account.xUserId, this.config.chainId);
-    if (!binding) throw v2Error(403, "WALLET_NOT_LINKED", "Link and prove control of a wallet before minting.");
+    if (!binding) throw v2Error(403, "WALLET_NOT_LINKED", "Connect a wallet and prove control of this mint's recipient.");
     if (this.config.localChainRehearsal && binding.verificationScheme !== "eip191_eoa_65byte_low_s") {
       throw v2Error(403, "WALLET_NOT_LINKED", "This local mint requires a real SIWE wallet proof; a seeded fixture binding is not authority.");
+    }
+    const initialAuthorization = this.state.getLiveAuthorization(signature.signatureId, binding.walletBindingId, startedAt);
+    const resumingIssued = initialAuthorization?.status === "issued" && !!initialAuthorization.galleryAttestation;
+    const recipientDraft = session && !resumingIssued ? session.mintRecipient : undefined;
+    if (reviewedRecipient && (reviewedRecipient.walletBindingId !== binding.walletBindingId
+      || reviewedRecipient.recipient.toLowerCase() !== binding.address.toLowerCase())) {
+      throw v2Error(409, "BINDING_TRANSITION", "The recipient changed after review. Review the mint again.");
+    }
+    if (session && !resumingIssued) {
+      if (!hasMintRecipient(session, signature, binding, startedAt, initialAuthorization?.authorizationId)) {
+        throw v2Error(401, "MINT_RECIPIENT_REQUIRED", "Choose and verify a wallet for this signature before minting.");
+      }
+      if (!reviewedRecipient) throw v2Error(409, "REQUEST_CONFIRMATION_INVALID", "Review the exact recipient before authorizing this mint.");
     }
     const initialProjection = this.state.getProjection(signature.signatureId);
     if (initialProjection.state === "finalized") throw v2Error(409, "ALREADY_MINTED", "This signature is already minted in the canonical collection.");
@@ -557,7 +684,11 @@ export class V2MintService {
       throwStateBoundaryError(error);
     }
     const revalidatedAt = now ?? this.clock();
-    if (session) this.requireFreshIdentity(session, account.xUserId, revalidatedAt);
+    if (session) requireSessionIdentity(session, account.xUserId, revalidatedAt);
+    if (session && recipientDraft && (session.mintRecipient !== recipientDraft
+      || !hasMintRecipient(session, signature, binding, revalidatedAt, initialAuthorization?.authorizationId))) {
+      throw v2Error(409, "BINDING_TRANSITION", "The recipient review expired or changed. Start this mint again.");
+    }
     if (this.state.isSuppressed(signature.signatureId)) {
       throw v2Error(409, "MINT_INELIGIBLE", "This signature became unavailable while the authorization was being prepared.");
     }
@@ -609,6 +740,8 @@ export class V2MintService {
           signatureId: signature.signatureId,
           expectedBinding: currentBinding,
           expectedXUserId: account.xUserId,
+          claimInstanceId: signature.claimInstanceId,
+          expectedRecipientDraft: recipientDraft,
           session,
           now,
         });
@@ -619,11 +752,21 @@ export class V2MintService {
         signatureId: signature.signatureId,
         expectedBinding: currentBinding,
         expectedXUserId: account.xUserId,
+        claimInstanceId: signature.claimInstanceId,
+        expectedRecipientDraft: recipientDraft,
         session,
         now,
       }));
     }
     const latestCanonicalTimestamp = await this.authorizationTimestamp(revalidatedAt);
+    if (session) requireSessionIdentity(session, account.xUserId, now ?? this.clock());
+    if (session && (session.mintRecipient !== recipientDraft
+      || !hasMintRecipient(session, signature, currentBinding, now ?? this.clock()))) {
+      throw v2Error(409, "BINDING_TRANSITION", "The recipient review expired or changed. Start this mint again.");
+    }
+    if (this.state.getActiveBinding(account.xUserId, this.config.chainId)?.walletBindingId !== currentBinding.walletBindingId) {
+      throw v2Error(409, "BINDING_TRANSITION", "The recipient changed before authorization. Review it again.");
+    }
     const times = backendAuthorizationTimes(latestCanonicalTimestamp);
     const authorization: MintAuthorization = {
       signatureDigest: signatureDigestHex(signature.signatureId),
@@ -656,11 +799,14 @@ export class V2MintService {
     } catch (error) {
       throwStateBoundaryError(error);
     }
+    if (recipientDraft) recipientDraft.authorizationId = prepared.authorizationId;
     return this.signAndIssue(prepared, (issued) => this.assertPostSignBoundary({
       issued,
       signatureId: signature.signatureId,
       expectedBinding: currentBinding,
       expectedXUserId: account.xUserId,
+      claimInstanceId: signature.claimInstanceId,
+      expectedRecipientDraft: recipientDraft,
       session,
       now,
     }));
@@ -686,11 +832,15 @@ export class V2MintService {
     signatureId: string;
     expectedBinding: WalletBinding;
     expectedXUserId: string;
+    claimInstanceId: string;
+    expectedRecipientDraft?: BrowserSession["mintRecipient"];
     session?: BrowserSession;
     now?: Date;
   }): Promise<void> {
     const completedAt = params.now ?? this.clock();
-    if (params.session) this.requireFreshIdentity(params.session, params.expectedXUserId, completedAt);
+    if (params.session) requireSessionIdentity(params.session, params.expectedXUserId, completedAt);
+    const latestCanonicalTimestamp = await this.authorizationTimestamp(completedAt);
+    if (params.session) requireSessionIdentity(params.session, params.expectedXUserId, params.now ?? this.clock());
     if (this.state.isSuppressed(params.signatureId)) {
       throw v2Error(409, "MINT_INELIGIBLE", "This signature became unavailable while its authorization was being signed.");
     }
@@ -704,7 +854,12 @@ export class V2MintService {
     ) {
       throw v2Error(409, "BINDING_TRANSITION", "The active wallet changed while the authorization was being signed. Review it again.");
     }
-    if (await this.authorizationTimestamp(completedAt) > params.issued.deadline) {
+    if (params.session && params.expectedRecipientDraft && (params.session.mintRecipient !== params.expectedRecipientDraft
+      || !hasMintRecipient(params.session, { signatureId: params.signatureId, claimInstanceId: params.claimInstanceId, xUserId: params.expectedXUserId },
+        binding, params.now ?? this.clock(), params.issued.authorizationId))) {
+      throw v2Error(409, "BINDING_TRANSITION", "The recipient review changed while authorization was being signed. Nothing further was submitted.");
+    }
+    if (latestCanonicalTimestamp > params.issued.deadline) {
       throw v2Error(410, "AUTHORIZATION_EXPIRED", "The authorization expired before signing completed and remains locked until finalized-chain reconciliation.");
     }
     const projection = this.state.getProjection(params.signatureId);

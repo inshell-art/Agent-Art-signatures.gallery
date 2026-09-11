@@ -66,6 +66,17 @@ function signerWithHook(hook: () => void): GallerySigner {
   };
 }
 
+function approveWalletLink(app: Awaited<ReturnType<typeof fixture>>, now: Date): void {
+  app.session.actionApproval = {
+    intent: {
+      kind: "wallet_link", chainId: app.config.chainId.toString(),
+      previousBindingId: app.state.getActiveBinding(app.account.xUserId, app.config.chainId)?.walletBindingId ?? null,
+    },
+    sessionId: app.session.id, xUserId: app.account.xUserId,
+    confirmedAt: now, expiresAt: new Date(now.getTime() + 10 * 60_000),
+  };
+}
+
 describe("V2 authorization race fences", () => {
   it("rejects an old-wallet authorization when the active binding changes during metadata work", async () => {
     const app = await fixture();
@@ -112,7 +123,7 @@ describe("V2 authorization race fences", () => {
       .rejects.toMatchObject({ status: 503, code: "CHAIN_UNAVAILABLE" });
   });
 
-  it("rechecks challenge and X freshness after the asynchronous EOA verification", async () => {
+  it("rechecks challenge expiry after the asynchronous EOA verification", async () => {
     const app = await fixture();
     let clock = new Date("2026-09-04T12:01:00.000Z");
     const service = new V2MintService(app.config, app.state, app.signatures, app.artifacts, {
@@ -125,6 +136,11 @@ describe("V2 authorization race fences", () => {
       },
     });
     const wallet = privateKeyToAccount(WALLET_KEY);
+    app.session.actionApproval = {
+      intent: { kind: "wallet_link", chainId: app.config.chainId.toString(), previousBindingId: null },
+      sessionId: app.session.id, xUserId: app.account.xUserId,
+      confirmedAt: clock, expiresAt: new Date(clock.getTime() + 10 * 60_000),
+    };
     const challenge = await service.createChallenge({
       session: app.session,
       account: app.account,
@@ -137,6 +153,102 @@ describe("V2 authorization race fences", () => {
       .rejects.toMatchObject({ status: 409, code: "WALLET_CHALLENGE_INVALID" });
     expect(app.state.getActiveBinding(app.account.xUserId, app.config.chainId)).toBeNull();
     expect(app.state.getChallenge(challenge.challengeId)?.status).toBe("failed");
+  });
+
+  it.each(["before proof", "during EOA verification"])("does not overwrite a wallet changed %s", async (timing) => {
+    const app = await fixture();
+    const now = new Date("2026-09-04T12:01:00.000Z");
+    const initialService = new V2MintService(app.config, app.state, app.signatures, app.artifacts);
+    const previous = initialService.seedFixtureBinding(app.account.xUserId, app.account.publicAccountId, now);
+    const nextId = `0x${"cd".repeat(32)}` as const;
+    const replaceBinding = () => {
+      app.state.revokeBinding(app.account.xUserId, app.config.chainId, now);
+      app.state.seedBinding({ ...previous, walletBindingId: nextId, status: "active", version: previous.version + 1 });
+    };
+    const service = new V2MintService(app.config, app.state, app.signatures, app.artifacts, {
+      eoaVerifier: { async verify() {
+        if (timing === "during EOA verification") replaceBinding();
+        return { blockNumber: 6_820_000n, blockHash: `0x${"ab".repeat(32)}` };
+      } },
+    });
+    const wallet = privateKeyToAccount(WALLET_KEY);
+    approveWalletLink(app, now);
+    const challenge = await service.createChallenge({
+      session: app.session, account: app.account, walletAddress: wallet.address,
+      chainId: app.config.chainId.toString(), now,
+    });
+    expect(app.state.getChallenge(challenge.challengeId)?.previousWalletBindingId).toBe(previous.walletBindingId);
+    if (timing === "before proof") replaceBinding();
+    await expect(service.confirmChallenge({
+      session: app.session, challengeId: challenge.challengeId,
+      walletProof: await wallet.signMessage({ message: challenge.message }), now,
+    })).rejects.toMatchObject({ code: "BINDING_TRANSITION" });
+    expect(app.state.getActiveBinding(app.account.xUserId, app.config.chainId)?.walletBindingId).toBe(nextId);
+    expect(app.state.getChallenge(challenge.challengeId)?.status).toBe("failed");
+  });
+
+  it.each(["logged out", "expired", "switched account"])("rejects a wallet proof if the app session is %s during verification", async (change) => {
+    const app = await fixture();
+    const now = new Date("2026-09-04T12:01:00.000Z");
+    const service = new V2MintService(app.config, app.state, app.signatures, app.artifacts, {
+      eoaVerifier: { async verify() {
+        if (change === "logged out") app.session.identity = null;
+        else if (change === "expired") app.session.lastSeenAt = new Date(now.getTime() - 7 * 24 * 60 * 60_000 - 1);
+        else app.session.identity = fixtureIdentity("bob", now);
+        return { blockNumber: 6_820_000n, blockHash: `0x${"ab".repeat(32)}` };
+      } },
+    });
+    const wallet = privateKeyToAccount(WALLET_KEY);
+    approveWalletLink(app, now);
+    const challenge = await service.createChallenge({
+      session: app.session, account: app.account, walletAddress: wallet.address,
+      chainId: app.config.chainId.toString(), now,
+    });
+    await expect(service.confirmChallenge({
+      session: app.session, challengeId: challenge.challengeId,
+      walletProof: await wallet.signMessage({ message: challenge.message }), now,
+    })).rejects.toMatchObject({ code: change === "switched account" ? "NOT_CLAIMANT" : "AUTH_REQUIRED" });
+    expect(app.state.getActiveBinding(app.account.xUserId, app.config.chainId)).toBeNull();
+  });
+
+  it("requires a new confirmation for legacy challenges without an approved binding snapshot", async () => {
+    const app = await fixture();
+    const now = new Date("2026-09-04T12:01:00.000Z");
+    const service = new V2MintService(app.config, app.state, app.signatures, app.artifacts);
+    const wallet = privateKeyToAccount(WALLET_KEY);
+    approveWalletLink(app, now);
+    const challenge = await service.createChallenge({
+      session: app.session, account: app.account, walletAddress: wallet.address,
+      chainId: app.config.chainId.toString(), now,
+    });
+    delete app.state.getChallenge(challenge.challengeId)!.previousWalletBindingId;
+    await expect(service.confirmChallenge({
+      session: app.session, challengeId: challenge.challengeId,
+      walletProof: await wallet.signMessage({ message: challenge.message }), now,
+    })).rejects.toMatchObject({ code: "BINDING_TRANSITION" });
+    expect(app.state.getActiveBinding(app.account.xUserId, app.config.chainId)).toBeNull();
+  });
+
+  it.each(["metadata", "signing"])("does not release mint authority when logout occurs during %s", async (phase) => {
+    const app = await fixture();
+    const initialService = new V2MintService(app.config, app.state, app.signatures, app.artifacts);
+    const proofTime = new Date("2026-09-04T12:01:00.000Z");
+    app.session.actionApproval = { intent: { kind: "mint_recipient", signatureId: app.signature.signatureId, claimInstanceId: app.signature.claimInstanceId,
+      chainId: app.config.chainId.toString(), previousBindingId: null }, sessionId: app.session.id, xUserId: app.account.xUserId,
+      confirmedAt: proofTime, expiresAt: new Date(proofTime.getTime() + 60_000) };
+    const binding = await initialService.seedFixtureMintRecipient(app.session, app.signature, app.account, proofTime,
+      { recipientConsent: true, previousBindingId: app.state.getActiveBinding(app.account.xUserId, app.config.chainId)?.walletBindingId ?? null });
+    const logout = () => { app.session.identity = null; };
+    const service = new V2MintService(
+      app.config, app.state, app.signatures,
+      phase === "metadata" ? interceptReads(app.artifacts, logout) : app.artifacts,
+      phase === "signing" ? { signer: signerWithHook(logout) } : {},
+    );
+    await expect(service.issueAuthorization(app.signature, app.account, new Date("2026-09-04T12:05:00.000Z"), app.session,
+      { walletBindingId: binding.walletBindingId, recipient: binding.address }))
+      .rejects.toMatchObject({ code: "AUTH_REQUIRED" });
+    expect(app.state.getStatus(app.signature.signatureId, true).authorization?.status ?? null)
+      .toBe(phase === "signing" ? "issued" : null);
   });
 
   it("records but never releases an attestation when suppression lands during signing", async () => {

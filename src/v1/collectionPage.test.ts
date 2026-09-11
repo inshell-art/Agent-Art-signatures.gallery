@@ -28,6 +28,8 @@ const base = {
   fixtureMode: false,
   mintEnabled: true,
   mintChainId: "1",
+  walletLinkConfirmed: true,
+  walletRevokeConfirmed: true,
 };
 const local = { ...base, fixtureMode: true, localOAuthMode: true, localChainRehearsal: true, mintChainId: "31337", wallet };
 const finalized: CollectionMintView = {
@@ -153,56 +155,36 @@ describe("minimal My Collection", () => {
     expect(overlay).toContain("Public test keys. Never send real funds.");
   });
 
-  it("keeps the local provider separate from a real injected-wallet proof", () => {
+  it("does not offer either local or injected wallet setup from My Collection", () => {
     const html = collectionPage({ ...local, wallet: null });
-    const localButton = buttonWith(html, 'data-wallet-provider="local"');
-    expect(localButton).toContain("data-link-wallet");
-    expect(localButton).toContain('type="button"');
-    expect(localButton).toContain('data-csrf="collection-csrf"');
-    expect(localButton).toContain('data-chain-id="31337"');
-    const browserButton = buttonWith(html, 'data-wallet-provider="injected"');
-    expect(browserButton).toContain("data-link-wallet");
-    expect(browserButton).not.toContain('data-fixture="true"');
-    expect(browserButton).toContain('data-mode="link"');
-    expect(browserButton).toContain('data-chain-id="31337"');
-    expect(browserButton).toContain('data-csrf="collection-csrf"');
-    expect(html).toMatch(/<[^>]+data-wallet-feedback[^>]*role="status"[^>]*aria-live="polite"/);
+    expect(html).not.toContain("data-link-wallet");
+    expect(html).not.toContain("data-wallet-provider");
+    expect(html).not.toContain("data-wallet-feedback");
+    expect(html).toContain(`href="/signatures/${signature.signatureId}/mint"`);
   });
 
-  it("moves replace/revoke to the floating panel with wallet evidence in its disclosure", () => {
+  it("does not expose saved recipient records or global replace/revoke controls", () => {
     const html = collectionPage(local);
-    const replace = buttonWith(html, 'data-mode="replace"');
-    const revoke = buttonWith(html, "data-revoke-wallet");
-    expect(replace).toContain('data-wallet-provider="injected"');
-    expect(replace).toContain('data-fixture="false"');
-    expect(replace).toContain('data-chain-id="31337"');
-    expect(replace).toContain('data-csrf="collection-csrf"');
-    expect(revoke).toContain('data-csrf="collection-csrf"');
-    const details = closedDisclosureWith(html, wallet.provedAt.toISOString());
-    const collectionBody = html.slice(html.indexOf('<section class="collection-page"'));
-    expect(collectionBody).not.toContain(replace);
-    expect(collectionBody).not.toContain(revoke);
-    expect(details).toContain(wallet.chainName);
-    expect(details).toContain(wallet.provedAt.toISOString());
-    expect(details).toContain(wallet.address);
+    expect(html).not.toContain('data-mode="replace"');
+    expect(html).not.toContain("data-revoke-wallet");
+    expect(html).not.toContain("Wallet details");
+    expect(html).not.toContain(wallet.provedAt.toISOString());
+    expect(html).not.toContain(wallet.address);
+    expect(html).toContain('action="/auth/logout"');
   });
 
-  it.each([false, true])("uses only an injected wallet outside local Anvil (fixture=%s)", (fixtureMode) => {
+  it.each([false, true])("keeps wallet setup mint-only outside local Anvil (fixture=%s)", (fixtureMode) => {
     const html = collectionPage({ ...base, fixtureMode });
-    const connect = buttonWith(html, "data-link-wallet");
-    expect(connect).toContain('data-wallet-provider="injected"');
-    expect(connect).not.toContain('data-fixture="true"');
-    const main = html.match(/<main>[\s\S]*?<\/main>/)![0];
-    expect(main).not.toContain('data-wallet-provider="fixture"');
-    expect(connect).toContain('data-mode="link"');
-    expect(connect).toContain('data-chain-id="1"');
-    expect(html).not.toContain('data-wallet-provider="local"');
+    expect(html).not.toContain("data-link-wallet");
+    expect(html).not.toContain("data-wallet-provider");
+    expect(html).toContain(`href="/signatures/${signature.signatureId}/mint"`);
     expect(html).not.toContain("data-local-chain-rehearsal");
   });
 
   it.each([null, wallet])("preserves read-only claims while minting is paused (wallet=%s)", (linkedWallet) => {
     const html = collectionPage({ ...local, wallet: linkedWallet, mintEnabled: false, mintBySignature: new Map([[signature.signatureId, finalized]]) });
-    expect(visibleBody(html)).toMatch(/Minting (?:is )?paused/i);
+    expect(visibleBody(html)).toContain("My Collection");
+    expect(html).not.toContain("Wallet details");
     expect(html).toContain(`href="/signatures/${signature.signatureId}"`);
     expect(html).not.toContain(`href="/signatures/${signature.signatureId}/mint"`);
     for (const hook of ["data-link-wallet", "data-revoke-wallet", "data-local-transfer"]) expect(html).not.toContain(hook);
@@ -214,7 +196,7 @@ describe("minimal My Collection", () => {
     expect(collectionPage({ ...local, mintBySignature, wallet: null })).toContain(`href="/signatures/${signature.signatureId}/mint"`);
   });
 
-  it.each([{}, { wallet: null }, { reauthRequired: true }, { mintEnabled: false }])("exposes the next mint step even with missing prerequisites: %j", (overrides) => {
+  it.each([{}, { wallet: null }, { walletLinkConfirmed: false }, { mintEnabled: false }])("exposes the next mint step even with missing prerequisites: %j", (overrides) => {
     const html = collectionPage({ ...base, ...overrides });
     const main = html.match(/<main>[\s\S]*?<\/main>/)![0];
     expect(main).toContain(`href="/signatures/${signature.signatureId}/mint"`);

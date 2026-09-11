@@ -4,6 +4,10 @@ import { signInRequiredPage } from "./pages.js";
 import { SITE_CSS, SITE_CSS_URL } from "./siteCss.js";
 
 describe("compact Hairline buttons and home-style tags", () => {
+  it("reserves no space for the X progress notice until an action starts", () => {
+    expect(SITE_CSS).toContain('[data-x-action-feedback]{min-height:0;margin:.5rem 0 0}');
+    expect(SITE_CSS).toContain('[data-x-action-feedback]:empty{margin:0}');
+  });
   it("anchors every collection state to the gallery edge without widening other auth pages", () => {
     const signedOut = signInRequiredPage(false);
     expect(signedOut).toContain('class="auth-sheet collection-sheet"');

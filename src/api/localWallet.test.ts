@@ -6,6 +6,7 @@ import { LocalMintRuntime } from "../local/mintRuntime.js";
 import type { LocalTestWallet } from "../local/wallet.js";
 import { MemoryArtifactStore } from "../v1/artifacts.js";
 import { MemoryAuthState, type BrowserSession } from "../v1/authState.js";
+import { SESSION_IDLE_TTL_MS } from "../v1/authPolicy.js";
 import { fixtureIdentity, seedDevelopmentFixtures } from "../v1/fixtures.js";
 import { CARD_RENDERER_VERSION, formalSignatureRenderer, RendererRegistry } from "../v1/renderer.js";
 import { MemorySignatureStore } from "../v1/store.js";
@@ -105,14 +106,20 @@ async function runtime() {
     localWallet: localWalletStub as unknown as LocalTestWallet,
   };
   const handler = createApp(deps, options);
-  const session = auth.getOrCreateSession(null).session;
-  session.identity = fixtureIdentity("alice");
+  const signingIn = auth.getOrCreateSession(null).session;
+  signingIn.identity = fixtureIdentity("alice");
+  const signature = (await store.listSignaturesForAccount(signingIn.identity.xUserId))[0]!;
+  const session = signingIn;
   const other = auth.getOrCreateSession(null).session;
   other.identity = fixtureIdentity("bob");
-  const signature = (await store.listSignaturesForAccount(session.identity.xUserId))[0]!;
   const request = (path: string, body: Record<string, unknown> = {}, overrides: RequestOptions = {}) => dispatch(handler, path, body, { session, ...overrides });
+  const target = { signatureId: signature.signatureId, claimInstanceId: signature.claimInstanceId, recipientConsent: true, previousBindingId: null };
+  const reviewedRecipient = () => {
+    const binding = state.getActiveBinding(session.identity!.xUserId, 31337n)!;
+    return { walletBindingId: binding.walletBindingId, recipient: binding.address };
+  };
   const challenge = async () => {
-    const response = await request("/api/v2/wallet-bindings/challenge", { walletAddress: walletAccount.address, chainId: "31337" });
+    const response = await request("/api/v2/wallet-bindings/challenge", { walletAddress: walletAccount.address, chainId: "31337", ...target });
     expect(response.status).toBe(201);
     return response.json as { challengeId: string; message: string };
   };
@@ -125,7 +132,7 @@ async function runtime() {
     return response.json;
   };
   const authorize = async () => {
-    const response = await request(`/api/v2/signatures/${signature.signatureId}/mint-authorizations`, {}, { headers: { "x-mint-permanence-acknowledged": "1" } });
+    const response = await request(`/api/v2/signatures/${signature.signatureId}/mint-authorizations`, reviewedRecipient(), { headers: { "x-mint-permanence-acknowledged": "1" } });
     expect(response.status).toBe(201);
     return response.json as MintAuthorizationResponse;
   };
@@ -136,7 +143,7 @@ async function runtime() {
       mintWallet: walletAccount.address, blockNumber: 10n, transactionIndex: 0, logIndex: 1 });
     state.finalizeMint(signature.signatureId, new Date(), "Test local promotion");
   };
-  return { deps, options, state, mint, signature, session, other, auth, request, bind, challenge, authorize, finalize,
+  return { deps, options, state, mint, signature, session, other, auth, request, bind, challenge, authorize, finalize, target, reviewedRecipient,
     wallet: localWalletStub, signer, queue, persistedStatuses, failPersistence: (when: "any" | "issued" = "any") => { failPersistence = when; } };
 }
 
@@ -166,34 +173,130 @@ describe("local TEST wallet API security and durable authority", () => {
     expect(app.wallet.info).not.toHaveBeenCalled();
   });
 
-  it("requires a current authenticated session even to expose local wallet information", async () => {
+  it("requires an active app session but accepts older X identity for local wallet information", async () => {
     const app = await runtime();
     expect((await app.request("/api/local/wallet", {}, { method: "GET", session: null })).status).toBe(401);
     app.session.identity!.authenticatedAt = new Date(Date.now() - 901_000);
-    expect((await app.request("/api/local/wallet", {}, { method: "GET" })).status).toBe(401);
     expect(app.wallet.info).not.toHaveBeenCalled();
-    app.session.identity!.authenticatedAt = new Date();
     const response = await app.request("/api/local/wallet", {}, { method: "GET" });
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-store");
+    app.session.lastSeenAt = new Date(Date.now() - SESSION_IDLE_TTL_MS - 1);
+    const expired = await app.request("/api/local/wallet", {}, { method: "GET" });
+    expect(expired.status).toBe(401);
+    expect(expired.json.error.code).toBe("AUTH_REQUIRED");
   });
 
   it.each([
     ["/api/local/wallet/sign", { challengeId: "unavailable" }],
     ["/api/local/wallet/mint", { authorizationId: "unavailable" }],
     ["/api/local/wallet/transfer", { signatureId: "unavailable" }],
-  ])("rejects missing identity, stale identity, foreign origin, and missing CSRF on %s", async (path, body) => {
+  ])("rejects missing identity, future-dated identity, foreign origin, and missing CSRF on %s", async (path, body) => {
     const app = await runtime();
     expect((await app.request(path, body, { session: null })).status).toBe(401);
-    app.session.identity!.authenticatedAt = new Date(Date.now() - 901_000);
-    expect((await app.request(path, body)).json.error.code).toBe("X_REAUTH_REQUIRED");
-    app.session.identity!.authenticatedAt = new Date();
+    const invalid = await runtime();
+    invalid.session.identity!.authenticatedAt = new Date(Date.now() + 60_000);
+    expect((await invalid.request(path, body)).json.error.code).toBe("AUTH_REQUIRED");
     for (const headers of [{ origin: "https://evil.example" }, { origin: undefined }, { "sec-fetch-site": "cross-site" }, { "x-csrf-token": undefined }, { "x-csrf-token": "wrong" }]) {
       expect((await app.request(path, body, { headers })).status).toBe(403);
     }
     expect(app.wallet.signChallenge).not.toHaveBeenCalled();
     expect(app.wallet.submitMint).not.toHaveBeenCalled();
     expect(app.wallet.transferToRecipient).not.toHaveBeenCalled();
+  });
+
+  it("uses an older active app session and explicit mint selection without another X approval", async () => {
+    const app = await runtime();
+    delete app.session.actionApproval;
+    app.session.identity!.authenticatedAt = new Date(Date.now() - 6 * 24 * 60 * 60_000);
+    await app.bind();
+    const authorization = await app.authorize();
+    expect(authorization.authorization.mintWallet).toBe(walletAccount.address);
+    expect(app.session.actionApproval).toBeUndefined();
+  });
+
+  it("requires explicit selection and the current claim instance for every proof", async () => {
+    const app = await runtime();
+    const another = (await app.deps.store.listSignaturesForAccount(app.signature.xUserId))[1]!;
+    const wrongWork = await app.request("/api/v2/wallet-bindings/challenge", {
+      walletAddress: walletAccount.address, chainId: "31337", signatureId: another.signatureId, claimInstanceId: another.claimInstanceId,
+    });
+    expect(wrongWork.status).toBe(400);
+    expect(wrongWork.json.error.code).toBe("REQUEST_CONFIRMATION_INVALID");
+    const replacedClaim = await app.request("/api/v2/wallet-bindings/challenge", {
+      walletAddress: walletAccount.address, chainId: "31337", ...app.target, claimInstanceId: "not-the-confirmed-claim",
+    });
+    expect(replacedClaim.status).toBe(409);
+    expect(app.state.exportSnapshot().challenges).toEqual([]);
+    expect(app.wallet.signChallenge).not.toHaveBeenCalled();
+  });
+
+  it.each(["missing session", "expired session", "wrong claimant", "foreign origin", "cross-site", "missing csrf", "wrong csrf", "no consent", "stale binding"])("rejects mint proof setup with %s", async reason => {
+    const app = await runtime();
+    const body: Record<string, unknown> = { walletAddress: walletAccount.address, chainId: "31337", ...app.target };
+    const options: RequestOptions = {};
+    if (reason === "missing session") options.session = null;
+    if (reason === "expired session") app.session.lastSeenAt = new Date(Date.now() - SESSION_IDLE_TTL_MS - 1);
+    if (reason === "wrong claimant") options.session = app.other;
+    if (reason === "foreign origin") options.headers = { origin: "https://evil.example" };
+    if (reason === "cross-site") options.headers = { "sec-fetch-site": "cross-site" };
+    if (reason === "missing csrf") options.headers = { "x-csrf-token": undefined };
+    if (reason === "wrong csrf") options.headers = { "x-csrf-token": "wrong" };
+    if (reason === "no consent") delete body.recipientConsent;
+    if (reason === "stale binding") body.previousBindingId = "0x" + "ab".repeat(32);
+    const response = await app.request("/api/v2/wallet-bindings/challenge", body, options);
+    expect(response.status).toBeGreaterThanOrEqual(400);
+    expect(app.state.exportSnapshot().challenges).toHaveLength(0);
+    expect(app.signer).not.toHaveBeenCalled();
+  });
+
+  it("does not sign or activate a superseded local recipient challenge", async () => {
+    const app = await runtime();
+    const first = await app.challenge();
+    const second = await app.challenge();
+    const stale = await app.request("/api/local/wallet/sign", { challengeId: first.challengeId });
+    expect(stale.json.error.code).toBe("WALLET_CHALLENGE_INVALID");
+    expect(app.wallet.signChallenge).not.toHaveBeenCalled();
+    const proof = await app.request("/api/local/wallet/sign", { challengeId: second.challengeId });
+    const confirm = { challengeId: second.challengeId, walletProof: proof.json.walletProof };
+    expect((await app.request("/api/v2/wallet-bindings/confirm", confirm)).status).toBe(201);
+    expect((await app.request("/api/v2/wallet-bindings/confirm", confirm)).json.error.code).toBe("WALLET_CHALLENGE_INVALID");
+  });
+
+  it("does not turn a historical wallet proof into authority for a new mint", async () => {
+    const app = await runtime();
+    await app.bind();
+    delete app.session.mintRecipient;
+    const response = await app.request(`/api/v2/signatures/${app.signature.signatureId}/mint-authorizations`, app.reviewedRecipient(), { headers: { "x-mint-permanence-acknowledged": "1" } });
+    expect(response.status).toBe(401);
+    expect(response.json.error.code).toBe("MINT_RECIPIENT_REQUIRED");
+    expect(app.signer).not.toHaveBeenCalled();
+    expect(app.state.exportSnapshot().authorizations).toEqual([]);
+  });
+
+  it("requires the exact reviewed recipient snapshot before a new mint", async () => {
+    const app = await runtime();
+    await app.bind();
+    const path = `/api/v2/signatures/${app.signature.signatureId}/mint-authorizations`;
+    const options = { headers: { "x-mint-permanence-acknowledged": "1" } };
+    expect((await app.request(path, {}, options)).json.error.code).toBe("REQUEST_CONFIRMATION_INVALID");
+    const changed = await app.request(path, { ...app.reviewedRecipient(), recipient: OTHER_WALLET }, options);
+    expect(changed.status).toBe(409);
+    expect(changed.json.error.code).toBe("BINDING_TRANSITION");
+    expect(app.signer).not.toHaveBeenCalled();
+    expect(app.state.exportSnapshot().authorizations).toEqual([]);
+  });
+
+  it("authorizes this mint with its current recipient proof even when the X sign-in is older", async () => {
+    const app = await runtime();
+    await app.bind();
+    expect(app.session.actionApproval).toBeUndefined();
+    expect(app.session.mintRecipient).toMatchObject({ signatureId: app.target.signatureId, claimInstanceId: app.target.claimInstanceId, sessionId: app.session.id, address: walletAccount.address });
+    app.session.identity!.authenticatedAt = new Date(Date.now() - 16 * 60_000);
+    const authorization = await app.authorize();
+    expect(authorization.authorization.authorizationId).toBeTruthy();
+    expect(app.session.identity).not.toBeNull();
+    expect(app.signer).toHaveBeenCalledOnce();
   });
 
   it("signs only a pending challenge belonging to the exact current browser session and X identity", async () => {
@@ -239,7 +342,7 @@ describe("local TEST wallet API security and durable authority", () => {
     const app = await runtime();
     await app.bind();
     app.failPersistence();
-    const response = await app.request(`/api/v2/signatures/${app.signature.signatureId}/mint-authorizations`, {}, { headers: { "x-mint-permanence-acknowledged": "1" } });
+    const response = await app.request(`/api/v2/signatures/${app.signature.signatureId}/mint-authorizations`, app.reviewedRecipient(), { headers: { "x-mint-permanence-acknowledged": "1" } });
     expect(response.status).toBeGreaterThanOrEqual(500);
     expect(response.json.authorization).toBeUndefined();
     expect(response.json.galleryAttestation).toBeUndefined();
@@ -252,7 +355,7 @@ describe("local TEST wallet API security and durable authority", () => {
     const app = await runtime();
     await app.bind();
     app.failPersistence("issued");
-    const response = await app.request(`/api/v2/signatures/${app.signature.signatureId}/mint-authorizations`, {}, { headers: { "x-mint-permanence-acknowledged": "1" } });
+    const response = await app.request(`/api/v2/signatures/${app.signature.signatureId}/mint-authorizations`, app.reviewedRecipient(), { headers: { "x-mint-permanence-acknowledged": "1" } });
     expect(response.status).toBeGreaterThanOrEqual(500);
     expect(response.json.authorization).toBeUndefined();
     expect(response.json.galleryAttestation).toBeUndefined();
@@ -262,7 +365,7 @@ describe("local TEST wallet API security and durable authority", () => {
     expect(() => app.queue.assertHealthy()).toThrow("restart is required");
   });
 
-  it("revalidates identity freshness after a local wallet action waits in the queue", async () => {
+  it("rejects the held session after logout while a local wallet action waits in the queue", async () => {
     const app = await runtime();
     const challenge = await app.challenge();
     let entered!: () => void;
@@ -275,11 +378,11 @@ describe("local TEST wallet API security and durable authority", () => {
     } });
     const pending = dispatch(handler, "/api/local/wallet/sign", { challengeId: challenge.challengeId }, { session: app.session });
     await entry;
-    app.session.identity!.authenticatedAt = new Date(Date.now() - 901_000);
+    app.auth.logout(app.session.id);
     release();
     const response = await pending;
     expect(response.status).toBe(401);
-    expect(response.json.error.code).toBe("X_REAUTH_REQUIRED");
+    expect(response.json.error.code).toBe("AUTH_REQUIRED");
     expect(app.wallet.signChallenge).not.toHaveBeenCalled();
   });
 

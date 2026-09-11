@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { developmentWalletControls } from "./accountPanel.js";
-import { collectionPage, errorPage, layout, localOAuthAuthorizePage, mintReviewPage, type SignatureView } from "./pages.js";
+import { collectionPage, errorPage, layout, localOAuthAuthorizePage, mintEntryPage, mintReviewPage, type SignatureView } from "./pages.js";
 import { COLLECTION_STATE_FIXTURES, collectionStatePage } from "./collectionStateFixtures.js";
 import { LOCAL_TEST_WALLET } from "../local/wallet.js";
 
 const main = (html: string) => html.match(/<main>[\s\S]*?<\/main>/)![0];
 const dev = (html: string) => html.slice(html.indexOf('<aside class="rehearsal-watermark"'));
-const privateAccount = { fixtureMode: true, mintEnabled: true, mintChainId: "31337", currentHandle: "alice", csrfToken: "private-csrf" };
+const privateAccount = { fixtureMode: true, mintEnabled: true, mintChainId: "31337", currentHandle: "alice", csrfToken: "private-csrf", walletLinkConfirmed: true };
 const signature: SignatureView = { signatureId: `sg1_${"a".repeat(52)}`, handleAtClaim: "alice", gr0kRaw: 37, rendererVersion: "art/1", cardRendererVersion: "card/1", svgSha256: "a".repeat(64), pngSha256: "b".repeat(64), claimedAt: new Date("2026-09-01"), xAuthenticatedAt: new Date("2026-09-01"), publicAccountId: "public-reference" };
+const mintAccount = { ...privateAccount, mintSignatureId: signature.signatureId, mintClaimInstanceId: "claim-instance", mintRecipientConfirmed: true };
 
 describe("development tools stay outside the product", () => {
   it.each(COLLECTION_STATE_FIXTURES)("keeps $key free of developer controls", ({ key }) => {
@@ -22,20 +23,21 @@ describe("development tools stay outside the product", () => {
     expect(dev(html)).toContain(`data-signature-id="${signature.signatureId}"`);
   });
 
-  it.each([{}, { mintEnabled: false }, { reauthRequired: true }, { previewOnly: true }, { currentHandle: undefined }, { csrfToken: undefined }])("does not offer tools without a fresh authorized private account (%j)", override => {
-    const params = Object.keys(override).length ? { ...privateAccount, ...override } : { ...privateAccount, fixtureMode: false };
+  it.each([{}, { mintEnabled: false }, { mintRecipientConfirmed: false }, { mintSignatureId: undefined }, { mintClaimInstanceId: undefined }, { previewOnly: true }, { currentHandle: undefined }, { csrfToken: undefined }])("does not offer tools without an action-confirmed exact mint (%j)", override => {
+    const params = Object.keys(override).length ? { ...mintAccount, ...override } : { ...mintAccount, fixtureMode: false };
     expect(developmentWalletControls(params)).toBe("");
   });
 
   it.each([false, true])("keeps local=%s test wallet controls in DEV only", local => {
-    const html = collectionPage({ ...privateAccount, signatures: [], localChainRehearsal: local });
-    expect(main(html)).toContain("Link wallet");
+    const html = mintEntryPage({ signature, stage: "wallet", account: { ...mintAccount, localChainRehearsal: local } });
+    expect(main(html)).toContain("Connect wallet");
     expect(main(html)).not.toMatch(/Use local TEST wallet|Use simulated wallet|data-wallet-provider="(?:local|fixture)"/);
     expect(dev(html)).toContain(local ? "Use local TEST wallet" : "Use simulated wallet");
+    expect(collectionPage({ ...privateAccount, signatures: [], localChainRehearsal: local })).not.toContain("data-link-wallet");
   });
 
   it("keeps local mint submission tied to the real consent form but outside the product", () => {
-    const html = mintReviewPage({ signature, currentHandle: "alice", wallet: { address: LOCAL_TEST_WALLET, chainId: "31337", chainName: "Anvil", provedAt: new Date() }, csrfToken: "private-csrf", chainName: "Anvil", metadataUri: "ipfs://test", metadataSha256: "hash", signatureDigest: "digest", tokenUriHash: "hash", contract: "0xcontract", fixtureMode: true, localChainRehearsal: true });
+    const html = mintReviewPage({ signature, currentHandle: "alice", wallet: { address: LOCAL_TEST_WALLET, chainId: "31337", chainName: "Anvil", provedAt: new Date() }, walletBindingId: "binding-exact", claimInstanceId: "claim-exact", csrfToken: "private-csrf", chainName: "Anvil", metadataUri: "ipfs://test", metadataSha256: "hash", signatureDigest: "digest", tokenUriHash: "hash", contract: "0xcontract", fixtureMode: true, localChainRehearsal: true });
     expect(main(html)).toContain('id="mint-authorization"');
     expect(main(html)).toContain('required type="checkbox" name="permanence_acknowledged"');
     expect(main(html)).not.toContain('data-wallet-provider="local"');

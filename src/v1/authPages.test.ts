@@ -177,12 +177,12 @@ describe("minimal authentication pages", () => {
     expect(realReview).toMatch(/does not prove[^.]*Grok/);
   });
 
-  it.each(["AUTH_EXPIRED", "X_REAUTH_REQUIRED"])("keeps %s recovery as an account-login POST", (code) => {
+  it.each(["AUTH_EXPIRED", "AUTH_REQUIRED"])("keeps %s recovery as an account-login POST", (code) => {
     for (const localOAuthMode of [false, true]) {
       const html = errorPage(401, code, "Identity expired.", true, localOAuthMode);
       const form = formFor(html, "/auth/x/start");
       expect(form).toContain('<input type="hidden" name="purpose" value="account_login">');
-      expect(form).toContain("Reauthenticate with X");
+      expect(form).toContain("Sign in with X");
       expect(html).not.toContain('href="/auth/x/start"');
     }
     expect(errorPage(404, "NOT_FOUND", "No such page.")).not.toContain('action="/auth/x/start"');
