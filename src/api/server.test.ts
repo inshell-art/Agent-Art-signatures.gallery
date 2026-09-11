@@ -1370,3 +1370,55 @@ describe("V2 minting rehearsal", () => {
     expect(permalink).toContain("Current token holder");
   });
 });
+
+describe("public endpoint load shedding", () => {
+  it("sheds artwork render requests past their per-minute budget", async () => {
+    await boot();
+    const path = `/renders/${encodeURIComponent(RENDERER_VERSION)}/alice/37.svg`;
+    let shed: Response | null = null;
+    for (let attempt = 0; attempt < 31 && !shed; attempt += 1) {
+      const response = await fetch(`${baseUrl}${path}`);
+      if (response.status === 429) shed = response;
+      else await response.arrayBuffer();
+    }
+    expect(shed?.status).toBe(429);
+    expect(shed!.headers.get("cache-control")).toBe("no-store");
+    expect(await shed!.text()).toContain("Render capacity is temporarily full.");
+  });
+
+  it("sheds preview requests past their per-minute budget without caching the refusal", async () => {
+    await boot(true);
+    let shed: Response | null = null;
+    for (let attempt = 0; attempt < 121 && !shed; attempt += 1) {
+      const response = await fetch(`${baseUrl}/s/alice/37`);
+      if (response.status === 429) shed = response;
+      else await response.text();
+    }
+    expect(shed?.status).toBe(429);
+    expect(shed!.headers.get("cache-control")).toBe("no-store");
+    expect(await shed!.text()).toContain("Too many preview requests.");
+  });
+
+  it("sheds repeated sign-in starts before creating another OAuth request", async () => {
+    await boot();
+    let shed: Response | null = null;
+    for (let attempt = 0; attempt < 11 && !shed; attempt += 1) {
+      const response = await post("/auth/x/start", new URLSearchParams({ purpose: "account_login" }));
+      if (response.status === 429) shed = response;
+      else await response.text();
+    }
+    expect(shed?.status).toBe(429);
+    expect(await shed!.text()).toContain("Too many");
+  });
+
+  it("keeps retired routes and renderers explicitly gone rather than missing", async () => {
+    await boot();
+    for (const path of ["/c/anything", "/v/legacy/37"]) {
+      const response = await fetch(`${baseUrl}${path}`);
+      expect(response.status).toBe(410);
+    }
+    const retired = await fetch(`${baseUrl}/renders/sg-renderer-dev-fixture/alice/37.svg`);
+    expect(retired.status).toBe(410);
+    expect(await retired.text()).toContain("retired");
+  });
+});
