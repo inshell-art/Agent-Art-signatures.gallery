@@ -118,7 +118,7 @@ describe("read-only collection state fixtures", () => {
   });
 
   it.each([
-    ["signed-out", "sign-in"], ["claimed", "wallet"], ["wallet-linked", "wallet"], ["recipient-verified", "ready"], ["authorized", "pending"],
+    ["signed-out", "sign-in"], ["claimed", "wallet"], ["wallet-linked", "wallet"], ["authorized", "pending"],
     ["submitted", "pending"], ["confirming", "pending"], ["validation-pending", "pending"], ["wrong-claimant", "wrong-account"],
     ["mint-paused", "paused"], ["reauthenticate", "wallet"], ["renamed", "wallet"],
   ])("previews the next mint step from %s without enabling writes", async (state, stage) => {
@@ -138,6 +138,21 @@ describe("read-only collection state fixtures", () => {
       const collection = await (await fetch(`${base}/dev/collection-states?state=${state}`)).text();
       expect(collection).toContain(`href="/dev/collection-states?state=${state}&amp;view=mint"`);
     }
+  });
+
+  it("previews the verified recipient on the same mint page with its controls disabled", async () => {
+    const { base, store } = await boot(true);
+    const response = await fetch(`${base}/dev/collection-states?state=recipient-verified&view=mint`);
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    // The verified recipient is a state of the mint page, not a further step.
+    expect(html).not.toContain("data-mint-entry");
+    expect(html).not.toContain("data-link-wallet");
+    expect(html).toContain('class="mint-authorization-form"');
+    expect(html).toContain('<fieldset class="preview-controls" disabled>');
+    expect(html).not.toContain('/assets/mint.js');
+    expect(html).toContain("Authorize this exact work.");
+    expect(await store.listClaimedSignatures(100)).toEqual([]);
   });
 
   it("does not turn an earlier recipient into a new mint approval", async () => {

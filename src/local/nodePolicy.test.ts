@@ -6,8 +6,11 @@ import { LOCAL_ANVIL_PERSISTENCE_ARGS, LOCAL_NODE_LIFECYCLE_TIMEOUT_MS, LOCAL_RP
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe("snapshot-aware local node policy", () => {
-  it("keeps historical state but does not dump it every second", () => {
-    expect(LOCAL_ANVIL_PERSISTENCE_ARGS).toEqual(["--state-interval", "60", "--preserve-historical-states"]);
+  it("dumps current state on an interval and never every historical snapshot", () => {
+    // Dumping historical snapshots grew the file until each rewrite outlasted
+    // the interval and the node stopped answering RPC.
+    expect(LOCAL_ANVIL_PERSISTENCE_ARGS).toEqual(["--state-interval", "60"]);
+    expect(LOCAL_ANVIL_PERSISTENCE_ARGS).not.toContain("--preserve-historical-states");
     expect(LOCAL_RPC_TIMEOUT_MS).toBe(30_000);
   });
 

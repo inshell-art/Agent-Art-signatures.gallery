@@ -371,9 +371,9 @@ export function collectionPage(params: CollectionPageParams): string {
   return layout({ title: `@${params.currentHandle} · My collection`, description: params.localChainRehearsal ? "Durable local claims, real Anvil mints and transfers, and automatic local event projection." : "Your claimed signatures and Ethereum mint status.", body, fixtureMode: params.fixtureMode, localChainRehearsal: params.localChainRehearsal, robots: "noindex", bookPage: true, accountPanel: { ...params, previewOnly: Boolean(params.preview) }, grokHandoff: params.signatures.length === 0, preview: params.preview, developmentTools: developmentTools.join(""), localOAuthMode: params.localOAuthMode ?? params.fixtureMode, developmentNotes: localIdentityNotes(params.localOAuthMode ?? params.fixtureMode) });
 }
 
-export type MintEntryStage = "sign-in" | "wrong-account" | "wallet" | "paused" | "pending" | "ready";
+export type MintEntryStage = "sign-in" | "wrong-account" | "paused" | "pending";
 
-/** Read-only entry guidance. No metadata is frozen and no mint is authorized here. */
+/** Read-only gate for the states the mint page itself cannot resolve. */
 export function mintEntryPage(params: {
   signature: SignatureView;
   stage: MintEntryStage;
@@ -389,36 +389,31 @@ export function mintEntryPage(params: {
   const message = {
     "sign-in": "Sign in with the X account that originally claimed this signature.",
     "wrong-account": "This signature belongs to another X account. Switch to the original claimant to continue.",
-    wallet: "Connect a wallet to receive the token and prove you control it. No transaction is sent yet.",
     paused: "Minting is paused. Your claim remains available; no wallet action is needed until minting resumes.",
     pending: params.pendingElsewhere ? "Another mint is still pending. Finish or resolve it before choosing a recipient for this signature." : "This mint is awaiting confirmation or verification. No new mint can be started while it is being resolved.",
-    ready: "The recipient is verified for this mint. Review the exact artwork, recipient, and fees before authorizing.",
   }[stage];
   const signInLabel = stage === "wrong-account" ? "Switch X account" : "Sign in with X";
   const action = needsIdentity
     ? `<form class="auth-actions" method="post" action="/auth/x/start"><input type="hidden" name="purpose" value="account_login"><input type="hidden" name="return_to" value="${escapeHtml(returnTo)}"><button class="auth-action" type="submit"><span>${signInLabel}</span></button></form>`
-    : stage === "wallet" ? walletLinkControls(account)
-    : `<div class="auth-actions"><button class="auth-action" type="button" disabled><span>${stage === "paused" ? "Minting paused" : stage === "pending" ? "Await mint verification" : "Review and authorize"}</span></button></div>`;
-  const remainingSteps = ["wallet", "ready"].includes(stage)
-    ? [...(stage === "wallet" ? ["Connect your wallet and prove control"] : []), "Review the mint details", "Confirm the transaction in your wallet"]
-    : [];
-  const steps = remainingSteps.length
-    ? `<ol class="mint-entry-steps" aria-label="Remaining mint steps">${remainingSteps.map(step => `<li>${step}</li>`).join("")}</ol>`
-    : "";
+    : `<div class="auth-actions"><button class="auth-action" type="button" disabled><span>${stage === "paused" ? "Minting paused" : "Await mint verification"}</span></button></div>`;
   const artwork = preview ? "/dev/collection-states/artwork.svg" : `/artifacts/${escapeHtml(signature.signatureId)}.svg`;
   const back = preview ? `/dev/collection-states?state=${escapeHtml(preview.state)}` : `/signatures/${escapeHtml(signature.signatureId)}`;
-  const content = `<h1>Mint this signature</h1><div class="signature-heading"><span>${xProfileLink(signature.handleAtClaim)}</span><span class="signature-gr0k">gr0k ${formatGr0k(signature.gr0kRaw)}</span></div><img class="mint-entry-art" src="${artwork}" alt="Signature claimed as @${escapeHtml(signature.handleAtClaim)}">${steps}<p>${escapeHtml(message)}</p>${params.statusLabel && !params.pendingElsewhere ? `<p class="auth-note">${escapeHtml(params.statusLabel)}</p>` : ""}${preview ? `<fieldset class="preview-controls" disabled>${action}</fieldset>` : action}<p class="auth-note">Minting is optional. Only an explicit authorization and wallet transaction can mint the work.</p><a class="auth-action auth-action-quiet" href="${back}"><span>Back to signature →</span></a>`;
-  return authPage({ title: `Mint @${signature.handleAtClaim} signature`, description: "Connect a wallet to receive the token. You’ll prove you control it, then review and confirm the mint.", body: `<div data-mint-entry="${stage}">${content}</div>`, fixtureMode: account.fixtureMode, localChainRehearsal: account.localChainRehearsal, accountPanel: { ...account, mintRecipientConfirmed: stage === "wallet" && account.mintRecipientConfirmed, previewOnly: Boolean(preview) }, preview, localOAuthMode: localOAuth, developmentNotes: localIdentityNotes(localOAuth) });
+  const content = `<h1>Mint this signature</h1><div class="signature-heading"><span>${xProfileLink(signature.handleAtClaim)}</span><span class="signature-gr0k">gr0k ${formatGr0k(signature.gr0kRaw)}</span></div><img class="mint-entry-art" src="${artwork}" alt="Signature claimed as @${escapeHtml(signature.handleAtClaim)}"><p>${escapeHtml(message)}</p>${params.statusLabel && !params.pendingElsewhere ? `<p class="auth-note">${escapeHtml(params.statusLabel)}</p>` : ""}${preview ? `<fieldset class="preview-controls" disabled>${action}</fieldset>` : action}<p class="auth-note">Minting is optional. Only an explicit authorization and wallet transaction can mint the work.</p><a class="auth-action auth-action-quiet" href="${back}"><span>Back to signature →</span></a>`;
+  return authPage({ title: `Mint @${signature.handleAtClaim} signature`, description: "Sign in as the original claimant to mint this signature.", body: `<div data-mint-entry="${stage}">${content}</div>`, fixtureMode: account.fixtureMode, localChainRehearsal: account.localChainRehearsal, accountPanel: { ...account, mintRecipientConfirmed: false, previewOnly: Boolean(preview) }, preview, localOAuthMode: localOAuth, developmentNotes: localIdentityNotes(localOAuth) });
 }
 
-export function mintReviewPage(params: {
+/** The single mint page: the exact work, its recipient, and the one authorization.
+ * The recipient is absent until a fresh wallet proof exists for this exact mint;
+ * the authorization form renders only once it does. */
+export function mintPage(params: {
   signature: SignatureView;
   currentHandle: string;
-  wallet: WalletView;
-  walletBindingId: string;
-  claimInstanceId: string;
+  account: AccountPanelView;
+  wallet?: WalletView | null;
+  walletBindingId?: string;
   /** An unresolved authorization must keep its exact recipient. */
   resumeAuthorization?: boolean;
+  claimInstanceId: string;
   csrfToken: string;
   chainName: string;
   metadataUri: string;
@@ -428,8 +423,12 @@ export function mintReviewPage(params: {
   contract: string;
   fixtureMode: boolean;
   localChainRehearsal?: boolean;
+  preview?: PagePreview;
 }): string {
-  const { signature } = params;
+  const { signature, account, preview } = params;
+  const wallet = params.wallet;
+  const recipientReady = Boolean(wallet && params.walletBindingId);
+  const signatureId = escapeHtml(signature.signatureId);
   const handleChanged = params.currentHandle.toLowerCase() !== signature.handleAtClaim.toLowerCase()
     ? `<div><dt>Current X handle</dt><dd>${xProfileLink(params.currentHandle)}</dd></div>`
     : "";
@@ -439,11 +438,26 @@ export function mintReviewPage(params: {
     ? "This screen rehearses the permanent production disclosure: in production, Blockchain records cannot be deleted and IPFS copies may remain available. Here, the local wallet, IPFS, Ethereum transaction, and finality records are simulated and publish nothing."
     : "Minting permanently publishes a link among this historical X handle, signature, opaque account reference, wallet address, and Ethereum transaction. Blockchain records cannot be deleted. IPFS copies may remain available even if signatures.gallery later removes its own listing or pins.";
   const permanence = "Minting permanently publishes a link among this historical X handle, signature, opaque account reference, wallet address, and Ethereum transaction. Blockchain records cannot be deleted. IPFS copies may remain available even if signatures.gallery later removes its own listing or pins.";
-  const usesLocalTestWallet = params.localChainRehearsal && params.wallet.address.toLowerCase() === LOCAL_TEST_WALLET.toLowerCase();
-  const changeRecipient = params.resumeAuthorization ? "" : `<a class="auth-action auth-action-quiet" href="/signatures/${escapeHtml(signature.signatureId)}/mint?recipient=change"><span>Change recipient</span></a>`;
+  const usesLocalTestWallet = recipientReady && Boolean(params.localChainRehearsal) && wallet!.address.toLowerCase() === LOCAL_TEST_WALLET.toLowerCase();
+  const changeRecipient = params.resumeAuthorization ? "" : `<a class="auth-action auth-action-quiet mint-recipient-change" href="/signatures/${signatureId}/mint?recipient=change"><span>Change recipient</span></a>`;
   const authorizeLabel = params.resumeAuthorization ? "Confirm in wallet" : "Authorize mint";
-  const body = `<section class="mint-review"${params.localChainRehearsal ? " data-local-chain-rehearsal" : ""}><div class="mint-art"><div class="art-label"><span>EXACT V1 ARTWORK</span><span>${escapeHtml(signature.signatureId.slice(0, 13))}…</span></div><img src="/artifacts/${escapeHtml(signature.signatureId)}.svg" alt="Exact stored signature for @${escapeHtml(signature.handleAtClaim)}"></div><article class="mint-review-copy"><p class="eyebrow">Mint review</p><h1>${params.resumeAuthorization ? "Complete this mint." : "Authorize this exact work."}</h1><dl class="facts"><div><dt>Handle at claim</dt><dd>${xProfileLink(signature.handleAtClaim)}</dd></div>${handleChanged}<div><dt>gr0k</dt><dd>${formatGr0k(signature.gr0kRaw)}</dd></div><div><dt>Renderer</dt><dd>${escapeHtml(signature.rendererVersion)}</dd></div><div><dt>SVG SHA-256</dt><dd>${escapeHtml(signature.svgSha256)}</dd></div><div><dt>Metadata URI preview</dt><dd>${escapeHtml(params.metadataUri)}</dd></div><div><dt>Metadata SHA-256</dt><dd>${escapeHtml(params.metadataSha256)}</dd></div><div><dt>Recipient</dt><dd>${escapeHtml(params.wallet.address)}</dd></div><div><dt>Network</dt><dd>${escapeHtml(params.chainName)}</dd></div><div><dt>Project fee</dt><dd>None</dd></div><div><dt>Network gas</dt><dd>Estimated separately by your wallet before submission</dd></div></dl>${changeRecipient}<div class="notice permanence"><strong>This publication cannot be undone</strong><p>${permanence}</p></div><p class="trust-copy">The verified recipient will submit the transaction and initially receive the token. The token is transferable. Grok origin is declared, not independently verified.</p><form id="mint-authorization" class="mint-authorization-form" data-local-chain-rehearsal="${params.localChainRehearsal === true}" data-local-wallet="${Boolean(usesLocalTestWallet)}" method="post" action="/api/v2/signatures/${escapeHtml(signature.signatureId)}/mint-authorizations" data-signature-id="${escapeHtml(signature.signatureId)}" data-signature-digest="${escapeHtml(params.signatureDigest)}" data-wallet="${escapeHtml(params.wallet.address)}" data-recipient="${escapeHtml(params.wallet.address)}" data-wallet-binding-id="${escapeHtml(params.walletBindingId)}" data-claim-instance-id="${escapeHtml(params.claimInstanceId)}" data-chain-id="${escapeHtml(params.wallet.chainId)}" data-contract="${escapeHtml(params.contract)}" data-svg-sha256="${escapeHtml(signature.svgSha256)}" data-png-sha256="${escapeHtml(signature.pngSha256)}" data-metadata-sha256="${escapeHtml(params.metadataSha256)}" data-token-uri="${escapeHtml(params.metadataUri)}" data-token-uri-hash="${escapeHtml(params.tokenUriHash)}"><input type="hidden" name="csrf" value="${escapeHtml(params.csrfToken)}"><label class="consent-line"><input required type="checkbox" name="permanence_acknowledged" value="yes"> I understand the public and irreversible record described above.</label><button class="auth-action" type="submit"><span>${authorizeLabel}</span></button></form><p class="inline-feedback" data-mint-feedback role="status" aria-live="polite"></p><noscript><p class="fine-print">JavaScript is required to verify the authorization and ask your wallet to submit the mint.</p></noscript><a class="quiet-link" href="/me">Cancel and return to my collection</a></article></section>`;
-  return layout({ title: `Mint @${signature.handleAtClaim} signature`, description: params.localChainRehearsal ? "Review and submit the exact claimed signature on the local Anvil chain." : "Review and authorize the exact claimed signature for Ethereum minting.", body, fixtureMode: params.fixtureMode, localChainRehearsal: params.localChainRehearsal, robots: "noindex", developmentTools: usesLocalTestWallet ? '<section class="rehearsal-page-note" data-dev-mint-controls><h2>Local wallet mint</h2><p>First acknowledge the publication disclosure on the page, then use the TEST wallet below. Anvil 31337 only; never send real funds.</p><button class="auth-action" type="submit" form="mint-authorization" data-wallet-provider="local"><span>Authorize with local TEST wallet</span></button><p data-mint-feedback role="status" aria-live="polite"></p></section>' : "", developmentNotes: params.fixtureMode || params.localChainRehearsal ? [{ title: "Mint rehearsal", paragraphs: [rehearsalPermanence] }] : [] });
+  // The recipient cell carries its own control: connecting a wallet is a step
+  // inside this mint, never a separate page the claimant has to pass through.
+  const recipientCell = recipientReady
+    ? `<span class="mint-recipient-address">${escapeHtml(wallet!.address)}</span>${changeRecipient}`
+    : `<p class="mint-recipient-hint">The wallet that will receive the token. You sign a one-time message to prove you control it; no transaction is sent.</p>${preview ? `<fieldset class="preview-controls" disabled>${walletLinkControls(account)}</fieldset>` : walletLinkControls(account)}`;
+  const facts = `<dl class="facts"><div><dt>Signature</dt><dd>${xProfileLink(signature.handleAtClaim)} · gr0k ${formatGr0k(signature.gr0kRaw)}</dd></div>${handleChanged}<div><dt>Recipient</dt><dd>${recipientCell}</dd></div><div><dt>Network</dt><dd>${escapeHtml(params.chainName)}</dd></div><div><dt>Cost</dt><dd>No project fee. Your wallet estimates network gas before you confirm.</dd></div></dl>`;
+  // Hashes and URIs verify the exact work; they are not what the claimant
+  // decides on, so they open on request instead of filling the page.
+  const verification = `<details class="auth-disclosure mint-verification"><summary>Verification details</summary><dl class="facts"><div><dt>Handle at claim</dt><dd>${xProfileLink(signature.handleAtClaim)}</dd></div><div><dt>Renderer</dt><dd>${escapeHtml(signature.rendererVersion)}</dd></div><div><dt>SVG SHA-256</dt><dd>${escapeHtml(signature.svgSha256)}</dd></div><div><dt>Metadata URI preview</dt><dd>${escapeHtml(params.metadataUri)}</dd></div><div><dt>Metadata SHA-256</dt><dd>${escapeHtml(params.metadataSha256)}</dd></div></dl><p class="trust-copy">The verified recipient will submit the transaction and initially receive the token. The token is transferable. Grok origin is declared, not independently verified.</p></details>`;
+  const consent = `<label class="consent-line"><input required type="checkbox" name="permanence_acknowledged" value="yes"> I understand the public and irreversible record described above.</label><button class="auth-action" type="submit"><span>${authorizeLabel}</span></button>`;
+  const form = recipientReady
+    ? `<form id="mint-authorization" class="mint-authorization-form" data-local-chain-rehearsal="${params.localChainRehearsal === true}" data-local-wallet="${Boolean(usesLocalTestWallet)}" method="post" action="/api/v2/signatures/${signatureId}/mint-authorizations" data-signature-id="${signatureId}" data-signature-digest="${escapeHtml(params.signatureDigest)}" data-wallet="${escapeHtml(wallet!.address)}" data-recipient="${escapeHtml(wallet!.address)}" data-wallet-binding-id="${escapeHtml(params.walletBindingId!)}" data-claim-instance-id="${escapeHtml(params.claimInstanceId)}" data-chain-id="${escapeHtml(wallet!.chainId)}" data-contract="${escapeHtml(params.contract)}" data-svg-sha256="${escapeHtml(signature.svgSha256)}" data-png-sha256="${escapeHtml(signature.pngSha256)}" data-metadata-sha256="${escapeHtml(params.metadataSha256)}" data-token-uri="${escapeHtml(params.metadataUri)}" data-token-uri-hash="${escapeHtml(params.tokenUriHash)}"><input type="hidden" name="csrf" value="${escapeHtml(params.csrfToken)}">${preview ? `<fieldset class="preview-controls" disabled>${consent}</fieldset>` : consent}</form><p class="inline-feedback" data-mint-feedback role="status" aria-live="polite"></p><noscript><p class="fine-print">JavaScript is required to verify the authorization and ask your wallet to submit the mint.</p></noscript>`
+    : "";
+  const artwork = preview ? "/dev/collection-states/artwork.svg" : `/artifacts/${signatureId}.svg`;
+  const heading = params.resumeAuthorization ? "Complete this mint." : recipientReady ? "Authorize this exact work." : "Mint this exact work.";
+  const body = `<section class="mint-review"${params.localChainRehearsal ? " data-local-chain-rehearsal" : ""}${recipientReady ? "" : ' data-mint-entry="wallet"'}><div class="mint-art"><div class="art-label"><span>EXACT V1 ARTWORK</span><span>${escapeHtml(signature.signatureId.slice(0, 13))}…</span></div><img src="${artwork}" alt="Exact stored signature for @${escapeHtml(signature.handleAtClaim)}"></div><article class="mint-review-copy"><p class="eyebrow">Mint</p><h1>${heading}</h1>${facts}${verification}<div class="notice permanence"><strong>This publication cannot be undone</strong><p>${permanence}</p></div>${form}<a class="quiet-link" href="/me">Cancel and return to my collection</a></article></section>`;
+  return layout({ title: `Mint @${signature.handleAtClaim} signature`, description: params.localChainRehearsal ? "Review and submit the exact claimed signature on the local Anvil chain." : "Review and authorize the exact claimed signature for Ethereum minting.", body, fixtureMode: params.fixtureMode, localChainRehearsal: params.localChainRehearsal, robots: "noindex", accountPanel: { ...account, mintRecipientConfirmed: !recipientReady && account.mintRecipientConfirmed, previewOnly: Boolean(preview) }, preview, localOAuthMode: account.localOAuthMode ?? account.fixtureMode, developmentTools: usesLocalTestWallet ? '<section class="rehearsal-page-note" data-dev-mint-controls><h2>Local wallet mint</h2><p>First acknowledge the publication disclosure on the page, then use the TEST wallet below. Anvil 31337 only; never send real funds.</p><button class="auth-action" type="submit" form="mint-authorization" data-wallet-provider="local"><span>Authorize with local TEST wallet</span></button><p data-mint-feedback role="status" aria-live="polite"></p></section>' : "", developmentNotes: [...(params.fixtureMode || params.localChainRehearsal ? [{ title: "Mint rehearsal", paragraphs: [rehearsalPermanence] }] : []), ...localIdentityNotes(account.localOAuthMode ?? account.fixtureMode)] });
 }
 
 export function signInRequiredPage(fixtureMode: boolean, localOAuthMode = fixtureMode, localChainRehearsal = false, preview?: PagePreview, publicOrigin?: string): string {

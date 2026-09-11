@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MINT_STATE_LABELS } from "../v2/model.js";
-import { collectionPage, errorPage, homePage, mintEntryPage, mintReviewPage, signaturePage, type SignatureMintView, type SignatureView } from "./pages.js";
+import { collectionPage, errorPage, homePage, mintEntryPage, mintPage, signaturePage, type SignatureMintView, type SignatureView } from "./pages.js";
 import { LOCAL_TEST_RECIPIENT, LOCAL_TEST_WALLET } from "../local/wallet.js";
 import { SITE_CSS } from "./siteCss.js";
 import { xProfileLink } from "./xProfile.js";
@@ -61,7 +61,7 @@ function provenance(html: string): string {
 
 describe("minimal shared signature detail", () => {
   it.each([false, true])("offers the wallet proof only to the active original claimant (eligible=%s)", confirmed => {
-    const html = mintEntryPage({ signature, stage: "wallet", account: {
+    const html = mintPage({ signature, currentHandle: "historical_name", fixtureMode: false, claimInstanceId: "claim-instance", csrfToken: "private-csrf", chainName: "Anvil", metadataUri: "ipfs://test", metadataSha256: "hash", signatureDigest: "digest", tokenUriHash: "hash", contract: "0xcontract", account: {
       currentHandle: "historical_name", csrfToken: "private-csrf", mintEnabled: true,
       mintChainId: "31337", fixtureMode: false, mintRecipientConfirmed: confirmed,
       mintSignatureId: signature.signatureId, mintClaimInstanceId: "claim-instance", mintPreviousBindingId: null,
@@ -69,7 +69,8 @@ describe("minimal shared signature detail", () => {
     const main = html.match(/<main>[\s\S]*?<\/main>/)![0];
     expect(main.includes("data-link-wallet")).toBe(confirmed);
     expect(main).not.toContain('name="purpose" value="sensitive_action"');
-    expect(main).toContain("Connect a wallet to receive the token and prove you control it. No transaction is sent yet.");
+    expect(main).toContain("The wallet that will receive the token. You sign a one-time message to prove you control it; no transaction is sent.");
+    expect(main).not.toContain('class="mint-authorization-form"');
     expect(main.includes('<span>Connect wallet</span></button>')).toBe(confirmed);
     expect(main).not.toMatch(/Confirm with X to|X confirmed\./);
     expect(main).not.toContain('action="/auth/x/start"');
@@ -122,18 +123,20 @@ describe("minimal shared signature detail", () => {
     expect(action).not.toContain('name="purpose" value="account_login"');
   });
 
-  it.each(["wallet", "ready"] as const)("shows only remaining mint steps for %s", stage => {
-    for (const linked of [false, true]) {
-      const html = mintEntryPage({ signature, stage, account: {
-        currentHandle: "historical_name", mintEnabled: true, mintChainId: "31337", fixtureMode: false,
-        wallet: linked ? { address: LOCAL_TEST_WALLET, chainId: "31337", chainName: "Anvil", provedAt: new Date() } : null,
-      } });
-      const steps = html.match(/<ol class="mint-entry-steps"[^>]*>([\s\S]*?)<\/ol>/)![1];
-      expect(steps.includes("Connect your wallet and prove control")).toBe(stage === "wallet");
-      expect(steps).toContain("<li>Review the mint details</li><li>Confirm the transaction in your wallet</li>");
-      expect(steps).not.toContain("Sign in");
-      expect(html).not.toMatch(/Reauthenticate|Confirm your X sign-in before minting/);
-    }
+  it.each([false, true])("keeps the recipient control inside the mint page rather than a step list (previous recipient=%s)", linked => {
+    const html = mintPage({ signature, currentHandle: "historical_name", fixtureMode: false, claimInstanceId: "claim-instance", csrfToken: "private-csrf", chainName: "Anvil", metadataUri: "ipfs://test", metadataSha256: "hash", signatureDigest: "digest", tokenUriHash: "hash", contract: "0xcontract", account: {
+      currentHandle: "historical_name", csrfToken: "private-csrf", mintEnabled: true, mintChainId: "31337", fixtureMode: false,
+      mintRecipientConfirmed: true, mintSignatureId: signature.signatureId, mintClaimInstanceId: "claim-instance",
+      mintPreviousBindingId: linked ? `0x${"1".repeat(64)}` : null,
+      wallet: linked ? { address: LOCAL_TEST_WALLET, chainId: "31337", chainName: "Anvil", provedAt: new Date() } : null,
+    } });
+    const main = html.match(/<main>[\s\S]*?<\/main>/)![0];
+    expect(main).not.toContain("mint-entry-steps");
+    expect(main).not.toMatch(/Review the mint details|Confirm the transaction in your wallet/);
+    // A previous recipient never fills the row: this mint needs its own proof.
+    expect(main).toMatch(/<dt>Recipient<\/dt><dd><p class="mint-recipient-hint">[\s\S]*?data-link-wallet/);
+    expect(main).not.toContain('class="mint-authorization-form"');
+    expect(html).not.toMatch(/Reauthenticate|Confirm your X sign-in before minting/);
   });
   it.each(["sign-in", "wrong-account", "paused", "pending"] as const)("does not solicit new mint steps during %s", stage => {
     const html = mintEntryPage({ signature, stage, account: { mintEnabled: true, mintChainId: "31337", fixtureMode: false } });
@@ -330,7 +333,7 @@ describe("interactive local rehearsal pages", () => {
   const collection = { currentHandle: "alice", signatures: [signature], csrfToken: "csrf", fixtureMode: true, mintEnabled: true, mintChainId: "31337", localChainRehearsal: true, wallet, walletLinkConfirmed: true };
 
   it("offers an explicit local TEST wallet only within a confirmed mint recipient flow", () => {
-    const html = mintEntryPage({ signature, stage: "wallet", account: { ...collection, mintRecipientConfirmed: true, mintSignatureId: signature.signatureId, mintClaimInstanceId: "claim-instance" } });
+    const html = mintPage({ signature, currentHandle: "alice", fixtureMode: true, localChainRehearsal: true, claimInstanceId: "claim-instance", csrfToken: "private-csrf", chainName: "Anvil", metadataUri: "ipfs://test", metadataSha256: "hash", signatureDigest: "digest", tokenUriHash: "hash", contract: "0xcontract", account: { ...collection, mintRecipientConfirmed: true, mintSignatureId: signature.signatureId, mintClaimInstanceId: "claim-instance" } });
     expect(html).toContain("data-local-chain-rehearsal");
     expect(html).toContain('data-wallet-provider="local"');
     expect(html).toContain('data-wallet-provider="injected"');
@@ -376,7 +379,7 @@ describe("interactive local rehearsal pages", () => {
   });
 
   it("states local limits truthfully and offers both local and injected mint submission", () => {
-    const html = mintReviewPage({ signature, currentHandle: "alice", wallet, walletBindingId: "binding-exact", claimInstanceId: "claim-exact", csrfToken: "csrf", chainName: "Local Anvil", metadataUri: "ipfs://test", metadataSha256: "hash", signatureDigest: "digest", tokenUriHash: "hash", contract: "0xcontract", fixtureMode: true, localChainRehearsal: true });
+    const html = mintPage({ signature, currentHandle: "alice", account: { ...collection, mintRecipientConfirmed: true, mintSignatureId: signature.signatureId, mintClaimInstanceId: "claim-instance" }, wallet, walletBindingId: "binding-exact", claimInstanceId: "claim-exact", csrfToken: "csrf", chainName: "Local Anvil", metadataUri: "ipfs://test", metadataSha256: "hash", signatureDigest: "digest", tokenUriHash: "hash", contract: "0xcontract", fixtureMode: true, localChainRehearsal: true });
     expect(html).toContain('data-local-chain-rehearsal="true" data-local-wallet="true"');
     expect(html).toContain("Authorize with local TEST wallet");
     expect(html).toContain('<button class="auth-action" type="submit"><span>Authorize mint</span></button>');
@@ -389,7 +392,8 @@ describe("interactive local rehearsal pages", () => {
 
 describe("mint-scoped recipient review", () => {
   const wallet = { address: LOCAL_TEST_WALLET, chainName: "Local Anvil", chainId: "31337", provedAt: new Date() };
-  const review = { signature, currentHandle: "renamed_claimant", wallet, walletBindingId: 'binding"exact', claimInstanceId: 'claim"exact', csrfToken: 'csrf"exact', chainName: "Local Anvil", metadataUri: "ipfs://test", metadataSha256: "hash", signatureDigest: "digest", tokenUriHash: "hash", contract: "0xcontract", fixtureMode: false };
+  const reviewAccount = { currentHandle: "renamed_claimant", csrfToken: 'csrf"exact', mintEnabled: true, mintChainId: "31337", fixtureMode: false, mintRecipientConfirmed: true, mintSignatureId: signature.signatureId, mintClaimInstanceId: 'claim"exact' };
+  const review = { signature, currentHandle: "renamed_claimant", account: reviewAccount, wallet, walletBindingId: 'binding"exact', claimInstanceId: 'claim"exact', csrfToken: 'csrf"exact', chainName: "Local Anvil", metadataUri: "ipfs://test", metadataSha256: "hash", signatureDigest: "digest", tokenUriHash: "hash", contract: "0xcontract", fixtureMode: false };
 
   it("uses ordinary sign-in for signed-out mint entry without another mint-specific OAuth action", () => {
     const html = mintEntryPage({ signature, stage: "sign-in", account: { mintChainId: "31337", mintEnabled: true, fixtureMode: false, mintSignatureId: signature.signatureId, mintClaimInstanceId: "claim-instance", mintCanStart: true } });
@@ -431,13 +435,18 @@ describe("mint-scoped recipient review", () => {
   });
 
   it("reviews and binds the exact recipient, proof record, signature and claim", () => {
-    const html = mintReviewPage(review);
-    expect(html).toContain(`<dt>Recipient</dt><dd>${wallet.address}</dd>`);
+    const html = mintPage(review);
+    expect(html).toContain(`<dt>Recipient</dt><dd><span class="mint-recipient-address">${wallet.address}</span>`);
     expect(html).toContain(`data-recipient="${wallet.address}"`);
     expect(html).toContain('data-wallet-binding-id="binding&quot;exact"');
     expect(html).toContain('data-claim-instance-id="claim&quot;exact"');
-    expect(html).toContain('<dt>Project fee</dt><dd>None</dd>');
-    expect(html).toContain('Estimated separately by your wallet before submission');
+    expect(html).toContain('<dt>Cost</dt><dd>No project fee. Your wallet estimates network gas before you confirm.</dd>');
+    expect(html).not.toContain("data-link-wallet");
+    // Hashes and URIs stay available, but behind the disclosure rather than in the decision.
+    const decision = html.slice(html.indexOf('<dl class="facts">'), html.indexOf('<details'));
+    expect(decision).not.toMatch(/SHA-256|Metadata URI|Renderer/);
+    expect(html).toContain('<summary>Verification details</summary>');
+    expect(html).toContain(`<dt>Metadata SHA-256</dt><dd>hash</dd>`);
     expect(html).toContain('<span>Change recipient</span>');
     expect(html).not.toContain('name="action" value="mint_recipient"');
     expect(html).not.toContain('action="/auth/x/start"');
@@ -450,7 +459,7 @@ describe("mint-scoped recipient review", () => {
   });
 
   it("keeps an unresolved authorization on its recipient and only offers transaction resumption", () => {
-    const html = mintReviewPage({ ...review, resumeAuthorization: true });
+    const html = mintPage({ ...review, resumeAuthorization: true });
     expect(html).toContain("Complete this mint.");
     expect(html).toContain('<span>Confirm in wallet</span>');
     expect(html).not.toContain("Change recipient");

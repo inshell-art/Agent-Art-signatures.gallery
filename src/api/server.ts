@@ -12,7 +12,7 @@ import { withdrawClaim } from "../v1/withdrawClaim.js";
 import { deriveSignatureId } from "../v1/identity.js";
 import { formatGr0k, GR0K_SCALE, InputError, normalizeHandleSegment, normalizeHandleValue, validateRenderHandle, parseGr0kSegment, parseGr0kValue } from "../v1/input.js";
 import { DailyCircuitBreaker, SlidingWindowLimits } from "../v1/limits.js";
-import { aboutPage, collectionPage, errorPage, gonePage, homePage, localOAuthAuthorizePage, mintEntryPage, mintReviewPage, previewPage, signInRequiredPage, signaturePage, type GalleryCardView, type MintEntryStage, type SignatureMintView, type SignatureView, type PreviewPageParams } from "../v1/pages.js";
+import { aboutPage, collectionPage, errorPage, gonePage, homePage, localOAuthAuthorizePage, mintEntryPage, mintPage, previewPage, signInRequiredPage, signaturePage, type GalleryCardView, type MintEntryStage, type SignatureMintView, type SignatureView, type PreviewPageParams } from "../v1/pages.js";
 import { CARD_RENDERER_VERSION, RENDERER_VERSION, RendererRegistry, RendererUnavailableError, renderCardPng, sha256Hex } from "../v1/renderer.js";
 import { RendererIntegrityError, type Signature, type SignatureStore } from "../v1/store.js";
 import { SITE_CSS } from "../v1/siteCss.js";
@@ -1374,48 +1374,54 @@ export function createApp(deps: AppDependencies, options: AppOptions = {}) {
         const stage: MintEntryStage | null = !deps.mint?.config.enabled ? "paused"
           : !session?.identity ? "sign-in"
           : !ownClaim ? "wrong-account"
-          : pending ? "pending"
-          : !binding || !resumeAuthorization && (!recipientVerified || new URL(req.url ?? "/", "http://request.invalid").searchParams.get("recipient") === "change") ? "wallet" : null;
+          : pending ? "pending" : null;
+        const currentAccount = session?.identity ? await deps.store.getAccount(session.identity.xUserId) : null;
+        const accountView: AccountPanelView = {
+          currentHandle: currentAccount?.currentHandle ?? session?.identity?.username, csrfToken: session?.csrfToken,
+          wallet: binding && deps.mint ? { address: binding.address, chainId: binding.chainId.toString(), chainName: deps.mint.config.chainName, provedAt: binding.provedAt } : null,
+          mintEnabled: deps.mint?.config.enabled ?? false, mintChainId: deps.mint?.config.chainId.toString() ?? "",
+          mintCanStart: Boolean(deps.mint?.config.enabled && !unresolvedBinding && deps.mint.state.canWithdrawClaim(signature.signatureId)),
+          fixtureMode, localOAuthMode, localChainRehearsal: options.localChainRehearsal,
+          ...mintRecipientView(session, deps, signature), actionReturnTo: `/signatures/${signature.signatureId}/mint`,
+        };
         if (stage) {
-          const currentAccount = session?.identity ? await deps.store.getAccount(session.identity.xUserId) : null;
           send(res, req, stage === "sign-in" ? 401 : stage === "wrong-account" ? 403 : stage === "paused" ? 503 : 200, "text/html; charset=utf-8", mintEntryPage({
             signature: signatureView(signature, account.publicAccountId), stage,
             pendingElsewhere,
             statusLabel: stage === "pending" && !pendingElsewhere ? status?.authorization?.status === "prepared" ? "Authorization preparation pending" : status?.authorization?.status === "signing_unknown" ? "Authorization reconciliation required" : MINT_STATE_LABELS[projection?.state ?? "unminted"] : undefined,
-            account: { currentHandle: currentAccount?.currentHandle ?? session?.identity?.username, csrfToken: session?.csrfToken,
-              wallet: binding && deps.mint ? { address: binding.address, chainId: binding.chainId.toString(), chainName: deps.mint.config.chainName, provedAt: binding.provedAt } : null,
-              mintEnabled: deps.mint?.config.enabled ?? false, mintChainId: deps.mint?.config.chainId.toString() ?? "",
-              mintCanStart: Boolean(deps.mint?.config.enabled && !unresolvedBinding && deps.mint.state.canWithdrawClaim(signature.signatureId)),
-              fixtureMode, localOAuthMode, localChainRehearsal: options.localChainRehearsal,
-              ...mintRecipientView(session, deps, signature), actionReturnTo: `/signatures/${signature.signatureId}/mint` },
+            account: accountView,
           }));
           return;
         }
-        // The entry page above is read-only. Exact review still requires every prerequisite.
-        if (!deps.mint?.config.enabled || !session?.identity || !ownClaim || !binding) throw new V2Error(403, "MINT_INELIGIBLE", "Complete the mint prerequisites first.");
+        // One page from here on: the recipient control and the authorization form
+        // are states of it, never separate screens the claimant has to pass through.
+        if (!deps.mint?.config.enabled || !session?.identity || !ownClaim) throw new V2Error(403, "MINT_INELIGIBLE", "Complete the mint prerequisites first.");
         requireSessionIdentity(session, signature.xUserId);
-        if (!resumeAuthorization && !hasMintRecipient(session, signature, binding)) throw new V2Error(401, "MINT_RECIPIENT_REQUIRED", "Verify the wallet for this mint before reviewing it.");
+        const changingRecipient = new URL(req.url ?? "/", "http://request.invalid").searchParams.get("recipient") === "change";
+        const recipientReady = Boolean(binding) && (resumeAuthorization || recipientVerified && !changingRecipient);
         const metadata = await deps.mint.previewMetadata(signature, account);
         requireSessionIdentity(session, signature.xUserId);
-        if (deps.mint.state.getActiveBinding(signature.xUserId, deps.mint.config.chainId)?.walletBindingId !== binding.walletBindingId) {
-          throw new V2Error(409, "BINDING_TRANSITION", "Your linked wallet changed. Reload the mint review.");
-        }
         if (deps.mint.state.isSuppressed(signature.signatureId)) {
           sendRemovedSignature(res, req, pathname, fixtureMode);
           return;
         }
         const currentClaim = await deps.store.getSignature(signature.signatureId);
         requireSessionIdentity(session, signature.xUserId);
-        if (currentClaim?.claimInstanceId !== signature.claimInstanceId) throw new V2Error(409, "CLAIM_CHANGED", "This claim changed while opening the mint review.");
-        if (deps.mint.state.getActiveBinding(signature.xUserId, deps.mint.config.chainId)?.walletBindingId !== binding.walletBindingId) {
-          throw new V2Error(409, "BINDING_TRANSITION", "The recipient changed while opening the mint review. Reload to review it again.");
+        if (currentClaim?.claimInstanceId !== signature.claimInstanceId) throw new V2Error(409, "CLAIM_CHANGED", "This claim changed while opening the mint page.");
+        // The authorization form may only carry a recipient that is still the
+        // active binding and still verified for this exact mint.
+        if (recipientReady) {
+          if (deps.mint.state.getActiveBinding(signature.xUserId, deps.mint.config.chainId)?.walletBindingId !== binding!.walletBindingId) {
+            throw new V2Error(409, "BINDING_TRANSITION", "Your linked wallet changed. Reload the mint page.");
+          }
+          if (!resumeAuthorization && !hasMintRecipient(session, signature, binding!)) throw new V2Error(401, "MINT_RECIPIENT_REQUIRED", "Wallet verification expired. Connect the recipient again.");
         }
-        if (!resumeAuthorization && !hasMintRecipient(session, signature, binding)) throw new V2Error(401, "MINT_RECIPIENT_REQUIRED", "Wallet verification expired. Open the mint page to start again.");
-        send(res, req, 200, "text/html; charset=utf-8", mintReviewPage({
+        send(res, req, 200, "text/html; charset=utf-8", mintPage({
           signature: signatureView(signature, account.publicAccountId),
           currentHandle: account.currentHandle,
-          wallet: { address: binding.address, chainId: binding.chainId.toString(), chainName: deps.mint.config.chainName, provedAt: binding.provedAt },
-          walletBindingId: binding.walletBindingId,
+          account: accountView,
+          wallet: recipientReady ? { address: binding!.address, chainId: binding!.chainId.toString(), chainName: deps.mint.config.chainName, provedAt: binding!.provedAt } : null,
+          walletBindingId: recipientReady ? binding!.walletBindingId : undefined,
           claimInstanceId: signature.claimInstanceId,
           resumeAuthorization,
           csrfToken: session.csrfToken,

@@ -6,7 +6,7 @@ export const COLLECTION_STATE_FIXTURES = [
   { key: "gallery-minted-empty", label: "Minted · empty", description: "The public Minted gallery has no finalized works. Participation guidance is available before sign-in." },
   { key: "claimed", label: "Claimed · connect wallet", description: "The claim needs no wallet. The active claimant session can connect a wallet and prove control for this mint without another X sign-in." },
   { key: "wallet-linked", label: "Previous recipient", description: "A previous recipient is only a convenience. This new mint still requires a fresh wallet proof, without another X sign-in for an active claimant session." },
-  { key: "recipient-verified", label: "Recipient verified", description: "The original claimant session and fresh wallet proof match this exact mint. Review the work, recipient, and fees next." },
+  { key: "recipient-verified", label: "Recipient verified", description: "The original claimant session and fresh wallet proof match this exact mint. The recipient is filled in and the authorization form is ready on the same page." },
   { key: "wrong-claimant", label: "Wrong claimant", description: "The signed-in X account is not the original claimant. Recipient controls remain unavailable." },
   { key: "authorized", label: "Awaiting wallet", description: "Authorization exists. No confirmed mint yet." },
   { key: "submitted", label: "Submitted", description: "A transaction was submitted; it is not yet a finalized mint." },

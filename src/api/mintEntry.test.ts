@@ -71,7 +71,7 @@ describe("guided mint entry", () => {
     expect(html).not.toContain('name="csrf"');
   });
 
-  it.each(["sign-in", "wrong-account", "wallet", "paused"] as const)("guides %s without preparing metadata or authorizing", async stage => {
+  it.each(["sign-in", "wrong-account", "paused"] as const)("guides %s without preparing metadata or authorizing", async stage => {
     const who = stage === "sign-in" ? undefined : identity(stage === "wrong-account" ? "999" : claimant);
     if (stage === "paused") mint.config.enabled = false;
     const snapshot = mint.state.exportSnapshot();
@@ -86,11 +86,7 @@ describe("guided mint entry", () => {
     expect(html).toContain("Minting is optional");
     expect(html).not.toContain('class="mint-authorization-form"');
     const entry = html.match(/<div data-mint-entry=[\s\S]*?<\/main>/)![0];
-    if (stage === "wallet") {
-      expect(entry).toContain("data-link-wallet");
-      expect(entry).toContain('<span>Connect wallet</span></button>');
-      expect(entry).not.toContain('action="/auth/x/start"');
-    } else expect(entry).not.toContain("data-link-wallet");
+    expect(entry).not.toContain("data-link-wallet");
     if (["sign-in", "wrong-account"].includes(stage)) {
       expect(entry).toContain(`name="return_to" value="${mintPath}"`);
       expect(entry).toContain('name="purpose" value="account_login"');
@@ -101,6 +97,27 @@ describe("guided mint entry", () => {
     expect(issue).not.toHaveBeenCalled();
     const denied = await writeAuthorization(who);
     expect(denied.status).toBe(stage === "paused" ? 503 : stage === "sign-in" ? 401 : 403);
+    expect(mint.state.exportSnapshot()).toEqual(snapshot);
+  });
+
+  it("carries the recipient control on the mint page itself without authorizing", async () => {
+    const who = identity(claimant);
+    const snapshot = mint.state.exportSnapshot();
+    const issue = vi.spyOn(mint, "issueAuthorization");
+    const response = await fetch(base + mintPath, { headers: { Cookie: who.cookie } });
+    const html = await response.text();
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    // One page: the recipient control lives in the mint page, not on a page before it.
+    expect(html).toContain('data-mint-entry="wallet"');
+    expect(html).toContain("data-link-wallet");
+    expect(html).toContain('<span>Connect wallet</span></button>');
+    expect(html).toContain("This publication cannot be undone");
+    expect(html).not.toContain('class="mint-authorization-form"');
+    expect(html).not.toContain('action="/auth/x/start"');
+    expect(issue).not.toHaveBeenCalled();
+    expect(mint.state.exportSnapshot()).toEqual(snapshot);
+    expect((await writeAuthorization(who)).status).toBe(403);
     expect(mint.state.exportSnapshot()).toEqual(snapshot);
   });
 

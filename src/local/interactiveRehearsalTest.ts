@@ -202,7 +202,7 @@ if (verifyOnly) {
   assert.equal(getAddress(reviewAttributes["data-contract"]!), getAddress(runtime.contract));
   assert(authorizationForm.includes('name="permanence_acknowledged"'), "Mint review must require explicit publication consent");
   assert(!/name="permanence_acknowledged"[^>]*\bchecked\b/.test(authorizationForm), "Publication consent must not be preselected");
-  assert(review.includes("<dt>Project fee</dt><dd>None</dd>"), "No project fee may be added by the rehearsal");
+  assert(review.includes("<dt>Cost</dt><dd>No project fee."), "No project fee may be added by the rehearsal");
   const reviewedSnapshot = { walletBindingId: reviewAttributes["data-wallet-binding-id"]!, recipient: reviewAttributes["data-wallet"]! };
   assert.equal((await postJson(authorizePath, {})).status, 409, "Missing permanence acknowledgement must not authorize");
   assert.equal((await postJson(authorizePath, {}, { Origin: "https://outside.invalid", "X-Mint-Permanence-Acknowledged": "1" })).status, 403, "Cross-origin authorization must fail");

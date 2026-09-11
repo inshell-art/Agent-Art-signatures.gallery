@@ -1,4 +1,4 @@
-import { collectionPage, homePage, mintEntryPage, signInRequiredPage, type CollectionMintView, type MintEntryStage, type SignatureView } from "./pages.js";
+import { collectionPage, homePage, mintEntryPage, mintPage, signInRequiredPage, type CollectionMintView, type MintEntryStage, type SignatureView } from "./pages.js";
 import { CARD_RENDERER_VERSION, RENDERER_VERSION, formalSignatureRenderer } from "./renderer.js";
 import { GR0K_SCALE } from "./input.js";
 import { MINT_STATE_LABELS } from "../v2/model.js";
@@ -24,18 +24,34 @@ export function collectionStatePage(key: string, publicOrigin: string, view = "c
   if (!fixture || !["collection", "mint"].includes(view)) return null;
   const preview = { state: key, label: fixture.label, description: fixture.description };
   if (view === "mint") {
-    const stages: Record<string, MintEntryStage> = { "signed-out": "sign-in", claimed: "wallet", "wallet-linked": "wallet", "recipient-verified": "ready", authorized: "pending", submitted: "pending", confirming: "pending", "validation-pending": "pending", "mint-paused": "paused", reauthenticate: "wallet", renamed: "wallet", "wrong-claimant": "wrong-account" };
-    const stage = stages[key];
-    if (!stage) return null;
-    return mintEntryPage({ signature: fixtureSignature, stage, preview, account: {
-      currentHandle: key === "signed-out" ? undefined : key === "wrong-claimant" ? "bob" : key === "renamed" ? "alice_studio" : "alice",
+    const gates: Record<string, MintEntryStage> = { "signed-out": "sign-in", authorized: "pending", submitted: "pending", confirming: "pending", "validation-pending": "pending", "mint-paused": "paused", "wrong-claimant": "wrong-account" };
+    const mintPageKeys = ["claimed", "wallet-linked", "recipient-verified", "reauthenticate", "renamed"];
+    const gate = gates[key];
+    if (!gate && !mintPageKeys.includes(key)) return null;
+    const currentHandle = key === "signed-out" ? undefined : key === "wrong-claimant" ? "bob" : key === "renamed" ? "alice_studio" : "alice";
+    const previousRecipient = ["claimed", "signed-out", "reauthenticate"].includes(key) ? null : "ui-fixture-binding";
+    const account = {
+      currentHandle,
       csrfToken: key === "signed-out" ? undefined : "ui-fixture-not-a-session-token",
       fixtureMode: true, localOAuthMode: true, mintEnabled: key !== "mint-paused", mintChainId: "1",
-      wallet: ["claimed", "signed-out", "reauthenticate"].includes(key) ? null : { address: initialWallet, chainId: "1", chainName: "Ethereum · UI fixture", provedAt: new Date("2026-09-01T10:02:00Z") },
+      wallet: previousRecipient ? { address: initialWallet, chainId: "1", chainName: "Ethereum · UI fixture", provedAt: new Date("2026-09-01T10:02:00Z") } : null,
       mintSignatureId: fixtureSignature.signatureId, mintClaimInstanceId: "ui-fixture-claim-instance",
-      mintPreviousBindingId: ["claimed", "signed-out", "reauthenticate"].includes(key) ? null : "ui-fixture-binding",
-      mintRecipientConfirmed: stage === "wallet" || stage === "ready", previewOnly: true,
-    } });
+      mintPreviousBindingId: previousRecipient,
+      mintRecipientConfirmed: !gate, previewOnly: true,
+    };
+    if (gate) return mintEntryPage({ signature: fixtureSignature, stage: gate, preview, account });
+    // Only a fresh proof for this exact mint fills the recipient; a previous
+    // recipient stays a convenience and still shows the connect control.
+    const verified = key === "recipient-verified";
+    return mintPage({
+      signature: fixtureSignature, currentHandle: currentHandle!, account, preview,
+      wallet: verified ? { address: initialWallet, chainId: "1", chainName: "Ethereum · UI fixture", provedAt: new Date("2026-09-01T10:02:00Z") } : null,
+      walletBindingId: verified ? `0x${"b".repeat(64)}` : undefined,
+      claimInstanceId: "ui-fixture-claim-instance", csrfToken: "ui-fixture-not-a-session-token",
+      chainName: "Ethereum · UI fixture", metadataUri: `ipfs://bafkrei${"a".repeat(52)}`,
+      metadataSha256: "0".repeat(64), signatureDigest: `0x${"0".repeat(64)}`, tokenUriHash: `0x${"0".repeat(64)}`,
+      contract: `0x${"3".repeat(40)}`, fixtureMode: true,
+    });
   }
   if (key === "signed-out") return signInRequiredPage(true, true, false, preview, publicOrigin);
   if (key === "gallery-claimed-empty" || key === "gallery-minted-empty") {
