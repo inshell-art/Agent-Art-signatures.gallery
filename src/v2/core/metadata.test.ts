@@ -142,3 +142,97 @@ describe("immutable V2 metadata", () => {
     expect(() => buildTokenMetadata({ ...metadataInput, handleAtClaim: "Alice\n" })).toThrow(/case-sensitive/);
   });
 });
+
+describe("metadata input boundaries", () => {
+  const build = (overrides: Partial<TokenMetadataInput>) => () => buildTokenMetadata({ ...metadataInput, ...overrides });
+
+  it("requires the artifact origin to be an exact HTTPS origin", () => {
+    expect(build({ publicArtifactOrigin: "signatures.gallery" })).toThrow(/absolute HTTPS origin/);
+    expect(build({ publicArtifactOrigin: "http://signatures.gallery" })).toThrow(/exact HTTPS origin/);
+    expect(build({ publicArtifactOrigin: "https://signatures.gallery/artifacts" })).toThrow(/exact HTTPS origin/);
+    expect(build({ publicArtifactOrigin: "https://signatures.gallery?v=1" })).toThrow(/exact HTTPS origin/);
+    expect(build({ publicArtifactOrigin: "https://signatures.gallery#a" })).toThrow(/exact HTTPS origin/);
+  });
+
+  it("refuses a renderer version that is not the frozen V2 pair", () => {
+    // The literal types stop this in review; the runtime guard stops it when the
+    // value arrives from a database row or a request instead.
+    const untyped = (overrides: Record<string, unknown>) => () =>
+      buildTokenMetadata({ ...metadataInput, ...overrides } as unknown as TokenMetadataInput);
+    expect(untyped({ rendererVersion: "sg-renderer-0.9.0" })).toThrow(/frozen V2 renderer version/);
+    expect(untyped({ cardRendererVersion: "sg-card-0.9.0" })).toThrow(/frozen V2 renderer version/);
+  });
+
+  it("accepts RFC 3339 claim instants and truncates them to whole milliseconds", () => {
+    const at = (claimedAt: TokenMetadataInput["claimedAt"]) =>
+      buildTokenMetadata({ ...metadataInput, claimedAt }).properties.claimed_at;
+    const baseline = at(metadataInput.claimedAt);
+    expect(at("2026-09-04T12:34:56.789123Z")).toBe("2026-09-04T12:34:56.789Z");
+    expect(at("2026-09-04T12:34:56Z")).toBe("2026-09-04T12:34:56.000Z");
+    expect(at("2026-09-04T12:34:56.7Z")).toBe("2026-09-04T12:34:56.700Z");
+    expect(at("2026-09-04T20:34:56.789+08:00")).toBe("2026-09-04T12:34:56.789Z");
+    expect(at(new Date("2026-09-04T12:34:56.789Z"))).toBe("2026-09-04T12:34:56.789Z");
+    expect(baseline).toBeTruthy();
+  });
+
+  it("refuses a claim instant that is not a valid RFC 3339 value", () => {
+    expect(build({ claimedAt: new Date("not a date") })).toThrow(/valid instant/);
+    for (const claimedAt of ["2026-09-04", "2026-09-04 12:34:56Z", "2026-09-04T12:34:56", "yesterday", ""]) {
+      expect(build({ claimedAt })).toThrow(/RFC 3339 instant/);
+    }
+    expect(build({ claimedAt: "2026-13-04T12:34:56.789Z" })).toThrow(/valid instant/);
+  });
+
+  it("keeps gr0k an unscaled integer seed from 1 to 100", () => {
+    expect(formatGr0k(1)).toBe("1");
+    expect(formatGr0k(100)).toBe("100");
+    for (const raw of [0, 101, -1, 1.5, Number.NaN]) {
+      expect(() => formatGr0k(raw)).toThrow(/integer raw value from 1 to 100/);
+    }
+    expect(() => formatGr0k(22, 100)).toThrow(/at scale 1/);
+  });
+});
+
+describe("self-contained SVG boundary", () => {
+  const verify = (svg: string) => () => {
+    const bytes = Buffer.from(svg, "utf8");
+    verifyImmutableV1Artifacts({ svgBytes: bytes, pngBytes, svgSha256: sha256Hex(bytes), pngSha256 });
+  };
+  const wrap = (inner: string) => `<svg xmlns="http://www.w3.org/2000/svg">${inner}</svg>`;
+
+  it("accepts artwork that resolves nothing outside its own bytes", () => {
+    expect(verify(wrap('<path d="M0 0 L1 1"/>'))).not.toThrow();
+    expect(verify(wrap('<use href="#glyph"/>'))).not.toThrow();
+    expect(verify(wrap('<image href="data:image/png;base64,AAAA"/>'))).not.toThrow();
+    expect(verify(wrap('<rect fill="url(#grad)"/>'))).not.toThrow();
+    expect(verify(wrap('<a href="">empty</a>'))).not.toThrow();
+  });
+
+  it("rejects bytes that are not valid UTF-8 or carry no SVG root", () => {
+    const invalid = Buffer.from([0xff, 0xfe, 0xfd]);
+    expect(() => verifyImmutableV1Artifacts({ svgBytes: invalid, pngBytes, svgSha256: sha256Hex(invalid), pngSha256 }))
+      .toThrow(/not valid UTF-8/);
+    expect(verify("<html><body>not artwork</body></html>")).toThrow(/no SVG root element/);
+  });
+
+  it("rejects active or externally resolvable constructs", () => {
+    expect(verify(`<!DOCTYPE svg>${wrap("")}`)).toThrow(/active or externally resolvable/);
+    expect(verify(`<!ENTITY x "y">${wrap("")}`)).toThrow(/active or externally resolvable/);
+    expect(verify(`<?xml-stylesheet href="a.css"?>${wrap("")}`)).toThrow(/active or externally resolvable/);
+    expect(verify(wrap("<script>alert(1)</script>"))).toThrow(/active or externally resolvable/);
+    expect(verify(wrap("<style>@import url(a.css);</style>"))).toThrow(/external CSS import/);
+  });
+
+  it("rejects unquoted and external resource references", () => {
+    expect(verify(wrap("<image href=a.png/>"))).toThrow(/malformed or unquoted resource reference/);
+    expect(verify(wrap('<image xlink:href="https://example.com/a.png"/>'))).toThrow(/external resource reference/);
+    expect(verify(wrap('<image src="/a.png"/>'))).toThrow(/external resource reference/);
+    expect(verify(wrap('<image href="../a.png"/>'))).toThrow(/external resource reference/);
+  });
+
+  it("rejects external CSS url() targets while allowing fragment and data targets", () => {
+    expect(verify(wrap('<rect fill="url(https://example.com/a.png)"/>'))).toThrow(/external CSS resource reference/);
+    expect(verify(wrap("<style>rect { fill: url('a.png') }</style>"))).toThrow(/external CSS resource reference/);
+    expect(verify(wrap('<rect fill="url(data:image/png;base64,AAAA)"/>'))).not.toThrow();
+  });
+});

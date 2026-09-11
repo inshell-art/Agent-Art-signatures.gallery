@@ -62,3 +62,30 @@ describe("V1 signature identity bridge", () => {
     }
   });
 });
+
+describe("signature ID digest boundaries", () => {
+  it("refuses to mint an identifier from anything but a 32-byte digest", () => {
+    for (const length of [0, 31, 33, 64]) {
+      expect(() => signatureIdFromDigest(new Uint8Array(length))).toThrow(/exactly 32 bytes/);
+    }
+    expect(signatureIdFromDigest(new Uint8Array(32))).toBe(`sg1_${"a".repeat(52)}`);
+  });
+
+  it("rejects an identifier whose Base32 body is the wrong length or prefix before decoding it", () => {
+    const valid = SIGNATURE_ID_GOLDEN_VECTOR.signatureId;
+    expect(() => signatureDigestFromId(valid.slice(4))).toThrow(/exact sg1_ prefix/);
+    expect(() => signatureDigestFromId(`sg2_${valid.slice(4)}`)).toThrow(/exact sg1_ prefix/);
+    expect(() => signatureDigestFromId(`sg1_${valid.slice(4, -1)}`)).toThrow(/exactly 52 unpadded/);
+    expect(() => signatureDigestFromId(`${valid}a`)).toThrow(/exactly 52 unpadded/);
+  });
+
+  it("rejects a 52-character body that carries nonzero padding bits", () => {
+    const body = SIGNATURE_ID_GOLDEN_VECTOR.signatureId.slice(4);
+    // The final character holds one digest bit plus four padding bits that must be zero.
+    const alphabet = "abcdefghijklmnopqrstuvwxyz234567";
+    const last = alphabet.indexOf(body[body.length - 1]!);
+    const polluted = alphabet[(last & 0b10000) | 0b00001]!;
+    expect(polluted).not.toBe(body[body.length - 1]);
+    expect(() => signatureDigestFromId(`sg1_${body.slice(0, -1)}${polluted}`)).toThrow(/nonzero padding bits/);
+  });
+});
