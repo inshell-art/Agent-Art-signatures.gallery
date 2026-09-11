@@ -11,6 +11,9 @@ import {
   AUTHORIZER_EPOCH_REVOKED_TOPIC,
   AUTHORIZER_MANAGER_ROLE,
   DEFAULT_ADMIN_ROLE,
+  DEFAULT_ADMIN_DELAY_CHANGE_CANCELED_TOPIC,
+  DEFAULT_ADMIN_DELAY_CHANGE_SCHEDULED_TOPIC,
+  DEFAULT_ADMIN_TRANSFER_CANCELED_TOPIC,
   DEFAULT_ADMIN_TRANSFER_SCHEDULED_TOPIC,
   ERC721_TRANSFER_TOPIC,
   FROZEN_GALLERY_ABI_VERSION,
@@ -278,5 +281,129 @@ describe("rebuildable Gallery contract control projection", () => {
     });
     expect(state.controlState.provisional).toMatchObject({ health: "ready", paused: false, authorizationIssuanceReady: true });
     expect(state.logs.find((observation) => observation.log.kind === "paused")).toMatchObject({ orphaned: true });
+  });
+});
+
+describe("control log sequences that cannot have happened on chain", () => {
+  const ZERO = `0x${"00".repeat(20)}` as Hex;
+  const block = header("control", 100, h("control:99"));
+  let index = 0;
+  const next = () => (index += 1);
+  const control = (topic0: Hex, rest: Record<string, unknown>): ContractControlLog =>
+    ({ ...base({ header: block, logIndex: next(), topic0 }), ...rest } as ContractControlLog);
+
+  const epochRevoked = (epoch: number, signer: Hex) =>
+    control(AUTHORIZER_EPOCH_REVOKED_TOPIC, { kind: "authorizer_epoch_revoked", epoch, authorizer: signer });
+  const authorizationRevoked = (authorizationId: Hex) =>
+    control(AUTHORIZATION_REVOKED_TOPIC, { kind: "authorization_revoked", authorizationId });
+  const pausedLog = () => control(PAUSED_TOPIC, { kind: "paused", account: pauser });
+  const unpausedLog = () => control(UNPAUSED_TOPIC, { kind: "unpaused", account: pauser });
+  const roleRevoked = (role: Hex, account: Hex) =>
+    control(ROLE_REVOKED_TOPIC, { kind: "role_revoked", role, account, sender: admin });
+  const adminScheduled = (newAdmin: Hex) =>
+    control(DEFAULT_ADMIN_TRANSFER_SCHEDULED_TOPIC, { kind: "default_admin_transfer_scheduled", newAdmin, acceptSchedule: "1800000900" });
+  const adminCanceled = () => control(DEFAULT_ADMIN_TRANSFER_CANCELED_TOPIC, { kind: "default_admin_transfer_canceled" });
+  const delayScheduled = () =>
+    control(DEFAULT_ADMIN_DELAY_CHANGE_SCHEDULED_TOPIC, { kind: "default_admin_delay_change_scheduled", newDelay: "86400", effectSchedule: "1800086400" });
+  const delayCanceled = () => control(DEFAULT_ADMIN_DELAY_CHANGE_CANCELED_TOPIC, { kind: "default_admin_delay_change_canceled" });
+
+  const replay = (logs: ContractControlLog[]) => replayContractControlLogs(logs);
+  const failsWith = (code: string, logs: ContractControlLog[]) => {
+    const snapshot = replay(logs);
+    expect(snapshot.health).toBe("inconsistent");
+    expect(snapshot.failureCode).toBe(code);
+    // An inconsistent contract view must never authorize a new mint.
+    expect(snapshot.authorizationIssuanceReady).toBe(false);
+  };
+
+  it("refuses an authorizer epoch that is not the next one in sequence", () => {
+    failsWith("AUTHORIZER_EPOCH_SEQUENCE", [roleGranted(block, DEFAULT_ADMIN_ROLE, admin, next()), epochAdded(block, 2, authorizer, next())]);
+    failsWith("AUTHORIZER_EPOCH_SEQUENCE", [epochAdded(block, 1, authorizer, next()), epochAdded(block, 1, secondAuthorizer, next())]);
+    failsWith("AUTHORIZER_EPOCH_SEQUENCE", [epochAdded(block, 1, authorizer, next()), epochAdded(block, 3, secondAuthorizer, next())]);
+  });
+
+  it("refuses the zero address as an authorizer", () => {
+    failsWith("ZERO_AUTHORIZER", [epochAdded(block, 1, ZERO, next())]);
+  });
+
+  it("refuses a revocation of an epoch that was never added or was signed by another authorizer", () => {
+    failsWith("UNKNOWN_AUTHORIZER_EPOCH_REVOCATION", [epochRevoked(1, authorizer)]);
+    failsWith("UNKNOWN_AUTHORIZER_EPOCH_REVOCATION", [epochAdded(block, 1, authorizer, next()), epochRevoked(1, secondAuthorizer)]);
+  });
+
+  it("refuses a second revocation of the same authorizer epoch", () => {
+    failsWith("DUPLICATE_AUTHORIZER_EPOCH_REVOCATION", [
+      epochAdded(block, 1, authorizer, next()), epochRevoked(1, authorizer), epochRevoked(1, authorizer),
+    ]);
+  });
+
+  it("refuses a zero or repeated authorization revocation", () => {
+    failsWith("ZERO_AUTHORIZATION_REVOCATION", [authorizationRevoked(`0x${"00".repeat(32)}` as Hex)]);
+    const id = h("authorization");
+    failsWith("AUTHORIZATION_STATE_CONFLICT", [authorizationRevoked(id), authorizationRevoked(id)]);
+  });
+
+  it("refuses a pause sequence that could not have been produced by the contract", () => {
+    failsWith("DUPLICATE_PAUSE", [pausedLog(), pausedLog()]);
+    failsWith("UNPAUSE_WHILE_RUNNING", [unpausedLog()]);
+    failsWith("UNPAUSE_WHILE_RUNNING", [pausedLog(), unpausedLog(), unpausedLog()]);
+  });
+
+  it("refuses revoking a role that was never granted", () => {
+    failsWith("UNKNOWN_ROLE_REVOCATION", [roleRevoked(PAUSER_ROLE, pauser)]);
+    failsWith("UNKNOWN_ROLE_REVOCATION", [roleGranted(block, PAUSER_ROLE, pauser, next()), roleRevoked(PAUSER_ROLE, manager)]);
+  });
+
+  it("refuses a duplicate role grant", () => {
+    failsWith("DUPLICATE_ROLE_GRANT", [roleGranted(block, PAUSER_ROLE, pauser, next()), roleGranted(block, PAUSER_ROLE, pauser, next())]);
+  });
+
+  it("treats any role admin change as impossible for this contract", () => {
+    failsWith("IMPOSSIBLE_ROLE_ADMIN_CHANGE", [control(ROLE_ADMIN_CHANGED_TOPIC, {
+      kind: "role_admin_changed", role: PAUSER_ROLE, previousAdminRole: DEFAULT_ADMIN_ROLE, newAdminRole: AUTHORIZER_MANAGER_ROLE,
+    })]);
+  });
+
+  it("tracks a scheduled default-admin transfer and clears it on acceptance or cancellation", () => {
+    const scheduled = replay([adminScheduled(manager)]);
+    expect(scheduled.pendingDefaultAdmin).toMatchObject({ account: manager, acceptSchedule: "1800000900" });
+
+    const accepted = replay([adminScheduled(manager), roleGranted(block, DEFAULT_ADMIN_ROLE, manager, next())]);
+    expect(accepted.pendingDefaultAdmin).toBeNull();
+
+    const canceled = replay([adminScheduled(manager), adminCanceled()]);
+    expect(canceled.pendingDefaultAdmin).toBeNull();
+    expect(canceled.failureCode).toBeNull();
+  });
+
+  it("clears a pending renunciation when the zero-address transfer completes as a revocation", () => {
+    const renounced = replay([
+      roleGranted(block, DEFAULT_ADMIN_ROLE, admin, next()),
+      adminScheduled(ZERO),
+      roleRevoked(DEFAULT_ADMIN_ROLE, admin),
+    ]);
+    expect(renounced.pendingDefaultAdmin).toBeNull();
+    expect(renounced.failureCode).toBeNull();
+  });
+
+  it("refuses cancelling a default-admin transfer or delay change that was never scheduled", () => {
+    failsWith("DEFAULT_ADMIN_TRANSFER_CANCEL_WITHOUT_PENDING", [adminCanceled()]);
+    failsWith("DEFAULT_ADMIN_TRANSFER_CANCEL_WITHOUT_PENDING", [adminScheduled(manager), adminCanceled(), adminCanceled()]);
+    failsWith("DEFAULT_ADMIN_DELAY_CANCEL_WITHOUT_PENDING", [delayCanceled()]);
+  });
+
+  it("tracks a scheduled default-admin delay change and clears it on cancellation", () => {
+    const scheduled = replay([delayScheduled()]);
+    expect(scheduled.pendingDefaultAdminDelay).toMatchObject({ delay: "86400", effectSchedule: "1800086400" });
+    const canceled = replay([delayScheduled(), delayCanceled()]);
+    expect(canceled.pendingDefaultAdminDelay).toBeNull();
+    expect(canceled.failureCode).toBeNull();
+  });
+
+  it("stops replaying at the first impossible event rather than compounding the damage", () => {
+    const snapshot = replay([unpausedLog(), epochAdded(block, 1, authorizer, next()), pausedLog()]);
+    expect(snapshot.failureCode).toBe("UNPAUSE_WHILE_RUNNING");
+    expect(snapshot.currentAuthorizerEpoch).toBeNull();
+    expect(snapshot.paused).toBe(false);
   });
 });

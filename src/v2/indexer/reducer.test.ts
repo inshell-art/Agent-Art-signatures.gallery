@@ -15,7 +15,12 @@ import {
   AUTHORIZATION_REVOKED_TOPIC,
   AUTHORIZER_EPOCH_ADDED_TOPIC,
   AUTHORIZER_EPOCH_REVOKED_TOPIC,
+  DEFAULT_ADMIN_DELAY_CHANGE_SCHEDULED_TOPIC,
+  DEFAULT_ADMIN_TRANSFER_SCHEDULED_TOPIC,
   ERC721_TRANSFER_TOPIC,
+  PAUSED_TOPIC,
+  ROLE_ADMIN_CHANGED_TOPIC,
+  ROLE_GRANTED_TOPIC,
   SIGNATURE_MINTED_TOPIC,
   ZERO_ADDRESS,
 } from "./topics.js";
@@ -642,5 +647,109 @@ describe("restartable V2 chain indexer reducer", () => {
     broken[1].parentHash = h("not-parent");
     expect(() => applyScanBatch(state, scan(broken))).toThrow(/parent-linked/);
     expect(state).toEqual(before);
+  });
+});
+
+describe("scan batch input validation", () => {
+  const fresh = () => createIndexerState(config);
+  const headers = chain("main", 100, 102);
+
+  it("refuses an empty batch rather than treating it as a scanned range", () => {
+    expect(() => applyScanBatch(fresh(), scan([]))).toThrow(/at least one header/);
+  });
+
+  it("refuses headers that start before the configured deployment block", () => {
+    expect(() => applyScanBatch(fresh(), scan(chain("early", 98, 99)))).toThrow(/before the configured deployment block/);
+  });
+
+  it("refuses headers that are not ascending and contiguous", () => {
+    expect(() => applyScanBatch(fresh(), scan([headers[0]!, headers[2]!]))).toThrow(/ascending and contiguous/);
+    expect(() => applyScanBatch(fresh(), scan([headers[1]!, headers[0]!]))).toThrow(/ascending and contiguous/);
+    expect(() => applyScanBatch(fresh(), scan([headers[0]!, headers[0]!]))).toThrow(/ascending and contiguous/);
+  });
+
+  it("refuses headers whose parent hashes do not link them", () => {
+    const orphan: ChainHeader = { ...headers[1]!, parentHash: h("some other block") };
+    expect(() => applyScanBatch(fresh(), scan([headers[0]!, orphan]))).toThrow(/not parent-linked/);
+  });
+
+  it("refuses a header whose numbers or hashes are not canonical", () => {
+    for (const broken of [
+      { blockNumber: "0x64" }, { blockNumber: "" }, { blockNumber: "-1" }, { blockNumber: "100.0" },
+      { blockTimestamp: "later" },
+      { blockHash: "0x1234" }, { blockHash: h("ok").toUpperCase() as Hex },
+      { parentHash: "not-a-hash" },
+    ]) {
+      expect(() => applyScanBatch(fresh(), scan([{ ...headers[0]!, ...broken } as ChainHeader])), JSON.stringify(broken)).toThrow();
+    }
+  });
+});
+
+describe("control log envelope validation", () => {
+  const headers = chain("main", 100, 100);
+  const block = headers[0]!;
+  const account = "0x4444444444444444444444444444444444444444" as Hex;
+  const role = h("PAUSER_ROLE");
+
+  const envelope = (topic0: Hex) => ({
+    chainId: config.chainId,
+    address: config.contract,
+    abiVersion: config.abiVersion,
+    blockNumber: block.blockNumber,
+    blockHash: block.blockHash,
+    txHash: h("control tx"),
+    transactionIndex: 0,
+    logIndex: 0,
+    topic0,
+  });
+  const apply = (log: unknown) => applyScanBatch(createIndexerState(config), scan(headers, [log as CandidateContractLog]));
+
+  it("accepts every well-formed governance log this contract can emit", () => {
+    const logs: ContractControlLog[] = [
+      { ...envelope(ROLE_GRANTED_TOPIC), kind: "role_granted", role, account, sender: account } as ContractControlLog,
+      { ...envelope(ROLE_ADMIN_CHANGED_TOPIC), kind: "role_admin_changed", role, previousAdminRole: h("a"), newAdminRole: h("b") } as ContractControlLog,
+      { ...envelope(PAUSED_TOPIC), kind: "paused", account } as ContractControlLog,
+      { ...envelope(DEFAULT_ADMIN_TRANSFER_SCHEDULED_TOPIC), kind: "default_admin_transfer_scheduled", newAdmin: account, acceptSchedule: "1800000900" } as ContractControlLog,
+      { ...envelope(DEFAULT_ADMIN_DELAY_CHANGE_SCHEDULED_TOPIC), kind: "default_admin_delay_change_scheduled", newDelay: "86400", effectSchedule: "1800086400" } as ContractControlLog,
+    ];
+    for (const [index, log] of logs.entries()) {
+      expect(() => apply({ ...log, logIndex: index }), log.kind).not.toThrow();
+    }
+  });
+
+  it("refuses an authorizer epoch outside uint32 or a zero-address authorizer field", () => {
+    const added = { ...envelope(AUTHORIZER_EPOCH_ADDED_TOPIC), kind: "authorizer_epoch_added", authorizer };
+    expect(() => apply({ ...added, epoch: 0x1_0000_0000 })).toThrow(/uint32/);
+    expect(() => apply({ ...added, epoch: -1 })).toThrow();
+    expect(() => apply({ ...added, epoch: 1.5 })).toThrow();
+    expect(() => apply({ ...added, epoch: 1, authorizer: "0xnope" })).toThrow();
+    expect(() => apply({ ...envelope(AUTHORIZER_EPOCH_REVOKED_TOPIC), kind: "authorizer_epoch_revoked", epoch: 0x1_0000_0000, authorizer })).toThrow(/uint32/);
+  });
+
+  it("refuses governance logs whose role, account, or schedule fields are malformed", () => {
+    expect(() => apply({ ...envelope(ROLE_GRANTED_TOPIC), kind: "role_granted", role: "0x12", account, sender: account })).toThrow();
+    expect(() => apply({ ...envelope(ROLE_GRANTED_TOPIC), kind: "role_granted", role, account: "0x12", sender: account })).toThrow();
+    expect(() => apply({ ...envelope(ROLE_GRANTED_TOPIC), kind: "role_granted", role, account, sender: "not-an-address" })).toThrow();
+    expect(() => apply({ ...envelope(ROLE_ADMIN_CHANGED_TOPIC), kind: "role_admin_changed", role, previousAdminRole: "0x1", newAdminRole: h("b") })).toThrow();
+    expect(() => apply({ ...envelope(PAUSED_TOPIC), kind: "paused", account: "0x" })).toThrow();
+    expect(() => apply({ ...envelope(AUTHORIZATION_REVOKED_TOPIC), kind: "authorization_revoked", authorizationId: "0xabc" })).toThrow();
+    expect(() => apply({ ...envelope(DEFAULT_ADMIN_TRANSFER_SCHEDULED_TOPIC), kind: "default_admin_transfer_scheduled", newAdmin: account, acceptSchedule: "soon" })).toThrow();
+    expect(() => apply({ ...envelope(DEFAULT_ADMIN_DELAY_CHANGE_SCHEDULED_TOPIC), kind: "default_admin_delay_change_scheduled", newDelay: "86400", effectSchedule: "-1" })).toThrow();
+  });
+
+  it("refuses unsafe transaction and log positions", () => {
+    const paused = { ...envelope(PAUSED_TOPIC), kind: "paused", account };
+    for (const position of [{ transactionIndex: -1 }, { transactionIndex: 1.5 }, { logIndex: -1 }, { logIndex: Number.MAX_SAFE_INTEGER + 2 }]) {
+      expect(() => apply({ ...paused, ...position }), JSON.stringify(position)).toThrow();
+    }
+  });
+
+  it("ignores logs from another chain, contract, or topic instead of validating them", () => {
+    const paused = { ...envelope(PAUSED_TOPIC), kind: "paused", account: "0x" };
+    // Out-of-scope logs are filtered before validation, so a malformed field
+    // in one cannot fail the batch.
+    expect(() => apply({ ...paused, chainId: "1" })).not.toThrow();
+    expect(() => apply({ ...paused, address: "0x9999999999999999999999999999999999999999" })).not.toThrow();
+    expect(() => apply({ ...paused, topic0: h("some other event") })).not.toThrow();
   });
 });

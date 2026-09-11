@@ -627,3 +627,188 @@ describe("input and state-machine fail-closed behavior", () => {
     expect(coordinator.listReferences()).toEqual([]);
   });
 });
+
+describe("metadata reservation conflicts", () => {
+  const signatureId = "sg1_reservation";
+  const deploymentId = "sepolia-canonical";
+
+  const setup = () => {
+    const clock = new ManualClock();
+    const coordinator = new MemoryContentCoordinator({ now: clock.now });
+    coordinator.registerSignature(signatureId);
+    const plan = metadataPlan(signatureId, deploymentId);
+    const reserve = (owner: string, ttlMs = 5_000, references = plan) =>
+      coordinator.reserveMetadata({ signatureId, deploymentId, owner, ttlMs, requiredReferences: references });
+    return { clock, coordinator, plan, reserve };
+  };
+
+  it("returns the same live reservation to the worker that already owns it", () => {
+    const { reserve } = setup();
+    const first = reserve("worker-a");
+    const again = reserve("worker-a");
+    expect(again.owner).toBe(first.owner);
+    expect(again.fencingToken).toBe(first.fencingToken);
+  });
+
+  it("refuses a second worker while the reservation lease is still live", () => {
+    const { reserve } = setup();
+    reserve("worker-a");
+    expect(errorCode(() => reserve("worker-b"))).toBe("METADATA_LEASE_HELD");
+  });
+
+  it("hands the reservation to a new worker once the lease expires, with a higher fencing token", () => {
+    const { clock, reserve } = setup();
+    const first = reserve("worker-a", 1_000);
+    clock.advance(1_001);
+    const second = reserve("worker-b", 1_000);
+    expect(second.owner).toBe("worker-b");
+    expect(second.fencingToken).toBeGreaterThan(first.fencingToken);
+  });
+
+  it("refuses a reservation that would change the immutable object identities", () => {
+    const { coordinator, reserve } = setup();
+    reserve("worker-a");
+    const different = metadataPlan(signatureId, deploymentId, "bafy-other-shared-svg");
+    expect(errorCode(() => coordinator.reserveMetadata({
+      signatureId, deploymentId, owner: "worker-a", ttlMs: 5_000, requiredReferences: different,
+    }))).toBe("METADATA_EXISTS");
+  });
+
+  it("fences a reservation whose signature control has moved on", () => {
+    const { coordinator, reserve } = setup();
+    reserve("worker-a");
+    coordinator.blockSignature(signatureId, "moderation hold");
+    expect(errorCode(() => reserve("worker-a"))).toBeTruthy();
+  });
+
+  it("refuses to re-lease metadata that is already verified or frozen", () => {
+    const clock = new ManualClock();
+    const coordinator = new MemoryContentCoordinator({ now: clock.now });
+    const { handle, plan } = reserveAndPublish(coordinator, signatureId, deploymentId);
+    coordinator.markMetadataVerified(handle);
+    const reserve = (owner: string) => coordinator.reserveMetadata({
+      signatureId, deploymentId, owner, ttlMs: 5_000, requiredReferences: plan,
+    });
+    expect(errorCode(() => reserve(handle.owner))).toBe("METADATA_NOT_VERIFIED");
+    coordinator.freezeMetadata(signatureId, deploymentId, coordinator.getControl(signatureId)!.version);
+    expect(errorCode(() => reserve(handle.owner))).toBe("METADATA_FROZEN");
+  });
+
+  it("refuses to recreate a terminal metadata preparation", () => {
+    const clock = new ManualClock();
+    const coordinator = new MemoryContentCoordinator({ now: clock.now });
+    coordinator.registerSignature(signatureId);
+    const plan = metadataPlan(signatureId, deploymentId);
+    const handle = coordinator.reserveMetadata({ signatureId, deploymentId, owner: "worker-a", ttlMs: 5_000, requiredReferences: plan });
+    coordinator.beginMetadataPublishing(handle);
+    coordinator.beginErasure(signatureId, "claim withdrawn");
+    expect(errorCode(() => coordinator.reserveMetadata({
+      signatureId, deploymentId, owner: "worker-a", ttlMs: 5_000, requiredReferences: plan,
+    }))).toBeTruthy();
+  });
+
+  it("validates its own reservation inputs before touching any control", () => {
+    const { coordinator, plan } = setup();
+    const bad = (overrides: Record<string, unknown>) => errorCode(() => coordinator.reserveMetadata({
+      signatureId, deploymentId, owner: "worker-a", ttlMs: 5_000, requiredReferences: plan, ...overrides,
+    } as Parameters<MemoryContentCoordinator["reserveMetadata"]>[0]));
+    expect(bad({ signatureId: "" })).toBeTruthy();
+    expect(bad({ deploymentId: "" })).toBeTruthy();
+    expect(bad({ owner: "" })).toBeTruthy();
+    expect(bad({ ttlMs: 0 })).toBeTruthy();
+    expect(bad({ ttlMs: -1 })).toBeTruthy();
+  });
+});
+
+describe("writer lease expiry and deletion fences", () => {
+  const signatureId = "sg1_fences";
+
+  const coordinatorWithObject = () => {
+    const clock = new ManualClock();
+    const coordinator = new MemoryContentCoordinator({ now: clock.now });
+    const control = coordinator.registerSignature(signatureId);
+    const reference = v1Reference(signatureId);
+    writeAndCommit(coordinator, reference, { kind: "v1", signatureId, controlVersion: control.version });
+    return { clock, coordinator, reference };
+  };
+
+  it("expires only the writing leases whose deadline has passed", () => {
+    const clock = new ManualClock();
+    const coordinator = new MemoryContentCoordinator({ now: clock.now });
+    const control = coordinator.registerSignature(signatureId);
+    const authority: WriteAuthority = { kind: "v1", signatureId, controlVersion: control.version };
+    const short = coordinator.beginWrite({ owner: "short", purpose: "v1_svg", ttlMs: 1_000, reference: v1Reference(signatureId, "sha256/a.svg"), authority });
+    const long = coordinator.beginWrite({ owner: "long", purpose: "v1_svg", ttlMs: 10_000, reference: v1Reference(signatureId, "sha256/b.svg"), authority });
+
+    expect(coordinator.expireWriterLeases()).toBe(0);
+    clock.advance(1_001);
+    expect(coordinator.expireWriterLeases()).toBe(1);
+    expect(coordinator.getLease(short.leaseId)?.state).toBe("expired");
+    expect(coordinator.getLease(long.leaseId)?.state).toBe("writing");
+    // Expiry is not repeated for a lease already marked.
+    expect(coordinator.expireWriterLeases()).toBe(0);
+  });
+
+  it("refuses to begin deletion while a durable reference remains", () => {
+    const { coordinator, reference } = coordinatorWithObject();
+    expect(errorCode(() => coordinator.beginGc(reference.storageTargetId, reference.objectKey, 1_000)))
+      .toBe("REFERENCES_REMAIN");
+  });
+
+  it("refuses to begin deletion while any writer lease is still live", () => {
+    const { coordinator, reference } = coordinatorWithObject();
+    const control = coordinator.getControl(signatureId)!;
+    coordinator.releaseReference(reference);
+    coordinator.beginWrite({
+      owner: "late", purpose: "v1_svg", ttlMs: 10_000, reference,
+      authority: { kind: "v1", signatureId, controlVersion: control.version },
+    });
+    expect(errorCode(() => coordinator.beginGc(reference.storageTargetId, reference.objectKey, 1_000)))
+      .toBe("LIVE_WRITER_EXISTS");
+  });
+
+  it("holds external deletion and completion until the grace period elapses", () => {
+    const { clock, coordinator, reference } = coordinatorWithObject();
+    coordinator.releaseReference(reference);
+    const fence = coordinator.beginGc(reference.storageTargetId, reference.objectKey, 5_000);
+    expect(errorCode(() => coordinator.deleteExternalForGc(fence))).toBe("GC_GRACE_ACTIVE");
+    expect(errorCode(() => coordinator.completeGc(fence))).toBe("GC_GRACE_ACTIVE");
+    clock.advance(5_000);
+    coordinator.deleteExternalForGc(fence);
+    expect(coordinator.completeGc(fence).state).toBe("absent");
+  });
+
+  it("refuses to complete deletion while the external object is still present", () => {
+    const { clock, coordinator, reference } = coordinatorWithObject();
+    coordinator.releaseReference(reference);
+    const fence = coordinator.beginGc(reference.storageTargetId, reference.objectKey, 1_000);
+    clock.advance(1_000);
+    expect(errorCode(() => coordinator.completeGc(fence))).toBe("OBJECT_STILL_PRESENT");
+  });
+
+  it("returns the same fence when deletion is already pending", () => {
+    const { coordinator, reference } = coordinatorWithObject();
+    coordinator.releaseReference(reference);
+    const first = coordinator.beginGc(reference.storageTargetId, reference.objectKey, 1_000);
+    const again = coordinator.beginGc(reference.storageTargetId, reference.objectKey, 1_000);
+    expect(again.fencingToken).toBe(first.fencingToken);
+    expect(again.deleteAfter).toBe(first.deleteAfter);
+  });
+
+  it("validates deletion inputs before creating any fence", () => {
+    const { coordinator, reference } = coordinatorWithObject();
+    expect(errorCode(() => coordinator.beginGc("", reference.objectKey, 1_000))).toBeTruthy();
+    expect(errorCode(() => coordinator.beginGc(reference.storageTargetId, "", 1_000))).toBeTruthy();
+    expect(errorCode(() => coordinator.beginGc(reference.storageTargetId, reference.objectKey, 0))).toBeTruthy();
+  });
+
+  it("reports no guard for an object that was never written", () => {
+    const clock = new ManualClock();
+    const coordinator = new MemoryContentCoordinator({ now: clock.now });
+    expect(coordinator.getGuard("v1-primary", "sha256/never.svg")).toBeNull();
+    expect(coordinator.getLease("lease-that-does-not-exist")).toBeNull();
+    expect(coordinator.getControl("sg1_unknown")).toBeNull();
+    expect(coordinator.hasReference(v1Reference("sg1_unknown"))).toBe(false);
+    expect(coordinator.releaseReference(v1Reference("sg1_unknown"))).toBe(false);
+  });
+});
