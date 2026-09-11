@@ -31,9 +31,9 @@ export default defineConfig({
       // A ratchet, not a target: raise these as coverage improves, never lower
       // them to make a change pass.
       thresholds: {
-        statements: 90,
-        branches: 85,
-        functions: 95,
+        statements: 93,
+        branches: 87,
+        functions: 97,
       },
     },
   },
