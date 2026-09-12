@@ -852,7 +852,7 @@ describe("fixture account and claim flow", () => {
       expect(html).not.toContain("data-fixture-environment");
       expect(html).not.toContain('class="fixture-banner"');
       expect(html).toContain('<meta name="robots" content="noindex">');
-      expect(html).toContain('<div class="footer-credit">Signatures Gallery by <a class="footer-agent" href="https://x.com/AgentArt_AA" target="_blank" rel="noopener noreferrer" aria-label="Agent Art on X (opens in a new tab)"><svg class="footer-x-icon"');
+      expect(html).toContain('<div class="footer-credit">by <a class="footer-agent" href="https://x.com/AgentArt_AA" target="_blank" rel="noopener noreferrer" aria-label="Agent Art on X (opens in a new tab)"><svg class="footer-x-icon"');
       expect(html).toContain('class="footer-x-icon"');
       expect(html).toContain('class="footer-about" href="/about"');
       if (disclosure) expect(html).toContain(disclosure);

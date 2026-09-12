@@ -9,7 +9,7 @@ describe("footer and About the work", () => {
     ["about", () => aboutPage(false)],
   ] as const)("groups attribution and adds one about link on %s", (_name, render) => {
     const footer = render().match(/<footer\b[^>]*>[\s\S]*?<\/footer>/)![0];
-    expect(footer).toContain('<div class="footer-credit">Signatures Gallery by <a class="footer-agent" href="https://x.com/AgentArt_AA" target="_blank" rel="noopener noreferrer" aria-label="Agent Art on X (opens in a new tab)"><svg class="footer-x-icon"');
+    expect(footer).toContain('<div class="footer-credit">by <a class="footer-agent" href="https://x.com/AgentArt_AA" target="_blank" rel="noopener noreferrer" aria-label="Agent Art on X (opens in a new tab)"><svg class="footer-x-icon"');
     expect(footer).not.toContain("Signatures Gallery ·");
     const xIcon = footer.match(/<svg class="footer-x-icon"[\s\S]*?<\/svg>/)![0];
     expect(footer.match(/class="footer-x-icon"/g)).toHaveLength(1);
