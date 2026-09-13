@@ -1,6 +1,8 @@
 # signatures.gallery — Current Agent Handoff
 
-## Checkpoint: 2026-09-11
+## Pre-refactor checkpoint: 2026-09-13
+
+Checkpoint tag: `checkpoint-pre-refactor-2026-09-13`, on `main`. The implementation was already committed through `1ced91c`; this checkpoint refreshes the handoff and local runbook without changing application behavior. The upcoming large refactor is a separate task, not part of this checkpoint.
 
 The current implementation includes V1 claims and local V2 minting. **The historical V1-only specification below is archived context, not the next agent's instructions.** In particular, its decimal seeds, lowercase rendering, separate claim-confirmation flow, and “V2 TBD” restrictions are superseded.
 
@@ -16,14 +18,18 @@ Start with [README.md](README.md), [authentication policy](docs/authentication-p
 - This deliberately accepts a security trade-off: a stolen valid app session can attempt to mint to an attacker-controlled wallet. Wallet proof proves that wallet, not the legitimate user's presence. Do not describe this as equivalent to fresh X authentication.
 - Withdrawal remains separately protected by action-bound X confirmation, exact claim-instance checks, collapsed warning/disclosure, explicit final confirmation, and mint-history guards. Do not remove these when editing mint login behavior.
 - The account panel is X-only; its dot and “My Collection” heading both link directly to `/me`. Wallet controls belong to mint pages. Mint tooltips distinguish new, already-verified, and already-issued mint states. Developer fixture controls/notes stay in the distinct DEV overlay.
+- `/signatures/{id}/mint` keeps wallet connection, exact-work review, recipient changes, network, cost, and publication consent on one page. Connecting alone is not proof; changing the recipient clears that row and requires a fresh proof. Authorization is available only after proof, and live/unresolved authority still blocks recipient changes. Only sign-in, wrong-claimant, and unavailable/pending states need a separate gate.
+- The footer credit is now simply “by Agent Art”; retain the linked attribution without restoring the redundant site name.
 
-### Verification at handoff
+### Verification at this checkpoint
 
-- `npm test`: 1,598 tests across 82 files passed.
+- `npm run test:coverage`: 1,793 tests across 85 files passed. Measured coverage is 93.76% statements/lines, 88.32% branches, and 97.25% functions. The configured ratchet is 93% statements, 87% branches, and 97% functions; fixtures and operational entrypoints are excluded, so these are not whole-repository coverage figures. Do not lower the ratchet to accommodate the refactor.
 - `npm run typecheck`, `npm run build`, renderer lock, and `git diff --check` passed.
+- `npm run test:contract`: 38 tests passed. Deployment manifest validation and all nine manifest-role tests passed.
 - `npm run test:postgres:local` passed on a separate disposable PostgreSQL 16.15 cluster, including migration 005 and the retained withdrawal/artwork/repository checks; the user's database was not used.
-- Desktop and 390px mobile browser rehearsal: one initial simulator sign-in/claim, direct wallet setup, review, recipient change, and return to canonical review without another OAuth round trip. Consent starts unchecked; the tooltip fits; no horizontal overflow or failed browser requests.
-- The latest UX validation used isolated in-memory fixtures, not the user's real X identity, durable claims, or a real transaction. Unit/API tests cover missing/expired/wrong sessions, CSRF, replay, changed claim/recipient, superseded proofs, async races, and unresolved authority.
+- The initial sandboxed coverage attempt could not open local test listeners or inspect processes. The rerun with those permissions allowed passed; this was not a product-code fix.
+- Historical browser evidence from the 2026-09-11 handoff: desktop and 390px mobile rehearsal covered one initial simulator sign-in/claim, direct wallet setup, review, recipient change, and return to canonical review without another OAuth round trip. Consent started unchecked; the tooltip fit; no horizontal overflow or failed browser requests. That evidence predates the one-page mint refinement and is not a new visual-validation claim for this checkpoint.
+- No user identity, durable claim, deployment, or transaction was changed during this checkpoint. Unit/API tests cover missing/expired/wrong sessions, CSRF, replay, changed claim/recipient, superseded proofs, async races, and unresolved authority.
 - There is currently no checked-in `.github/workflows` pipeline. Do not confuse local test success with a hosted CI or production-readiness result.
 
 ### Local runtime and data safety
@@ -31,6 +37,7 @@ Start with [README.md](README.md), [authentication policy](docs/authentication-p
 - User-facing app: `http://127.0.0.1:3000`, started with `npm run local:serve:x` (real X OAuth + repo-owned Anvil).
 - Separate disposable fixture app: `http://localhost:3001`; it uses the X simulator and in-memory records. Its data is not durable or production provenance.
 - Existing durable rehearsal uses PostgreSQL on port 55432 and Anvil chain 31337 on port 18545. Consult ignored `.local/rehearsal/runtime.json` and `npm run local:status`; do not assume old port 8545. Read-only checks showed both services healthy after a transient RPC interruption.
+- Anvil saves current state every 60 seconds and on graceful shutdown, without `--preserve-historical-states`; that flag caused unbounded snapshot growth and RPC stalls. Revalidate historical reads after restart and fail closed on missing evidence. This checkpoint did not restart or reset the running rehearsal.
 - `.env.local` contains real OAuth credentials and is ignored. Never commit, print, copy into handoff text, or transmit its values. `.local/`, logs, and generated builds also remain ignored.
 - Keep existing claims, artifacts, wallet proofs, contract deployment, and chain history. No reset/reseed/redeployment or public-network transaction is authorized by this handoff. App-only restart clears login sessions, not durable state. Stop the existing app writer and wait for exit before restarting; the PostgreSQL advisory lock prevents simultaneous writers.
 - Additive migration `src/store/migrations/005_action_auth_policy.sql` removes only the two obsolete wallet-proof constraints tied to X authentication age. Keep applied migration 002 byte-identical; preserve SIWE chronology/deadlines and authorization/binding safety constraints. The local entrypoints apply migration 005.
@@ -38,7 +45,7 @@ Start with [README.md](README.md), [authentication policy](docs/authentication-p
 
 ### Next-agent boundary
 
-Continue from `main` after fetching the pushed checkpoint; check `git status` before editing. The user will choose the next task/agent. No further task, deployment, release tag, or remote CI configuration is implied. Remaining production/Sepolia work and external approval gates are listed in [V2 implementation status](docs/v2-implementation-status.md); production startup is intentionally refused. Durable production sessions/repositories, independent RPC/finality evidence, IPFS retention, signer infrastructure, audits, and explicit broadcast approval remain outstanding.
+Continue from `main` after fetching the pushed checkpoint; use `checkpoint-pre-refactor-2026-09-13` as the fixed comparison point and check `git status` before editing. Only `main` existed locally and on the remote at checkpoint inspection; there was no outstanding branch merge or branch deletion. Two empty untracked directories (`src/assets` and `src/verification`) were removed; ignored credentials, generated output, and local rehearsal data were preserved. The user will define the upcoming refactor. No deployment or remote CI configuration is implied. Remaining production/Sepolia work and external approval gates are listed in [V2 implementation status](docs/v2-implementation-status.md); production startup is intentionally refused. Durable production sessions/repositories, independent RPC/finality evidence, IPFS retention, signer infrastructure, audits, and explicit broadcast approval remain outstanding.
 
 ---
 
