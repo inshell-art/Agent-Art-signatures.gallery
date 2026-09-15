@@ -5,6 +5,9 @@ import { defineConfig } from "vitest/config";
 // Counting them here would report the application as less covered than it is.
 const OPERATIONAL_ENTRYPOINTS = [
   "src/main.ts",
+  "src/legacyMain.ts",
+  "src/openMint/main.ts",
+  "src/openMint/localChain.ts",
   "src/local/rehearsalCli.ts",
   "src/local/rehearsalServer.ts",
   "src/local/interactiveRehearsalTest.ts",

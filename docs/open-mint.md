@@ -1,0 +1,83 @@
+# Open mint: architecture and handoff
+
+## Trust boundary
+
+`src/main.ts` starts `src/openMint/main.ts`. The previous application is preserved as `src/legacyMain.ts` and the explicit `local:serve:*` commands. New sessions, assessment storage, artifacts and contracts are separate. No X OAuth credentials or claims are consulted.
+
+Preview GETs accept a handle and one of the 16 four-letter MBTI types. They render without research, canonical assessment storage, reservations or mint authority; users may edit these URLs freely. Consumer Grok's answer is a playful input, not evidence for the backend.
+
+Each preview links to **View all 16 variations** at `/s/<handle>/variations`. This walletless index preserves handle capitalization, renders all 16 MBTI previews in a four-column grid (two columns on small screens), and links each card back to its individual preview. It is not My Collection and does not start an assessment or mint.
+
+The wallet-gated mint preparation schema is exactly `{handle}`. Extra fields, including MBTI, seed, model, instructions and provider responses, are rejected. Only a fresh signed-wallet session and explicit Mint & reveal action may start the separate xAI Responses request with native X Search and a fixed instruction/schema. Validation requires the expected handle/model, completed native search, X citation evidence, successful completion and exactly one of the 16 MBTI types. There is no public completion callback. The key never goes into the prompt, browser, URL, metadata or contract.
+
+This is **our backend's attestation**, not a cryptographic signature from xAI. A compromised backend/signer can forge it. Profile/post content can still influence the model despite explicit untrusted-content instructions. The design prevents users from supplying an authoritative result; it does not prove psychological truth, prompt-injection immunity, or intrinsic model determinism. Immutable canonical storage supplies repeatability after the first successful result.
+
+## Identity and rendering
+
+`handleKey = keccak256(abi.encode("signatures.gallery/open-handle/v1", lowercaseHandle))`.
+
+The new non-upgradeable ERC-721 permits one mint per handle key, with no burn/reset/admin-mint function. MBTI, assessment, recipient and renderer do not open another mint slot. Tokens are transferable; collections follow current chain ownership, not X-account ownership. Renames and reassignment of X handles remain unresolved; numeric account IDs would be a deliberate future protocol change.
+
+The protocol keeps two handle forms. Request links and artwork input preserve the requested spelling after removing a leading `@`: `@Alice_Bob_Key` becomes `Alice_Bob_Key`. Only the research lookup and uniqueness key use `alice_bob_key`. The first saved artwork freezes its exact rendering spelling; later requests with different capitalization reuse that same artifact and assessment, not a new mint slot. Existing artifact bytes and commitments are never rewritten. Older records without a separate rendering spelling continue to use the lowercase input they originally recorded.
+
+This separation does not modify the existing case-sensitive renderer. The immutable `mbti-seed-v1` adapter is:
+
+| MBTI | Seed | MBTI | Seed |
+| --- | ---: | --- | ---: |
+| INTJ | 1 | ISTJ | 53 |
+| INTP | 7 | ISFJ | 60 |
+| ENTJ | 14 | ESTJ | 67 |
+| ENTP | 20 | ESFJ | 73 |
+| INFJ | 27 | ISTP | 80 |
+| INFP | 34 | ISFP | 86 |
+| ENFJ | 40 | ESTP | 93 |
+| ENFP | 47 | ESFP | 100 |
+
+Assessment ID, provider response ID, model, policy, citations, time, mapping and renderer are committed alongside SVG/PNG/metadata hashes. Future renderer versions require explicit adapters and preserved existing bytes. Do not modify files protected by `renderer-lock.json`.
+
+## Flow and API
+
+1. Private-Grok handoff asks for a handle, then asks Grok **in that consumer chat** to assess the MBTI and return `/s/<handle>/<MBTI>`. Preserve capitalization and remove only the leading `@`. The page renders one selectable preview. No API credits are spent by this site.
+2. Home shows minted tokens and links to `/mint`. A preview's **Mint for this handle** links to `/mint?handle=<handle>` with no MBTI, score or chat content. The user can edit the handle.
+3. `POST /api/wallet/challenge {address}` and `/api/wallet/verify {challengeId,signature}` prove the wallet before mint preparation. Signed text covers collection access and preparing a mint, not a transaction. Proof lasts ten minutes; a challenge is one-use. Connecting alone starts no assessment.
+4. Explicit **Mint & reveal** posts `{handle}` to `/api/assessments`. A random 256-bit code is paired to the session and wallet. Chain eligibility is checked before paid work. The job performs one independently controlled assessment or reuses the saved canonical one. Durable admission records prevent automatic retry of uncertain uncached provider calls; stale pending requests cannot bypass the budget.
+5. Private `/mint/<code>` displays progress without the final MBTI, image or provenance. Its 15-minute request window does not expire the canonical assessment. Other sessions cannot poll or take over it. The original explicit intent continues to wallet approval when ready; reload/cancel requires an explicit **Continue mint** rather than another assessment. A stale wallet proof can be renewed for that same request.
+6. `POST /api/mints/authorize {code,consent:true}` reads only trusted saved assessments/artifacts, checks the bound wallet and chain state, then durably reserves the handle before signing. Retries reuse the exact recipient/nonce/voucher. Other requests cannot obtain an overlapping reservation. Expiry releases a reservation only after chain time passes its deadline and the handle remains unminted.
+7. Explicit wallet approval sends a zero-value transaction. The contract verifies EIP-712 authority, recipient, commitments, deadline, nonce and uniqueness. The prepared artwork is committed **before** the transaction; hiding it is a UI reveal, not cryptographic secrecy or post-mint randomness. Users are told the final result may differ from preview and they pay gas.
+8. `/api/mints/report` accepts only a transaction hint. `/api/mints/status/<code>`, the gallery and `/me` use matching canonical logs, immutable token provenance/URI and current owner. Only after confirmation does the client redirect to `/signatures/<handle>` and reveal the artwork. Two local block confirmations are not represented as public-network finality.
+
+Public pages: `/`, `/s/<handle>/<MBTI>`, `/mint`, minted-only `/signatures/<handle>`, `/me`, `/about`. Bare `/s/<handle>` redirects to the prefilled mint form; old opaque-code preview URLs no longer expose trusted results. `/mint/<code>` is session-private. Preview SVGs are `/preview/<handle>/<MBTI>.svg`, independent of mint artifacts. Content-addressed assets remain `/artifacts/<sha256>.(svg|png|json)`; they are not a cryptographic reveal vault. No X-login, claim or withdrawal endpoint exists in the new server. All mutations require an exact Origin, session and CSRF; all JSON schemas reject unexpected fields.
+
+## Local operation
+
+`npm run dev:fixture` runs explicit simulated assessments and real local test transactions. `npm run dev:open` needs `XAI_API_KEY` in ignored `.env.local`; existing X OAuth keys are unrelated. No real-provider failure silently falls back to fixtures. Default model: `grok-4.6`; native API response shapes are checked against xAI's documented Responses/X Search/structured-output contract.
+
+Real and fixture modes have separate directories under `.local/open-mint/` and default RPC ports 18546/18547. The launcher owns a dedicated Anvil process, refuses an occupied port, saves chain state and reuses its deployment. It never attaches to or resets the old 18545 rehearsal. Saved origin/mode/code/signer mismatches fail closed.
+
+Injected wallets must also match the exact node, not just the shared local chain ID 31337. `GET /api/wallet/context` supplies a fresh canonical block number/hash after checking the deployed runtime and authorizer. The browser checks that block through its wallet before sign-in, assessment preparation and mint submission. An optional validated `address` query adds the node's transaction nonce; no caller-controlled RPC URL is accepted. Missing or mismatched network evidence blocks submission.
+
+Mint authorization responses include that network context and an explicit Ethereum transaction nonce. This nonce is separate from the signed voucher's random replay-protection nonce. Before sending, the browser compares the trusted and wallet RPC nonces, simulates the exact call, rechecks the context, and passes the nonce explicitly to the wallet. Pending contiguous transactions block mint authorization rather than risk replacing them. Another transaction submitted while the wallet approval is open can still race; wallet approval remains required and no automatic replacement, nonce-gap filling or resubmission occurs.
+
+Local recovery: on 2026-09-15, the user-approved nonce-410 transaction `0x923db2169f8c85ef61304633474d0bb915ac4505b866e61c1e72176d5b64e22e` was removed from the isolated 18548 node after singleton-pool checks. A later attempt broadcast nonce 411 (`0xefcb67a2a38c87b9cdd4d038ff018ce4f5caa74643d32963d3abdb33430c0367`) despite the app's explicit-nonce guard. That second transaction was separately approved for removal and removed after repeating the same exact-target checks. The pool became empty and the sender's confirmed nonce remained 1. No balance, artifact, token, account nonce or wallet history was reset. Anvil v1.5.1's hash-specific drop misses nonce-gap entries; account-scoped removal was used only after proving the approved transaction was the sender's sole pool entry. Never use that operation if another transaction for the account is present without resolving its scope first.
+
+Passing an explicit nonce is a request to the wallet, not a guarantee about the signed transaction. A pending nonce gap can also be invisible to `eth_getTransactionCount`: both `latest` and `pending` returned 1 while nonce 411 was queued. Do not equate a returned hash or a successful simulation with a mined transaction. Do not fill nonce gaps, replace transactions, clear wallet history, or reset the chain automatically.
+
+The browser now inspects the submitted transaction on the fingerprint-verified wallet network, immediately after submission and during confirmation polling. It compares the broadcast nonce with the requested nonce and the chain's latest/pending counts. A gap produces an explicit warning, not a generic wait. The hash, wallet and submission time survive a page reload, and the duplicate-submit guard stays active. After 30 seconds, still-pending and missing-transaction cases get distinct feedback; absence alone never proves a dropped transaction or enables another mint. Read-only inspection and report/status operations have eight-second deadlines, so a stalled wallet or hint-reporting endpoint cannot freeze future canonical polling; timed-out inspections cannot later change the page state. User signing/approval prompts are not subject to that timeout. Canonical backend confirmation remains the only reveal authority. A reverted receipt must match the transaction and canonical block before the client permits an explicit retry.
+
+For a Rabby custom-network retry, use the approval screen's **Advanced Settings → Nonce** to set the fresh nonce reported by the correct node, then **Confirm** and approve only the intended mint. At the above cleanup it was decimal **1**; recheck before a later attempt. [Rabby's custom-network approval code](https://github.com/RabbyHub/Rabby/blob/c9843a308b757229fd3baee47031a021a1169051/src/ui/views/Approval/components/SignTestnetTx/index.tsx#L255) otherwise recomputes ordinary transaction nonces from RPC and local history, even when the dapp supplied a nonce. Its [manual nonce control](https://github.com/RabbyHub/Rabby/blob/c9843a308b757229fd3baee47031a021a1169051/src/ui/views/Approval/components/SignAdvancedSettings.tsx#L253) opts out of that recomputation. This is verified against public source, not the user's installed extension version.
+
+Manual nonce selection fixes that transaction without erasing history. The optional Rabby reset of local nonce data/signature records is account-wide across chains; do not perform that broader cleanup without explicit informed approval. An RPC-port change alone does not isolate Rabby's history for an account using the same chain ID.
+
+App restarts invalidate in-memory wallet sessions: reconnect through `/mint?handle=<sameHandle>` to create a fresh request for the saved assessment. An earlier signed reservation must expire before a different session receives another voucher.
+
+Stop with SIGINT/SIGTERM to drain work, save chain state and release `writer.lock`. After a crash, first verify that the PID in that specific lock is no longer running; only then remove that lock. Never delete assessments, authorizations, deployment or chain state to work around a lock. Back up the whole namespace together. Process-local sessions intentionally expire on restart; new requests reuse canonical artwork.
+
+The daily assessment budget defaults to 25. Per-IP mutation limits and per-session active-request caps are local safeguards, not production abuse protection. Operational entrypoints are checked by actual isolated Anvil/browser rehearsal; business logic remains in the coverage ratchet.
+
+Wallet-guard validation (2026-09-15): the final HTTP-backed coverage run passes2,184 tests across98 files, including121 client lifecycle tests. Coverage remains94.23% lines/statements,88.82% branches and97.5% functions. Typecheck, build and renderer lock pass. Live context reads matched18548 and rejected the18545 block fingerprint; the recovered account returned nonce1 and an empty pool after restart. Isolated browser checks of actual page/client/CSS with simulated wallet data showed clear nonce-gap, missing-transaction and stalled-RPC feedback, disabled mint action, no horizontal overflow, zero signing calls and zero transaction submissions. The stalled-wallet case continued canonical polling. Updated client `open-mint-af13d531e7d6556c.js` is served on3003. Actual Rabby approval remains with the user; this repair did not mint any token or call paid Grok.
+
+Earlier flow validation (2026-09-15): fixture app on3003, isolated Anvil18548 and `.local/open-mint/preview-reveal-20260915/`; no paid xAI call. The updated `open:rehearsal` checks the preview/mint boundary and confirmed reveal. At that stage, full coverage with `OPEN_MINT_TEST_HTTP=1` passed2,083 tests; ordinary HTTP tests can also run in memory. Desktop/light preview and mobile/dark mint/revealed layouts were inspected without overflow. A DEV-wallet async-event bug found in the browser is fixed and regression-tested; repeating that exact click after restart was blocked by an intermittent browser approval-service capacity error. The main mint & reveal flow and persisted token after restart were observed successfully.
+
+## Production gates
+
+Startup rejects `NODE_ENV=production`. Current integration supports literal loopback Anvil 31337 only. Local metadata is immutable/content-addressed but not publicly pinned. Public deployment still needs durable public artifact publication, multi-instance storage/session/rate-limit adapters, paid-provider abuse controls, robust indexing/finality/recovery, deployment/role review and external security review. No public contract was deployed by this refactor.

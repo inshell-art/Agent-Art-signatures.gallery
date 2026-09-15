@@ -1,4 +1,37 @@
-# signatures.gallery V2
+# Signatures Gallery — open mint
+
+The default app separates **playful previews** from **wallet → independent Grok assessment → mint & reveal**. Anyone may mint any available handle. There is no X login, ownership claim, or claim withdrawal in this flow.
+
+- `/s/<handle>/<MBTI>` renders one freely editable preview, such as `/s/Alice_Bob_Key/ENFP`. Consumer Grok can choose the preview MBTI in the user's chat; this does not call the paid API or create an authoritative assessment.
+- `/mint` accepts **only a handle**, optionally prefilled by a preview. A fresh signed wallet proof and explicit **Mint & reveal** action are required before the backend starts its independent xAI/X Search run. Neither visiting nor connecting a wallet starts research.
+- The first successful assessment is saved and reused. Its MBTI maps through a separately versioned placeholder adapter to the unchanged, locked v1.0.0 renderer.
+- The new contract allows **one token per lowercase handle**, regardless of MBTI or renderer. This does not confer ownership of the X account. Handle renames/reassignment remain a known identity limitation.
+- Requested artwork spelling is preserved: `@Alice_Bob_Key` becomes `Alice_Bob_Key`, not `alice_bob_key`. Lowercase is used only for research lookup and uniqueness. The first saved artwork freezes its rendering spelling; later case variants reuse that artwork, and existing artifacts are not rewritten.
+- Private `/mint/<code>` requests last 15 minutes and are paired to the requesting browser session and wallet. The voucher binds the recipient, artwork, chain, contract, nonce and deadline. Price is zero; the wallet pays gas. Final artwork is revealed in the UI only after confirmed minting; home and `/me` show minted tokens only.
+- The final result can differ from the consumer-chat preview. This is a UI reveal, not cryptographic secrecy: the transaction binds an already prepared artifact. Cancelling or refreshing never asks Grok for a different result. Uncertain provider attempts are held for operator reconciliation, not automatically retried.
+
+## Run the new app
+
+```bash
+# Put XAI_API_KEY in ignored .env.local. Missing key fails closed.
+npm run dev           # Preview browsing; minting disabled without the chain
+npm run dev:open      # Real Grok + isolated local Anvil
+npm run dev:fixture   # Explicit simulated assessment + isolated local Anvil
+```
+
+Open `http://127.0.0.1:3000`. Use `PORT=3002` if the earlier app still owns port 3000. Foundry is required for the Anvil commands. Fixture and real-assessment data are separate under `.local/open-mint/`; old `.local/rehearsal/`, PostgreSQL, contracts, and `.env.local` are untouched. The DEV overlay offers a public local test wallet; choose it first, then explicitly choose **Mint & reveal** to run the isolated test mint. Test keys/funds are not for public networks.
+
+Local artifacts are content-addressed and checked but **not publicly pinned**. Production startup remains disabled pending deployment/security review and production storage, sessions, rate limits and indexing. See [architecture and handoff](docs/open-mint.md).
+
+Private Grok chat asks for a handle, assesses its MBTI, and returns `/s/<handle>/<MBTI>`, preserving exact capitalization and removing only the leading `@`. **Mint for this handle** carries only the handle into `/mint?handle=…`; no preview MBTI crosses that boundary. The consumer chat is not sealed or trusted. Research content can still influence an LLM: the backend attestation records our workflow, not objective MBTI truth or prompt-injection immunity.
+
+Validate with `npm run test:open`, `npm run typecheck`, `npm run test:coverage`, `npm run test:contract`, `npm run build`, and `npm run renderer:verify`.
+
+## Historical V1/V2 claims reference
+
+**Everything below describes the preserved legacy application**, accessible only through `npm run legacy:dev` or the existing `local:serve:*` commands. Its routes and auth requirements are not part of the new default app.
+
+### signatures.gallery V2 (legacy)
 
 Signatures Gallery is the inaugural project presented by [Agent Art (@AgentArt_AA)](https://x.com/AgentArt_AA). It operates within [Agent Art](https://inshell.art/docs/agent-art)—the open field of art activity in which an Agent participates. An artist-defined system turns the characters of an X handle into a handwriting-like signature. In the intended private workflow, Grok reads recent public posts and selects `gr0k`, the environmental condition in which that signature is rendered—not a score, mood, probability, or judgment.
 
