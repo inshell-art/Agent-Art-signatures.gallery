@@ -2,8 +2,9 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { SITE_CSS } from "../v1/siteCss.js";
 import { SITE_FONT_CSS, siteFontAsset } from "../v1/fonts.js";
 import { FAVICON_SVG, FAVICON_URL } from "../brand/favicon.js";
-import { formalSignatureRenderer, sha256Hex } from "../v1/renderer.js";
-import { canonicalHandle, handleDigest, isMbti, preservedHandle, RENDERER_VERSION, seedForMbti } from "./identity.js";
+import { sha256Hex } from "../v1/renderer.js";
+import { renderSignatureSvg } from "../algorithmV2/index.js";
+import { canonicalHandle, handleDigest, isMbti, preservedHandle } from "./identity.js";
 import { OPEN_MINT_CLIENT_SCRIPT } from "./clientScript.js";
 import { OPEN_MINT_CSS, aboutPage, assessmentPage, collectionPage, errorPage, homePage, mintPage, previewPage, previewVariationsPage, type AssessmentPageModel, type GalleryEntry, type OpenMintPageOptions } from "./pages.js";
 import { fields, PublicError, WalletSessions, type SiteSession } from "./security.js";
@@ -47,12 +48,12 @@ export function createOpenMintServer(options: OpenMintServerOptions) {
     publicOrigin: options.origin, stylesheetUrl: cssUrl, clientScriptUrl: scriptUrl,
     development: { fixture: options.fixture, localChain: !!options.devWallet,
       notes: ["Open-mint development build. The earlier X-claim application and its data are separate.",
-        "MBTI currently selects a fixed seed for the locked v1.0.0 renderer; it is not a new renderer.",
+        "Previews and new assessments use the native MBTI v2.0.0 renderer. Existing prepared and minted artwork keeps its original renderer and bytes.",
         ...(!service.options.assessments ? ["Set XAI_API_KEY to enable real assessments, or explicitly use dev:fixture for simulated results."] : []),
         ...(!service.network ? ["Minting is disabled until the isolated local chain is started."] : ["Artifacts are stored locally, not pinned to a public storage network. These tokens are for local testing only."])],
     },
   });
-  const artifactFields = (artifact: SignatureArtifact) => ({ renderHandle: artifact.renderHandle ?? artifact.assessment.handle, mbti: artifact.assessment.mbti, gr0kRaw: artifact.assessment.seed,
+  const artifactFields = (artifact: SignatureArtifact) => ({ renderHandle: artifact.renderHandle ?? artifact.assessment.handle, mbti: artifact.assessment.mbti,
     imageUrl: `/artifacts/${artifact.pngSha256}.png`, svgUrl: `/artifacts/${artifact.svgSha256}.svg`,
     rendererVersion: artifact.assessment.rendererVersion, svgSha256: artifact.svgSha256, pngSha256: artifact.pngSha256,
     assessedAt: artifact.assessment.createdAt, sourceLabel: artifact.assessment.provenance === "development-fixture" ? "Development fixture" : "Grok · independent X Search assessment" });
@@ -87,7 +88,7 @@ export function createOpenMintServer(options: OpenMintServerOptions) {
         if (previewAsset) {
           const mbti = previewAsset[2]!;
           if (!isMbti(mbti)) throw new PublicError(404, "NOT_FOUND", "Unknown MBTI type.");
-          const svg = formalSignatureRenderer.render({ handle: previewAsset[1]!, gr0kRaw: seedForMbti(mbti), gr0kScale: 1, rendererVersion: RENDERER_VERSION }).svgUtf8;
+          const svg = renderSignatureSvg(previewAsset[1]!, mbti);
           res.setHeader("Cache-Control", "public, max-age=300");
           res.setHeader("Content-Security-Policy", "default-src 'none'; sandbox");
           return send(res, 200, svg, "image/svg+xml");

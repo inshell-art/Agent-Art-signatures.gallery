@@ -1,0 +1,25 @@
+{
+  "schema": "signatures-gallery-renderer-lock/2",
+  "status": "pinned",
+  "upstream": {
+    "repository": "https://github.com/inshell-art/agent-art-Signature-prototype",
+    "tag": "v2.0.0",
+    "tagObject": "84992e64634ab8d35461122776b53d8da9bd1ccf",
+    "commit": "4bcc513b53edac6961e385604cd9fcc3ac913cbb"
+  },
+  "algorithmVersion": "2.0.0",
+  "rendererVersion": "sg-renderer-2.0.0",
+  "verification": {
+    "oracle": "Tagged Python generate_svg, complete UTF-8 SVG SHA-256",
+    "ownerVisualApproval": "Not asserted; ready for review",
+    "legacyPolicy": "Existing v1 records and committed artifact bytes remain unchanged."
+  },
+  "files": {
+    "reference/algorithm-v2.0.0/signature_renderer_v2.0.0.py": "c589f8ac607104f77a26347e39d19ba684ef5ee92baa3e3093c62a8df6618f26",
+    "reference/algorithm-v2.0.0/signature_renderer_v2.0.0.json": "cea650e1b84486f5313760cf82a886036d448085b3bc5e70f643161ad406b507",
+    "reference/algorithm-v2.0.0/SHA256SUMS": "458fb1aac3db5b32502fbf07bc950df37bcf4e355ebfaf02608143999c769a4e",
+    "reference/algorithm-v2.0.0/golden-svgs.json": "43df4201f78fda97279f9a7d97f6c79c3b94ff9541cef00330e72d8d8767c971",
+    "src/algorithmV2/index.ts": "107843e1be5491afa5d6df5a9cbf098a7d3705d4dcd52eb0027a657c64c1b976"
+  },
+  "goldenSvgs": 384
+}

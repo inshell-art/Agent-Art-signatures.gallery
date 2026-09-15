@@ -4,7 +4,7 @@ import { HOME_LINK } from "../v1/navigation.js";
 import { FAVICON_LINK } from "../brand/favicon.js";
 import { xProfileLink } from "../v1/xProfile.js";
 import { SLOGAN_DISPLAY_TEXT, SLOGAN_SIGNATURE_SVG, SLOGAN_SIGNATURE_MOBILE_SVG } from "../brand/sloganSignature.js";
-import { isMbti, MBTI_TYPES, preservedHandle, type MBTI } from "./identity.js";
+import { isMbti, MBTI_TYPES, preservedHandle, RENDERER_VERSION, type MBTI } from "./identity.js";
 
 export interface OpenMintPageOptions {
   csrfToken?: string;
@@ -42,7 +42,6 @@ export interface AssessmentPageModel {
   walletProvedForCode?: boolean;
   requestExpired?: boolean;
   mbti?: string;
-  gr0kRaw?: number;
   imageUrl?: string;
   svgUrl?: string;
   rendererVersion?: string;
@@ -140,13 +139,13 @@ export function mintPage(handle = "", options: OpenMintPageOptions = {}): string
 export function previewPage(handle: string, mbti: MBTI, options: OpenMintPageOptions = {}): string {
   const spelling = preservedHandle(handle);
   if (!isMbti(mbti)) throw new Error("Choose one of the 16 MBTI types, such as ENFP.");
-  const image = `/preview/${spelling}/${mbti}.svg`;
+  const image = `/preview/${spelling}/${mbti}.svg?renderer=${RENDERER_VERSION}`;
   return layout(`@${spelling} · ${mbti} preview`, `<article class="signature-page" data-preview-page><div class="signature-sheet"><figure class="signature-art"><img src="${e(image)}" alt="${e(mbti)} signature preview for @${e(spelling)}"></figure><div class="signature-record"><div class="signature-heading"><h1>${xProfileLink(spelling)}</h1><span class="signature-tag">${e(mbti)}</span><span class="signature-tag">Preview</span></div><p class="open-preview-note">A playful preview. Change the MBTI in the URL to explore. <a href="/s/${e(spelling)}/variations">View all 16 variations</a>.</p><div class="auth-actions open-preview-bridge"><a class="auth-action" href="${e(mintPath(spelling))}"><span>Mint for this handle →</span></a></div></div></div></article>`, options, "An editable signature preview. Minting uses an independent Grok assessment.");
 }
 
 export function previewVariationsPage(handle: string, options: OpenMintPageOptions = {}): string {
   const spelling = preservedHandle(handle);
-  const cards = MBTI_TYPES.map(mbti => `<li><a class="open-preview-card" href="/s/${e(spelling)}/${mbti}" aria-label="Explore ${mbti} for @${e(spelling)}"><img src="/preview/${e(spelling)}/${mbti}.svg" alt="${mbti} signature preview for @${e(spelling)}" width="400" height="400"><span class="signature-tag">${mbti}</span></a></li>`).join("");
+  const cards = MBTI_TYPES.map(mbti => `<li><a class="open-preview-card" href="/s/${e(spelling)}/${mbti}" aria-label="Explore ${mbti} for @${e(spelling)}"><img src="/preview/${e(spelling)}/${mbti}.svg?renderer=${RENDERER_VERSION}" alt="${mbti} signature preview for @${e(spelling)}" width="400" height="400"><span class="signature-tag">${mbti}</span></a></li>`).join("");
   return layout(`@${spelling} · 16 variations`, `<section class="open-preview-variations" data-preview-variations><header class="signature-heading"><h1>16 variations</h1>${xProfileLink(spelling)}<span class="signature-tag">Preview</span></header><p class="open-preview-note">One handle, all 16 MBTI interpretations. Choose a variation to explore.</p><ul class="open-preview-grid" aria-label="MBTI preview variations">${cards}</ul><div class="auth-actions open-preview-bridge"><a class="auth-action" href="${e(mintPath(spelling))}"><span>Mint for this handle →</span></a></div></section>`, options, "Explore all 16 editable MBTI signature previews for one handle. Minting uses an independent Grok assessment.");
 }
 

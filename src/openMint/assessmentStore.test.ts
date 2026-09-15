@@ -2,9 +2,10 @@ import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AssessmentCoordinator } from "./assessment.js";
+import { assessmentDigest, AssessmentCoordinator, type LegacyAssessment } from "./assessment.js";
 import { FileAssessmentRepository, MemoryAssessmentRepository } from "./assessmentStore.js";
 import { DevelopmentAssessmentProvider } from "./grok.js";
+import { LEGACY_MAPPING_VERSION, LEGACY_RENDERER_VERSION, seedForMbti } from "./identity.js";
 
 const directories: string[] = [];
 async function directory() { const path = await mkdtemp(join(tmpdir(), "sg-open-assessment-test-")); directories.push(path); return path; }
@@ -23,6 +24,24 @@ describe("durable first-result assessment repository", () => {
     expect(await reloaded.assess("alice")).toEqual(first);
     expect(provider.assess).not.toHaveBeenCalled();
     expect(await new FileAssessmentRepository(path).list()).toEqual([first]);
+  });
+
+  it("reads pre-v2 files without rewriting their bytes or evaluating Grok again", async () => {
+    const path = await directory();
+    const { digest: _digest, ...native } = await fixture();
+    const unsigned: Omit<LegacyAssessment, "digest"> = {
+      ...native, rendererVersion: LEGACY_RENDERER_VERSION, seed: seedForMbti(native.mbti), mappingVersion: LEGACY_MAPPING_VERSION,
+    };
+    const legacy = { ...unsigned, digest: assessmentDigest(unsigned) };
+    const originalBytes = JSON.stringify(legacy) + "\n";
+    await writeFile(join(path, "alice.json"), originalBytes);
+    const provider = new DevelopmentAssessmentProvider();
+    const assess = vi.spyOn(provider, "assess");
+    const coordinator = new AssessmentCoordinator({ provider, repository: new FileAssessmentRepository(path) });
+    expect(await coordinator.assess("@ALICE")).toEqual(legacy);
+    expect(assess).not.toHaveBeenCalled();
+    expect(await new FileAssessmentRepository(path).putIfAbsent(await fixture())).toEqual(legacy);
+    expect(await readFile(join(path, "alice.json"), "utf8")).toBe(originalBytes);
   });
 
   it("atomically resolves competing immutable saves to the same canonical result", async () => {

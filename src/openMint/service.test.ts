@@ -3,16 +3,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getAddress, keccak256, stringToHex, type Address, type Hex } from "viem";
-import { AssessmentCoordinator, type AssessmentProvider } from "./assessment.js";
+import { assessmentDigest, AssessmentCoordinator, type AssessmentProvider, type AssessmentRepository, type LegacyAssessment } from "./assessment.js";
 import { FileAssessmentRepository, MemoryAssessmentRepository } from "./assessmentStore.js";
 import { DevelopmentAssessmentProvider } from "./grok.js";
-import { handleDigest } from "./identity.js";
+import { handleDigest, LEGACY_MAPPING_VERSION, LEGACY_RENDERER_VERSION, RENDERER_VERSION, seedForMbti } from "./identity.js";
 import { openMintTokenURIHash, type OpenMintAuthorization } from "./authorization.js";
 import { OpenMintService, type MintState, type SignatureArtifact, type SignatureRequest } from "./service.js";
 import { opaqueCode, WalletSessions, type SiteSession } from "./security.js";
 import { FileKeyValueStore, MemoryKeyValueStore, type KeyValueStore } from "./storage.js";
 import type { OpenMintNetwork } from "./network.js";
 import { formalSignatureRenderer } from "../v1/renderer.js";
+import { renderSignatureSvg } from "../algorithmV2/index.js";
 
 // Service tests exercise real locked SVG rendering and byte commitments. Raster rendering
 // is covered by the renderer suite; substituting deterministic bytes keeps race tests fast.
@@ -29,7 +30,7 @@ const TX_HASH = `0x${"a".repeat(64)}` as Hex;
 const paths: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); for (const path of paths.splice(0)) await rm(path, { recursive: true, force: true }); });
 
-function setup(options: { network?: boolean; provider?: AssessmentProvider; store?: KeyValueStore; fixture?: boolean; limit?: number } = {}) {
+function setup(options: { network?: boolean; provider?: AssessmentProvider; repository?: AssessmentRepository; store?: KeyValueStore; fixture?: boolean; limit?: number } = {}) {
   let now = NOW;
   const sessions = new WalletSessions("https://signatures.example", 31337, () => now);
   const connectedSession = (wallet = WALLET) => {
@@ -39,7 +40,8 @@ function setup(options: { network?: boolean; provider?: AssessmentProvider; stor
   };
   const session = connectedSession();
   const source = options.provider ?? new DevelopmentAssessmentProvider();
-  const assessments = new AssessmentCoordinator({ provider: source, repository: new MemoryAssessmentRepository(), now: () => new Date(now) });
+  const repository = options.repository ?? new MemoryAssessmentRepository();
+  const assessments = new AssessmentCoordinator({ provider: source, repository, now: () => new Date(now) });
   const store = options.store ?? new MemoryKeyValueStore();
   const network: OpenMintNetwork = {
     chainId: 31337, address: CONTRACT, authorizer: CONTRACT,
@@ -61,7 +63,7 @@ function setup(options: { network?: boolean; provider?: AssessmentProvider; stor
     const artifact = (await service.artifact(handle))!;
     return { state, wallet, tokenId: BigInt(handleDigest(handle)).toString(), transactionHash: TX_HASH, assessmentDigest: artifact.assessment.digest, artifactDigest: artifact.digest, tokenURIHash: openMintTokenURIHash(artifact.tokenURI) };
   };
-  return { service, sessions, session, connectedSession, source, assessments, network, store, ready, prove, minted, setNow: (value: number) => { now = value; } };
+  return { service, sessions, session, connectedSession, source, assessments, repository, network, store, ready, prove, minted, setNow: (value: number) => { now = value; } };
 }
 async function expectCode(promise: Promise<unknown>, code: string) { await expect(promise).rejects.toMatchObject({ code }); }
 
@@ -278,6 +280,43 @@ describe("request ownership and immutable assessment workflow", () => {
 });
 
 describe("artifact and chain commitments", () => {
+  it("keeps v1 cached artwork, pending authorizations and minted gallery commitments unchanged on a v2 service restart", async () => {
+    const repository = new MemoryAssessmentRepository();
+    const unsigned: Omit<LegacyAssessment, "digest"> = {
+      id: "00000000-0000-4000-8000-000000000001", handle: "alice", mbti: "INTJ", seed: seedForMbti("INTJ"),
+      rendererVersion: LEGACY_RENDERER_VERSION, mappingVersion: LEGACY_MAPPING_VERSION, policyVersion: "grok-x-search-v1",
+      model: "development-fixture-v1", providerResponseId: "development-fixture:legacy", sourceUrls: [],
+      createdAt: "2026-09-15T00:00:00.000Z", provenance: "development-fixture",
+    };
+    const legacy = { ...unsigned, digest: assessmentDigest(unsigned) };
+    await repository.putIfAbsent(legacy);
+    const runtime = setup({ repository });
+    const assess = vi.spyOn(runtime.source, "assess");
+    const request = await runtime.ready("Alice");
+    const artifact = (await runtime.service.artifact("alice"))!;
+    expect(artifact.assessment).toEqual(legacy);
+    const svg = await runtime.service.asset(artifact.svgSha256, "svg");
+    expect(svg).toEqual(Buffer.from(formalSignatureRenderer.render({ handle: "Alice", gr0kRaw: 1, gr0kScale: 1, rendererVersion: LEGACY_RENDERER_VERSION }).svgUtf8));
+    const metadataBytes = (await runtime.service.asset(artifact.metadataSha256, "json"))!;
+    const metadata = JSON.parse(metadataBytes.toString());
+    expect(metadata.renderer).toEqual({ version: LEGACY_RENDERER_VERSION, handle: "Alice", mappingVersion: LEGACY_MAPPING_VERSION, gr0k: 1, svgSha256: artifact.svgSha256, pngSha256: artifact.pngSha256 });
+    runtime.prove(request.code);
+    const authorization = await runtime.service.authorize(request.code, true, runtime.session);
+    const originalIssuance = await runtime.store.get("issuance:alice");
+    const restarted = new OpenMintService({ ...runtime.service.options, assessments: new AssessmentCoordinator({ provider: runtime.source, repository }) });
+    expect(await restarted.authorize(request.code, true, runtime.session)).toEqual(authorization);
+    expect(await runtime.store.get("issuance:alice")).toEqual(originalIssuance);
+    expect(runtime.network.sign).toHaveBeenCalledTimes(1);
+    expect(await restarted.artifact("ALICE")).toEqual(artifact);
+    expect(await restarted.asset(artifact.metadataSha256, "json")).toEqual(metadataBytes);
+    vi.mocked(runtime.network.state).mockResolvedValue(await runtime.minted("alice", "pending"));
+    expect((await restarted.state("Alice")).state).toBe("pending");
+    vi.mocked(runtime.network.state).mockResolvedValue(await runtime.minted("alice"));
+    expect(await restarted.gallery()).toEqual([{ artifact, mint: await runtime.minted("alice") }]);
+    expect(assess).not.toHaveBeenCalled();
+    expect(await repository.get("alice")).toEqual(legacy);
+  });
+
   it("renders the exact first spelling while all case variants reuse one frozen artwork and mint identity", async () => {
     const runtime = setup();
     const assess = vi.spyOn(runtime.source, "assess");
@@ -285,10 +324,10 @@ describe("artifact and chain commitments", () => {
     const artifact = (await runtime.service.artifact("alice_bob_key"))!;
     expect(artifact.renderHandle).toBe("Alice_Bob_Key");
     expect(artifact.assessment.handle).toBe("alice_bob_key");
-    const input = { handle: "Alice_Bob_Key", gr0kRaw: artifact.assessment.seed, gr0kScale: 1 as const, rendererVersion: artifact.assessment.rendererVersion };
     const svg = await runtime.service.asset(artifact.svgSha256, "svg");
-    expect(svg).toEqual(Buffer.from(formalSignatureRenderer.render(input).svgUtf8));
-    expect(svg).not.toEqual(Buffer.from(formalSignatureRenderer.render({ ...input, handle: "alice_bob_key" }).svgUtf8));
+    expect(artifact.assessment.rendererVersion).toBe(RENDERER_VERSION);
+    expect(svg).toEqual(Buffer.from(renderSignatureSvg("Alice_Bob_Key", artifact.assessment.mbti)));
+    expect(svg).not.toEqual(Buffer.from(renderSignatureSvg("alice_bob_key", artifact.assessment.mbti)));
     const metadata = JSON.parse((await runtime.service.asset(artifact.metadataSha256, "json"))!.toString());
     expect(metadata.name).toBe(`@Alice_Bob_Key · ${artifact.assessment.mbti}`);
     expect(metadata.attributes[0]).toEqual({ trait_type: "Handle", value: "Alice_Bob_Key" });
@@ -316,12 +355,14 @@ describe("artifact and chain commitments", () => {
     expect(await runtime.store.get("artifact:alice")).toEqual(oldArtifact);
   });
 
-  it("builds byte-verified metadata with immutable MBTI provenance and seed adapter", async () => {
+  it("builds byte-verified metadata with native MBTI provenance and no synthetic seed adapter", async () => {
     const runtime = setup(); const request = await runtime.ready();
     const artifact = (await runtime.service.artifact(request.handle))!;
     const metadata = JSON.parse((await runtime.service.asset(artifact.metadataSha256, "json"))!.toString());
     expect(metadata.attributes).toEqual([{ trait_type: "Handle", value: "alice" }, { trait_type: "MBTI", value: artifact.assessment.mbti }]);
-    expect(metadata.renderer.gr0k).toBe(artifact.assessment.seed);
+    expect(metadata.renderer).toEqual({ version: RENDERER_VERSION, handle: "alice", mbti: artifact.assessment.mbti, svgSha256: artifact.svgSha256, pngSha256: artifact.pngSha256 });
+    expect(metadata.assessment).not.toHaveProperty("seed");
+    expect(metadata.assessment).not.toHaveProperty("mappingVersion");
     expect(metadata.assessment.digest).toBe(artifact.assessment.digest);
     expect(metadata.description).toContain("Development fixture");
     expect(await runtime.service.artifact("missing")).toBeUndefined();

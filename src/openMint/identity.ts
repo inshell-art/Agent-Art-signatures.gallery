@@ -1,16 +1,17 @@
 import { encodeAbiParameters, keccak256, type Hex } from "viem";
-export { RENDERER_VERSION } from "../v1/renderer.js";
+import { MBTI_TYPES, type MBTI } from "../algorithmV2/index.js";
+export { RENDERER_VERSION, MBTI_TYPES, type MBTI } from "../algorithmV2/index.js";
+export { RENDERER_VERSION as LEGACY_RENDERER_VERSION } from "../v1/renderer.js";
 
 export const HANDLE_DOMAIN = "signatures.gallery/open-handle/v1";
-export const MAPPING_VERSION = "mbti-seed-v1";
+export const LEGACY_MAPPING_VERSION = "mbti-seed-v1";
 export const POLICY_VERSION = "grok-x-search-v1";
 
 /** Protocol order: never reorder or change these seeds without a new mapping version. */
-export const MBTI_TYPES = [
+export const LEGACY_MBTI_TYPES = [
   "INTJ", "INTP", "ENTJ", "ENTP", "INFJ", "INFP", "ENFJ", "ENFP",
   "ISTJ", "ISFJ", "ESTJ", "ESFJ", "ISTP", "ISFP", "ESTP", "ESFP",
 ] as const;
-export type MBTI = typeof MBTI_TYPES[number];
 export const MBTI_SEEDS: Readonly<Record<MBTI, number>> = Object.freeze({
   INTJ: 1, INTP: 7, ENTJ: 14, ENTP: 20, INFJ: 27, INFP: 34, ENFJ: 40, ENFP: 47,
   ISTJ: 53, ISFJ: 60, ESTJ: 67, ESFJ: 73, ISTP: 80, ISFP: 86, ESTP: 93, ESFP: 100,
@@ -33,7 +34,7 @@ export function handleDigest(value: unknown): Hex {
 }
 
 export function isMbti(value: unknown): value is MBTI {
-  return typeof value === "string" && Object.hasOwn(MBTI_SEEDS, value);
+  return typeof value === "string" && (MBTI_TYPES as readonly string[]).includes(value);
 }
 
 export function seedForMbti(value: MBTI): number {

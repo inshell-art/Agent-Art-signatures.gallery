@@ -1,15 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { encodeAbiParameters, keccak256, type Hex } from "viem";
-import { canonicalHandle, isMbti, MAPPING_VERSION, POLICY_VERSION, RENDERER_VERSION, seedForMbti, type MBTI } from "./identity.js";
+import { canonicalHandle, isMbti, LEGACY_MAPPING_VERSION, LEGACY_RENDERER_VERSION, POLICY_VERSION, RENDERER_VERSION, seedForMbti, type MBTI } from "./identity.js";
 
 export type AssessmentProvenance = "grok" | "development-fixture";
-export interface Assessment {
+interface AssessmentBase {
   readonly id: string;
   readonly handle: string;
   readonly mbti: MBTI;
-  readonly seed: number;
-  readonly rendererVersion: typeof RENDERER_VERSION;
-  readonly mappingVersion: typeof MAPPING_VERSION;
   readonly policyVersion: typeof POLICY_VERSION;
   readonly model: string;
   readonly providerResponseId: string;
@@ -18,6 +15,18 @@ export interface Assessment {
   readonly provenance: AssessmentProvenance;
   readonly digest: Hex;
 }
+/** Original immutable records retain their exact seed adapter and digest. */
+export interface LegacyAssessment extends AssessmentBase {
+  readonly rendererVersion: typeof LEGACY_RENDERER_VERSION;
+  readonly seed: number;
+  readonly mappingVersion: typeof LEGACY_MAPPING_VERSION;
+}
+/** Native MBTI artwork has no synthetic numeric seed or mapping adapter. */
+export interface NativeMbtiAssessment extends AssessmentBase {
+  readonly rendererVersion: typeof RENDERER_VERSION;
+}
+export type Assessment = LegacyAssessment | NativeMbtiAssessment;
+export type UnsignedAssessment = Omit<LegacyAssessment, "digest"> | Omit<NativeMbtiAssessment, "digest">;
 
 /** This interface is injected at server startup, never constructed from a public request. */
 export interface AssessmentProvider {
@@ -37,7 +46,8 @@ export interface AssessmentRepository {
   putIfAbsent(value: Assessment): Promise<Assessment>;
 }
 
-const FIELDS = ["id", "handle", "mbti", "seed", "rendererVersion", "mappingVersion", "policyVersion", "model", "providerResponseId", "sourceUrls", "createdAt", "provenance", "digest"];
+const LEGACY_FIELDS = ["id", "handle", "mbti", "seed", "rendererVersion", "mappingVersion", "policyVersion", "model", "providerResponseId", "sourceUrls", "createdAt", "provenance", "digest"];
+const NATIVE_FIELDS = ["id", "handle", "mbti", "rendererVersion", "policyVersion", "model", "providerResponseId", "sourceUrls", "createdAt", "provenance", "digest"];
 const PROVIDER_FIELDS = ["handle", "mbti", "model", "providerResponseId", "sourceUrls"];
 
 export function exactObject(value: unknown, fields: readonly string[], label: string): Record<string, unknown> {
@@ -70,8 +80,8 @@ export function validateSourceUrls(value: unknown, provenance: AssessmentProvena
   return Object.freeze(result);
 }
 
-export function assessmentDigest(value: Omit<Assessment, "digest">): Hex {
-  return keccak256(encodeAbiParameters(
+export function assessmentDigest(value: UnsignedAssessment): Hex {
+  if (value.rendererVersion === LEGACY_RENDERER_VERSION) return keccak256(encodeAbiParameters(
     [{ type: "string" }, { type: "string" }, { type: "string" }, { type: "string" }, { type: "uint16" },
       { type: "string" }, { type: "string" }, { type: "string" }, { type: "string" }, { type: "string" },
       { type: "string[]" }, { type: "string" }, { type: "string" }],
@@ -79,13 +89,26 @@ export function assessmentDigest(value: Omit<Assessment, "digest">): Hex {
       value.rendererVersion, value.mappingVersion, value.policyVersion, value.model, value.providerResponseId,
       [...value.sourceUrls], value.createdAt, value.provenance],
   ));
+  if (value.rendererVersion !== RENDERER_VERSION) throw new Error("Unsupported assessment version.");
+  return keccak256(encodeAbiParameters(
+    [{ type: "string" }, { type: "string" }, { type: "string" }, { type: "string" },
+      { type: "string" }, { type: "string" }, { type: "string" }, { type: "string" },
+      { type: "string[]" }, { type: "string" }, { type: "string" }],
+    ["signatures.gallery/open-assessment/v2", value.id, value.handle, value.mbti,
+      value.rendererVersion, value.policyVersion, value.model, value.providerResponseId,
+      [...value.sourceUrls], value.createdAt, value.provenance],
+  ));
 }
 
 /** Validates saved data on every read. A digest detects corruption, it is not provider authentication. */
 export function validateAssessment(value: unknown): Assessment {
-  const record = exactObject(value, FIELDS, "assessment");
-  if (canonicalHandle(record.handle) !== record.handle || !isMbti(record.mbti) || record.seed !== seedForMbti(record.mbti)) throw new Error("Invalid assessment identity or artwork mapping.");
-  if (record.rendererVersion !== RENDERER_VERSION || record.mappingVersion !== MAPPING_VERSION || record.policyVersion !== POLICY_VERSION) throw new Error("Unsupported assessment version.");
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid assessment.");
+  const version = (value as Record<string, unknown>).rendererVersion;
+  if (version !== RENDERER_VERSION && version !== LEGACY_RENDERER_VERSION) throw new Error("Unsupported assessment version.");
+  const record = exactObject(value, version === LEGACY_RENDERER_VERSION ? LEGACY_FIELDS : NATIVE_FIELDS, "assessment");
+  if (canonicalHandle(record.handle) !== record.handle || !isMbti(record.mbti)) throw new Error("Invalid assessment identity or artwork mapping.");
+  if (version === LEGACY_RENDERER_VERSION && (record.seed !== seedForMbti(record.mbti) || record.mappingVersion !== LEGACY_MAPPING_VERSION)) throw new Error("Invalid legacy artwork mapping.");
+  if (record.policyVersion !== POLICY_VERSION) throw new Error("Unsupported assessment policy.");
   if (record.provenance !== "grok" && record.provenance !== "development-fixture") throw new Error("Invalid assessment provenance.");
   if (typeof record.id !== "string" || !/^[a-f0-9-]{36}$/.test(record.id)) throw new Error("Invalid assessment identifier.");
   validateProviderMetadata(record.model, record.providerResponseId, record.provenance);
@@ -164,9 +187,9 @@ export class AssessmentCoordinator {
     if (result.handle !== handle || !isMbti(result.mbti) || result.model !== this.#model) throw new Error("Provider assessment identity, type, or model mismatch.");
     validateProviderMetadata(result.model, result.providerResponseId, this.#provenance);
     const sourceUrls = validateSourceUrls(result.sourceUrls, this.#provenance);
-    const unsigned: Omit<Assessment, "digest"> = {
-      id: randomUUID(), handle, mbti: result.mbti, seed: seedForMbti(result.mbti),
-      rendererVersion: RENDERER_VERSION, mappingVersion: MAPPING_VERSION, policyVersion: POLICY_VERSION,
+    const unsigned: Omit<NativeMbtiAssessment, "digest"> = {
+      id: randomUUID(), handle, mbti: result.mbti,
+      rendererVersion: RENDERER_VERSION, policyVersion: POLICY_VERSION,
       model: this.#model, providerResponseId: result.providerResponseId as string, sourceUrls,
       createdAt: this.#now().toISOString(), provenance: this.#provenance,
     };

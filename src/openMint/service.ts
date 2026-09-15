@@ -1,8 +1,9 @@
 import { randomBytes } from "node:crypto";
 import { getAddress, keccak256, stringToHex, type Address, type Hex } from "viem";
 import { formalSignatureRenderer, renderCardPng, sha256Hex } from "../v1/renderer.js";
+import { renderSignatureSvg } from "../algorithmV2/index.js";
 import { AssessmentCoordinator, validateAssessment, type Assessment } from "./assessment.js";
-import { canonicalHandle, handleDigest, preservedHandle } from "./identity.js";
+import { canonicalHandle, handleDigest, LEGACY_RENDERER_VERSION, preservedHandle } from "./identity.js";
 import { normalizeOpenMintAuthorization, openMintTokenURIHash, type OpenMintAuthorizationInput } from "./authorization.js";
 import { isCode, opaqueCode, PublicError, type SiteSession } from "./security.js";
 import { SerialKeys, type KeyValueStore } from "./storage.js";
@@ -223,7 +224,9 @@ export class OpenMintService {
     if (existing) { if (existing.assessment.digest !== assessment.digest) throw new Error("Canonical artwork cannot be replaced."); return existing; }
     if ((assessment.provenance === "development-fixture") !== this.options.fixture) throw new Error("Wrong assessment mode.");
     if (preservedHandle(renderHandle) !== renderHandle || canonicalHandle(renderHandle) !== assessment.handle) throw new Error("Invalid artwork spelling.");
-    const svg = formalSignatureRenderer.render({ handle: renderHandle, gr0kRaw: assessment.seed, gr0kScale: 1, rendererVersion: assessment.rendererVersion }).svgUtf8;
+    const svg = assessment.rendererVersion === LEGACY_RENDERER_VERSION
+      ? formalSignatureRenderer.render({ handle: renderHandle, gr0kRaw: assessment.seed, gr0kScale: 1, rendererVersion: assessment.rendererVersion }).svgUtf8
+      : Buffer.from(renderSignatureSvg(renderHandle, assessment.mbti), "utf8");
     const png = await renderCardPng(svg);
     const svgSha256 = sha256Hex(svg), pngSha256 = sha256Hex(png);
     const metadata = Buffer.from(JSON.stringify({
@@ -233,7 +236,9 @@ export class OpenMintService {
       animation_url: `${this.options.origin}/artifacts/${svgSha256}.svg`,
       external_url: `${this.options.origin}/signatures/${assessment.handle}`,
       attributes: [{ trait_type: "Handle", value: renderHandle }, { trait_type: "MBTI", value: assessment.mbti }],
-      assessment, renderer: { version: assessment.rendererVersion, handle: renderHandle, mappingVersion: assessment.mappingVersion, gr0k: assessment.seed, svgSha256, pngSha256 },
+      assessment, renderer: assessment.rendererVersion === LEGACY_RENDERER_VERSION
+        ? { version: assessment.rendererVersion, handle: renderHandle, mappingVersion: assessment.mappingVersion, gr0k: assessment.seed, svgSha256, pngSha256 }
+        : { version: assessment.rendererVersion, handle: renderHandle, mbti: assessment.mbti, svgSha256, pngSha256 },
     }));
     const metadataSha256 = sha256Hex(metadata);
     for (const [hash, extension, bytes] of [[svgSha256, "svg", svg], [pngSha256, "png", png], [metadataSha256, "json", metadata]] as const) {

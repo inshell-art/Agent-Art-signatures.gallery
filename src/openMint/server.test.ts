@@ -14,6 +14,7 @@ import { handleDigest, MBTI_TYPES } from "./identity.js";
 import { openMintTokenURIHash } from "./authorization.js";
 import type { OpenMintNetwork } from "./network.js";
 import type { MintState } from "./service.js";
+import { renderSignatureSvg } from "../algorithmV2/index.js";
 
 const servers: Server[] = [];
 const wallet = privateKeyToAccount(`0x${"7".repeat(64)}`);
@@ -324,7 +325,7 @@ describe("open mint HTTP boundary", () => {
       expect(preview.text).not.toContain('data-mint-form');
       const svg = await client.request(`/preview/Alice_Bob_Key/${mbti}.svg`);
       expect(svg.status).toBe(200);
-      expect(svg.text).toContain('<svg');
+      expect(svg.text).toBe(renderSignatureSvg("Alice_Bob_Key", mbti));
     }
     expect((await client.request('/s/Alice_Bob_Key/enfp')).text).toContain('/preview/Alice_Bob_Key/ENFP.svg');
     for (const path of ['/s/alice/17', '/s/alice/INXX', '/s/alice/1.000000', '/preview/alice/INXX.svg', '/s/invalid%2Fhandle/ENFP']) expect((await client.request(path)).status).toBe(404);

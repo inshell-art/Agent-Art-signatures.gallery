@@ -1,0 +1,228 @@
+{
+  "algorithm": {
+    "id": "signature-renderer",
+    "version": "2.0.0",
+    "renderer_file": "signature_renderer_v2.0.0.py",
+    "input": {
+      "x_handle": {
+        "pattern": "^[A-Za-z0-9_]{1,15}$",
+        "leading_at_sign": false
+      },
+      "mbti_type": {
+        "pattern": "^[EI][SN][TF][JP]$",
+        "default": "INFP",
+        "values": [
+          "ISTJ",
+          "ISFJ",
+          "INFJ",
+          "INTJ",
+          "ISTP",
+          "ISFP",
+          "INFP",
+          "INTP",
+          "ESTP",
+          "ESFP",
+          "ENFP",
+          "ENTP",
+          "ESTJ",
+          "ESFJ",
+          "ENFJ",
+          "ENTJ"
+        ]
+      },
+      "output_width": {
+        "default": 1080,
+        "unit": "px"
+      },
+      "output_height": {
+        "default": 1080,
+        "unit": "px"
+      }
+    },
+    "output": {
+      "format": "SVG",
+      "deterministic": true
+    }
+  },
+  "random": {
+    "namespace": "signature-field",
+    "scheme": "sha256-labeled-u53",
+    "mbti_is_hashed": false,
+    "parameter_labels": [
+      "handle-angle",
+      "incoming-handle-length",
+      "outgoing-handle-length",
+      "point-y-shift",
+      "point-gap-weight",
+      "width-weight"
+    ],
+    "scopes": {
+      "character": "x-handle-character",
+      "ordered_character_pair": "ordered-x-handle-character-pair",
+      "digits_group": "x-handle-digits",
+      "underscore": "x-handle-underscore"
+    }
+  },
+  "canvas": {
+    "canonical_design_space": [
+      420,
+      420
+    ],
+    "default_output_size": [
+      1080,
+      1080
+    ],
+    "curve_center": [
+      210,
+      210
+    ],
+    "handle_text": {
+      "prefix": "@",
+      "x": 210,
+      "y": 399,
+      "size_px": 10,
+      "weight": 200,
+      "anchor": "middle",
+      "dominant_baseline": "middle",
+      "font_family": "-apple-system, system-ui, Segoe UI, sans-serif"
+    }
+  },
+  "shared": {
+    "curve_span_px": 300,
+    "short_text_span_denominator": 4,
+    "stroke_weight_px": 5,
+    "uppercase_extra_weight_px": 10,
+    "digit_nine_height_px": 60,
+    "equal_digit_width_weight": 1.0,
+    "digit_baseline_height_ratio": 0.5,
+    "digit_transition_weight_factor": 0.6,
+    "underscore": {
+      "stroke_weight_px": 0,
+      "width_weight_range": [
+        1.0,
+        2.0
+      ],
+      "point_y_shift_px": [
+        0,
+        50
+      ],
+      "width_scope": "x-handle-underscore",
+      "y_scope": "x-handle-underscore"
+    },
+    "centering_samples_per_segment": 64,
+    "coordinate_decimals": 2,
+    "sampled_outline": {
+      "target_samples": 240,
+      "minimum_samples_per_segment": 8,
+      "maximum_samples_per_segment": 32
+    }
+  },
+  "mbti_mapping": {
+    "energy": {
+      "E": {
+        "name": "light field",
+        "background": "#f4e7c7",
+        "ink": "#000000"
+      },
+      "I": {
+        "name": "dark field",
+        "background": "#000000",
+        "ink": "#f4e7c7"
+      }
+    },
+    "information": {
+      "S": {
+        "name": "restrained",
+        "handle_rotation_degrees": [
+          -180,
+          180
+        ],
+        "handle_length_px": [
+          10,
+          40
+        ],
+        "neighbor_smoothing": 0.1,
+        "handle_balance": 0.1,
+        "digit_pulse_handle_spacing_factor": 0.1
+      },
+      "N": {
+        "name": "expressive",
+        "handle_rotation_degrees": [
+          -180,
+          180
+        ],
+        "handle_length_px": [
+          10,
+          120
+        ],
+        "neighbor_smoothing": 0.5,
+        "handle_balance": 0.5,
+        "digit_pulse_handle_spacing_factor": 0.3
+      }
+    },
+    "decision": {
+      "T": {
+        "name": "sampled outline",
+        "path_mode": "variable_sampled_outline",
+        "outline_command": "L"
+      },
+      "F": {
+        "name": "Bezier outline",
+        "path_mode": "variable_bezier_outline",
+        "outline_command": "C"
+      }
+    },
+    "rhythm": {
+      "J": {
+        "name": "ordered",
+        "point_distribution": "average",
+        "gap_weight_range": [
+          1.0,
+          1.0
+        ],
+        "point_y_shift_px": [
+          -20,
+          20
+        ],
+        "point_y_contrast_exponent": 1.0,
+        "point_y_transform": "linear"
+      },
+      "P": {
+        "name": "random rhythm",
+        "point_distribution": "random",
+        "gap_weight_range": [
+          0.45,
+          1.55
+        ],
+        "point_y_shift_px": [
+          -40,
+          40
+        ],
+        "point_y_contrast_exponent": 3.0,
+        "point_y_transform": "signed-logistic-power-contrast"
+      }
+    }
+  },
+  "digits": {
+    "maximum_height_for_9_px": 60,
+    "height_formula": "digit / 9 * maximum_height_for_9_px",
+    "baseline": "canonical_center_y + maximum_height_for_9_px * 0.5 + digit_group_y_shift",
+    "width_mode": "equal_for_every_digit",
+    "width_weight": 1.0,
+    "y_scope": "x-handle-digits",
+    "height_scope": "x-handle-digits",
+    "transition_weight_factor": 0.6,
+    "pulse_handle_factor_source": "MBTI S/N pole"
+  },
+  "output_sizing": {
+    "canonical_geometry_is_never_recalculated": true,
+    "square_output": "keep viewBox 0 0 420 420 and change only SVG width and height",
+    "non_square_output": "uniformly scale and center the canonical curve on a full-size background",
+    "uniform_scale_formula": "min(output_width / 420, output_height / 420)",
+    "offset_x_formula": "(output_width - 420 * scale) / 2",
+    "offset_y_formula": "(output_height - 420 * scale) / 2",
+    "handle_text_position": "output center X and 95% of output height",
+    "handle_text_size": "canonical text size multiplied by uniform scale",
+    "allow_non_uniform_stretching": false
+  }
+}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { aboutPage, assessmentPage, canonicalPageHandle, collectionPage, errorPage, handoffPrompt, homePage, mintPage, OPEN_MINT_CSS, previewPage, previewVariationsPage, requestPage, type AssessmentPageModel, type GalleryEntry } from "./pages.js";
-import { MBTI_TYPES } from "./identity.js";
+import { MBTI_TYPES, RENDERER_VERSION } from "./identity.js";
 import { HOME_LINK } from "../v1/navigation.js";
 import { SITE_CSS_URL } from "../v1/siteCss.js";
 
@@ -76,7 +76,9 @@ describe("open mint pages", () => {
     const html = previewPage("Alice_Bob_Key", mbti);
     const main = html.match(/<main>([\s\S]*?)<\/main>/)![1]!;
     expect(main.match(/<img\b/g)).toHaveLength(1);
-    expect(main).toContain('src="/preview/Alice_Bob_Key/' + mbti + '.svg"');
+    expect(main).toContain(`src="/preview/Alice_Bob_Key/${mbti}.svg?renderer=${RENDERER_VERSION}"`);
+    expect(main).not.toContain(`src="/preview/Alice_Bob_Key/${mbti}.svg"`);
+    expect(main).not.toContain('renderer=sg-renderer-1.0.0');
     expect(main).toContain('href="https://x.com/Alice_Bob_Key"');
     expect(main).toContain('<span class="signature-tag">' + mbti + '</span>');
     expect(main).toContain('href="/mint?handle=Alice_Bob_Key"><span>Mint for this handle →');
@@ -106,12 +108,16 @@ describe("open mint pages", () => {
     expect(previewLinks).toHaveLength(16);
     expect(new Set(previewLinks)).toEqual(new Set(MBTI_TYPES.map(mbti => `/s/Alice_Bob_Key/${mbti}`)));
     for (const mbti of MBTI_TYPES) {
-      expect(main).toContain(`src="/preview/Alice_Bob_Key/${mbti}.svg"`);
+      expect(main).toContain(`src="/preview/Alice_Bob_Key/${mbti}.svg?renderer=${RENDERER_VERSION}"`);
       const card = main.match(new RegExp(`<a\\b[^>]*href="/s/Alice_Bob_Key/${mbti}"[^>]*>[\\s\\S]*?</a>`))?.[0];
       expect(card).toBeDefined();
       expect(card).toMatch(/<img\b[^>]*alt="[^"]+"/);
       expect(card!.replace(/<[^>]+>/g, "")).toContain(mbti);
     }
+    const imageUrls = [...main.matchAll(/<img\b[^>]*src="([^"]+)"/g)].map(match => match[1]);
+    expect(imageUrls).toEqual(MBTI_TYPES.map(mbti => `/preview/Alice_Bob_Key/${mbti}.svg?renderer=${RENDERER_VERSION}`));
+    expect(main).not.toMatch(/src="\/preview\/[^"?]+\.svg"/);
+    expect(main).not.toContain('renderer=sg-renderer-1.0.0');
     expect(main).not.toMatch(/data-assessment-request|data-assessment-code|data-mint-form|data-connect-wallet|data-token-id|Provenance|\/signatures\//);
     expect(main).not.toContain('mbti=');
   });

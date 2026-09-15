@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 
 // Mutates ONLY an explicitly labelled fixture app's isolated local Anvil.
 if (!process.argv.includes("--execute-local-test-transactions")) throw new Error("Pass --execute-local-test-transactions to create an assessment and mint on the isolated fixture chain.");
@@ -57,8 +57,16 @@ const permalink = `/signatures/${handle}`;
 assert.equal((await fetch(`${origin}${permalink}`)).status, 200);
 assessment = await (await fetch(`${origin}/api/assessments/${code}`, { headers: { cookie } })).json();
 assert.ok(assessment.mbti && assessment.imageUrl, 'Confirmed mint reveals the final result.');
+assert.equal(assessment.rendererVersion, "sg-renderer-2.0.0", "New mint must use the native MBTI renderer.");
+assert.equal(Object.hasOwn(assessment, "gr0kRaw"), false, "Native MBTI reveal must not expose a synthetic seed.");
+const svgResponse = await fetch(`${origin}${assessment.svgUrl}`);
+assert.equal(svgResponse.status, 200);
+const svg = await svgResponse.text();
+assert.equal(createHash("sha256").update(svg).digest("hex"), assessment.svgSha256);
+assert.ok(svg.includes(`>@${handle}</text>`));
 await post('/api/assessments', { handle }, 409);
 const image = await fetch(`${origin}${assessment.imageUrl}`);
 assert.equal(image.status, 200);
 assert.equal(image.headers.get("content-type"), "image/png");
-console.log(JSON.stringify({ ok: true, origin, handle, mbti: assessment.mbti, tokenId: mint.tokenId, transactionHash, wallet: mint.wallet, permalink, checks: ["editable preview bridge", "forged MBTI rejected", "wallet proof before assessment", "private mint request", "no result before confirmation", "explicit consent required", "actual local mint", "duplicate mint rejected before assessment", "wallet collection", "immutable artwork asset"] }, null, 2));
+assert.equal(createHash("sha256").update(Buffer.from(await image.arrayBuffer())).digest("hex"), assessment.pngSha256);
+console.log(JSON.stringify({ ok: true, origin, handle, mbti: assessment.mbti, rendererVersion: assessment.rendererVersion, tokenId: mint.tokenId, transactionHash, wallet: mint.wallet, permalink, checks: ["editable preview bridge", "forged MBTI rejected", "wallet proof before assessment", "private mint request", "no result before confirmation", "explicit consent required", "actual local mint", "duplicate mint rejected before assessment", "wallet collection", "native MBTI renderer", "immutable SVG and PNG hashes"] }, null, 2));

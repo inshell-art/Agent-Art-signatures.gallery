@@ -1,14 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { encodeAbiParameters, keccak256 } from "viem";
-import { canonicalHandle, preservedHandle, handleDigest, MBTI_TYPES, seedForMbti, RENDERER_VERSION } from "./identity.js";
+import { MBTI_TYPES as UPSTREAM_MBTI_TYPES } from "../algorithmV2/index.js";
+import { canonicalHandle, preservedHandle, handleDigest, MBTI_TYPES, LEGACY_MBTI_TYPES, seedForMbti, RENDERER_VERSION, LEGACY_RENDERER_VERSION } from "./identity.js";
 
 describe("open mint handle identity", () => {
-  it("canonicalizes optional @ and case without changing the locked renderer version", () => {
+  it("canonicalizes optional @ and case while selecting the new renderer separately from legacy artwork", () => {
     expect(preservedHandle("@Alice_Bob_Key")).toBe("Alice_Bob_Key");
     expect(preservedHandle("Alice_Bob_Key")).toBe("Alice_Bob_Key");
     expect(canonicalHandle("@Some_User123")).toBe("some_user123");
     expect(canonicalHandle("a".repeat(15))).toBe("a".repeat(15));
-    expect(RENDERER_VERSION).toBe("sg-renderer-1.0.0");
+    expect(RENDERER_VERSION).toBe("sg-renderer-2.0.0");
+    expect(LEGACY_RENDERER_VERSION).toBe("sg-renderer-1.0.0");
+    expect(MBTI_TYPES).toEqual(UPSTREAM_MBTI_TYPES);
+    expect(new Set(MBTI_TYPES)).toEqual(new Set(LEGACY_MBTI_TYPES));
   });
   it.each([null, undefined, 42, {}, ["foo"], "", "@", "@@foo", "a".repeat(16), "foo-bar", "föö", "ｆoo", "foo bar", " foo", "foo\n", "foo/bar", "a?b"])("rejects malformed handle %j", (value) => {
     expect(() => canonicalHandle(value)).toThrow();
@@ -21,8 +25,8 @@ describe("open mint handle identity", () => {
     expect(handleDigest("bob")).not.toBe(expected);
   });
   it("locks all sixteen explicit enum-to-seed mappings", () => {
-    expect(MBTI_TYPES.map(seedForMbti)).toEqual([1, 7, 14, 20, 27, 34, 40, 47, 53, 60, 67, 73, 80, 86, 93, 100]);
-    expect(new Set(MBTI_TYPES.map(seedForMbti)).size).toBe(16);
+    expect(LEGACY_MBTI_TYPES.map(seedForMbti)).toEqual([1, 7, 14, 20, 27, 34, 40, 47, 53, 60, 67, 73, 80, 86, 93, 100]);
+    expect(new Set(LEGACY_MBTI_TYPES.map(seedForMbti)).size).toBe(16);
     expect(() => seedForMbti("INFJ\n" as never)).toThrow();
     expect(() => seedForMbti("toString" as never)).toThrow();
   });
