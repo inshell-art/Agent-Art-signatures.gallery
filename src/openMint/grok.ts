@@ -1,5 +1,6 @@
 import { canonicalHandle, handleDigest, isMbti, MBTI_TYPES } from "./identity.js";
 import { exactObject, validateSourceUrls, type AssessmentProvider, type ProviderAssessment } from "./assessment.js";
+import { validateXIdentity, type XIdentitySnapshot } from "./xIdentity.js";
 
 export const GROK_DEFAULT_MODEL = "grok-4.6";
 export const GROK_RESPONSES_ENDPOINT = "https://api.x.ai/v1/responses";
@@ -20,8 +21,9 @@ function record(value: unknown): Record<string, unknown> | undefined {
 }
 
 /** Parse only a direct authenticated transport response; this function never accepts client callbacks. */
-export function validateGrokResponse(value: unknown, expectedHandle: string, expectedModel: string): ProviderAssessment {
+export function validateGrokResponse(value: unknown, expectedHandle: string, expectedModel: string, expectedIdentity?: XIdentitySnapshot): ProviderAssessment {
   const handle = canonicalHandle(expectedHandle);
+  const identity = expectedIdentity ? validateXIdentity(expectedIdentity, handle) : undefined;
   const response = record(value);
   if (!response || response.status !== "completed" || response.error != null || response.incomplete_details != null) throw new Error("Grok assessment did not complete successfully.");
   if (typeof response.id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(response.id) || response.id.startsWith("development-fixture:")) throw new Error("Grok response identifier is missing or invalid.");
@@ -57,10 +59,17 @@ export function validateGrokResponse(value: unknown, expectedHandle: string, exp
   if (texts.length !== 1) throw new Error("Grok must return exactly one structured assessment.");
   let parsed: unknown;
   try { parsed = JSON.parse(texts[0]); } catch { throw new Error("Grok assessment is not valid JSON."); }
-  const assessment = exactObject(parsed, ["handle", "mbti"], "Grok assessment");
+  const assessment = exactObject(parsed, identity ? ["handle", "mbti", "xUserId"] : ["handle", "mbti"], "Grok assessment");
   if (assessment.handle !== handle || !isMbti(assessment.mbti)) throw new Error("Grok assessment handle or MBTI mismatch.");
+  if (identity && assessment.xUserId !== identity.userId) throw new Error("Grok assessment X account mismatch.");
   const sourceUrls = validateSourceUrls([...new Set(sources)], "grok");
-  return Object.freeze({ handle, mbti: assessment.mbti, model: expectedModel, providerResponseId: response.id, sourceUrls });
+  if (identity && !sourceUrls.some(source => {
+    const url = new URL(source);
+    return ["x.com", "www.x.com", "twitter.com", "www.twitter.com"].includes(url.hostname)
+      && (new RegExp(`^/${handle}(?:/status/[0-9]+)?/?$`, "i").test(url.pathname) || url.pathname.replace(/\/$/, "") === `/i/user/${identity.userId}`);
+  })) throw new Error("Grok evidence does not reference the verified X subject.");
+  return Object.freeze({ handle, mbti: assessment.mbti, model: expectedModel, providerResponseId: response.id, sourceUrls,
+    ...(identity ? { xUserId: identity.userId } : {}) });
 }
 
 async function boundedBody(response: Response): Promise<unknown> {
@@ -104,8 +113,10 @@ export class GrokAssessmentProvider implements AssessmentProvider {
     if (!Number.isInteger(this.#timeoutMs) || this.#timeoutMs < 1 || this.#timeoutMs > 120_000) throw new Error("Invalid Grok timeout.");
   }
 
-  async assess(value: string): Promise<ProviderAssessment> {
+  async assess(value: string, expectedIdentity?: XIdentitySnapshot): Promise<ProviderAssessment> {
     const handle = canonicalHandle(value);
+    const identity = expectedIdentity ? validateXIdentity(expectedIdentity, handle) : undefined;
+    if (identity && identity.provenance !== "x-api") throw new Error("Grok requires an authoritative X identity snapshot.");
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_, reject) => {
@@ -119,12 +130,14 @@ export class GrokAssessmentProvider implements AssessmentProvider {
           headers: { "Authorization": `Bearer ${this.#key}`, "Content-Type": "application/json", "Accept": "application/json" },
           body: JSON.stringify({
             model: this.model, instructions: GROK_INSTRUCTIONS, stream: false, store: false,
-            input: [{ role: "user", content: `Assess the public X account @${handle}. The required canonical handle is ${handle}.` }],
+            input: [{ role: "user", content: `Assess the public X account @${handle}. The required canonical handle is ${handle}.` + (identity
+              ? ` X's authenticated username lookup returned exact username @${identity.username} and account ID ${identity.userId} at ${identity.verifiedAt}. Research that same account (https://x.com/i/user/${identity.userId}); if the handle now points to a different account or this subject cannot be established, refuse. Return xUserId ${identity.userId} in the JSON. This timestamp is preparation evidence, not a claim of live-current identity.` : "") }],
             tools: [{ type: "x_search", allowed_x_handles: [handle] }],
             include: ["no_inline_citations"], max_output_tokens: 4096,
             text: { format: { type: "json_schema", name: "open_handle_mbti", strict: true, schema: {
-              type: "object", additionalProperties: false, required: ["handle", "mbti"],
-              properties: { handle: { type: "string", const: handle }, mbti: { type: "string", enum: [...MBTI_TYPES] } },
+              type: "object", additionalProperties: false, required: identity ? ["handle", "mbti", "xUserId"] : ["handle", "mbti"],
+              properties: { handle: { type: "string", const: handle }, mbti: { type: "string", enum: [...MBTI_TYPES] },
+                ...(identity ? { xUserId: { type: "string", const: identity.userId } } : {}) },
             } } },
           }),
         });
@@ -133,7 +146,7 @@ export class GrokAssessmentProvider implements AssessmentProvider {
         await response.body?.cancel();
         throw new Error(`Grok request failed (HTTP ${response.status}).`);
       }
-      return validateGrokResponse(await boundedBody(response), handle, this.model);
+      return validateGrokResponse(await boundedBody(response), handle, this.model, identity);
     };
     // Exactly one paid request; errors propagate without automatic retries or fixture substitution.
     try { return await Promise.race([request(), timeout]); }
@@ -145,10 +158,13 @@ export class GrokAssessmentProvider implements AssessmentProvider {
 export class DevelopmentAssessmentProvider implements AssessmentProvider {
   readonly provenance = "development-fixture" as const;
   readonly model = "development-fixture-v1";
-  async assess(value: string): Promise<ProviderAssessment> {
+  async assess(value: string, expectedIdentity?: XIdentitySnapshot): Promise<ProviderAssessment> {
     const handle = canonicalHandle(value);
+    const identity = expectedIdentity ? validateXIdentity(expectedIdentity, handle) : undefined;
+    if (identity && identity.provenance !== "development-fixture") throw new Error("Development assessment requires a fixture identity.");
     const digest = handleDigest(handle);
     const mbti = MBTI_TYPES[Number(BigInt(digest) % 16n)];
-    return Object.freeze({ handle, mbti, model: this.model, providerResponseId: `development-fixture:${digest.slice(2)}`, sourceUrls: Object.freeze([]) });
+    return Object.freeze({ handle, mbti, model: this.model, providerResponseId: `development-fixture:${digest.slice(2)}`, sourceUrls: Object.freeze([]),
+      ...(identity ? { xUserId: identity.userId } : {}) });
   }
 }

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -70,5 +70,78 @@ describe("durable first-result assessment repository", () => {
     await symlink(join(path, "alice.json"), join(path, "bob.json"));
     await expect(new FileAssessmentRepository(path).get("bob")).rejects.toThrow();
     await expect(new FileAssessmentRepository(path).get("../alice")).rejects.toThrow();
+  });
+
+  it.each(["", ".", "relative/assessments", "/", "/tmp/../"])("requires a dedicated absolute storage directory: %j", (path) => {
+    expect(() => new FileAssessmentRepository(path)).toThrow("dedicated absolute directory");
+  });
+
+  it("rejects symlinked storage directories without publishing through them", async () => {
+    const path = await directory();
+    const target = join(path, "real");
+    const linked = join(path, "linked");
+    await mkdir(target);
+    await symlink(target, linked);
+    const repository = new FileAssessmentRepository(linked);
+    await expect(repository.get("alice")).rejects.toThrow("real directory");
+    await expect(repository.putIfAbsent(await fixture())).rejects.toThrow("real directory");
+    expect(await readdir(target)).toEqual([]);
+  });
+
+  it("rejects non-file and oversized records before parsing", async () => {
+    const path = await directory();
+    await mkdir(join(path, "alice.json"));
+    await writeFile(join(path, "bob.json"), " ".repeat(512 * 1024 + 1));
+    const repository = new FileAssessmentRepository(path);
+    await expect(repository.get("alice")).rejects.toThrow("Invalid assessment storage file");
+    await expect(repository.get("bob")).rejects.toThrow("Invalid assessment storage file");
+  });
+
+  it("lists canonical records in handle order and ignores staging/unrelated files", async () => {
+    const path = await directory();
+    const repository = new FileAssessmentRepository(path);
+    const bob = await repository.putIfAbsent(await fixture("bob"));
+    const alice = await repository.putIfAbsent(await fixture("alice"));
+    for (const name of [".alice.interrupted.tmp", "README.md", "UPPER.json", "too_long_a_handle.json", "bad-name.json"]) {
+      await writeFile(join(path, name), "not assessment JSON");
+    }
+    expect(await repository.list()).toEqual([alice, bob]);
+    expect((await readdir(path)).filter((name) => name.endsWith(".tmp"))).toEqual([".alice.interrupted.tmp"]);
+    expect((await stat(join(path, "alice.json"))).mode & 0o777).toBe(0o600);
+  });
+
+  it("fails closed when a canonical record in a listing is corrupt", async () => {
+    const path = await directory();
+    const repository = new FileAssessmentRepository(path);
+    await repository.putIfAbsent(await fixture("alice"));
+    await writeFile(join(path, "bob.json"), "{");
+    await expect(repository.list()).rejects.toThrow("Invalid assessment storage JSON");
+  });
+
+  it("does not overwrite corrupt canonical data or leave a staging file for invalid input", async () => {
+    const path = await directory();
+    const repository = new FileAssessmentRepository(path);
+    const assessment = await fixture();
+    await writeFile(join(path, "alice.json"), "corrupt original");
+    await expect(repository.putIfAbsent(assessment)).rejects.toThrow("storage JSON");
+    await expect(repository.putIfAbsent({ ...assessment, digest: "0x00" } as never)).rejects.toThrow("digest");
+    expect(await readFile(join(path, "alice.json"), "utf8")).toBe("corrupt original");
+    expect(await readdir(path)).toEqual(["alice.json"]);
+  });
+
+  it("keeps the first in-memory result immutable and lists without exposing its container", async () => {
+    const repository = new MemoryAssessmentRepository();
+    expect(await repository.list()).toEqual([]);
+    const first = await repository.putIfAbsent(await fixture("alice"));
+    const second = await fixture("alice");
+    expect(first.id).not.toBe(second.id);
+    expect(await repository.putIfAbsent(second)).toBe(first);
+    expect(await repository.get("@ALICE")).toBe(first);
+    const listed = await repository.list();
+    expect(listed).toEqual([first]);
+    expect(Object.isFrozen(listed[0])).toBe(true);
+    expect(Object.isFrozen(listed[0].sourceUrls)).toBe(true);
+    (listed as unknown[]).pop();
+    expect(await repository.list()).toEqual([first]);
   });
 });

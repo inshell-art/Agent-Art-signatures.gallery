@@ -491,7 +491,7 @@ describe('preview and mint browser lifecycle', () => {
     expect(JSON.parse(test.storage.get('sg-open:intent:rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr')!)).toMatchObject({ handle: 'alice_bob_key', wallet: WALLET, tokenId: '123', mode: 'injected' });
     expect(sends(test)).toEqual([]);
   });
-  it.each(['/mint/rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr/extra', '/s/agent_art/ENFP', 'https://attacker.test/mint/rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr', '/mint/rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr?mbti=INTJ', '/mint/rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr#mint'])('rejects malformed result URL %s', async url => {
+  it.each(['/mint/rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr/extra', '/p/agent_art/ENFP', 'https://attacker.test/mint/rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr', '/mint/rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr?mbti=INTJ', '/mint/rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr#mint'])('rejects malformed result URL %s', async url => {
     const test = setup({ entry: true, walletProved: true, api: path => path === '/api/assessments' ? { url, code: 'rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr', handle: 'agent_art', tokenId: '123' } : undefined }); await flush();
     await test.elements['[data-assessment-request]'].emit('submit');
     expect(test.navigations).toEqual([]); expect(test.elements['[data-request-feedback]'].textContent).toContain('invalid result link');

@@ -14,6 +14,8 @@ import { FileKeyValueStore, MemoryKeyValueStore, type KeyValueStore } from "./st
 import type { OpenMintNetwork } from "./network.js";
 import { formalSignatureRenderer } from "../v1/renderer.js";
 import { renderSignatureSvg } from "../algorithmV2/index.js";
+import { XApiIdentityResolver, type XIdentityResolver } from "./xIdentity.js";
+import { GROK_DEFAULT_MODEL, GrokAssessmentProvider } from "./grok.js";
 
 // Service tests exercise real locked SVG rendering and byte commitments. Raster rendering
 // is covered by the renderer suite; substituting deterministic bytes keeps race tests fast.
@@ -30,7 +32,7 @@ const TX_HASH = `0x${"a".repeat(64)}` as Hex;
 const paths: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); for (const path of paths.splice(0)) await rm(path, { recursive: true, force: true }); });
 
-function setup(options: { network?: boolean; provider?: AssessmentProvider; repository?: AssessmentRepository; store?: KeyValueStore; fixture?: boolean; limit?: number } = {}) {
+function setup(options: { network?: boolean; provider?: AssessmentProvider; repository?: AssessmentRepository; store?: KeyValueStore; fixture?: boolean; limit?: number; identityResolver?: XIdentityResolver } = {}) {
   let now = NOW;
   const sessions = new WalletSessions("https://signatures.example", 31337, () => now);
   const connectedSession = (wallet = WALLET) => {
@@ -41,7 +43,7 @@ function setup(options: { network?: boolean; provider?: AssessmentProvider; repo
   const session = connectedSession();
   const source = options.provider ?? new DevelopmentAssessmentProvider();
   const repository = options.repository ?? new MemoryAssessmentRepository();
-  const assessments = new AssessmentCoordinator({ provider: source, repository, now: () => new Date(now) });
+  const assessments = new AssessmentCoordinator({ provider: source, repository, identityResolver: options.identityResolver, now: () => new Date(now) });
   const store = options.store ?? new MemoryKeyValueStore();
   const network: OpenMintNetwork = {
     chainId: 31337, address: CONTRACT, authorizer: CONTRACT,
@@ -276,6 +278,83 @@ describe("request ownership and immutable assessment workflow", () => {
       await runtime.store.put(`request:${request.code}`, { ...request, ...change });
       await expect(runtime.service.getRequest(request.code)).rejects.toThrow("Corrupt");
     }
+  });
+});
+
+describe("real mint preparation X spelling snapshot", () => {
+  function realSetup(options: { repository?: AssessmentRepository; store?: KeyValueStore; omitResolver?: boolean; lookupResponse?: unknown } = {}) {
+    const xFetch = vi.fn(async () => new Response(JSON.stringify(options.lookupResponse ?? { data: { id: "1234", username: "ALIce" } }))) as unknown as typeof fetch;
+    const grokFetch = vi.fn(async () => new Response(JSON.stringify({
+      id: "response-prepared", model: GROK_DEFAULT_MODEL, status: "completed", citations: ["https://x.com/ALIce/status/123"],
+      output: [{ type: "x_search_call", status: "completed" }, { type: "message", role: "assistant", content: [{ type: "output_text", text: JSON.stringify({ handle: "alice", mbti: "INTJ", xUserId: "1234" }) }] }],
+    }))) as unknown as typeof fetch;
+    const provider = new GrokAssessmentProvider({ apiKey: "mock-test-key", fetch: grokFetch });
+    const identityResolver = options.omitResolver ? undefined : new XApiIdentityResolver({ bearerToken: "mock-test-token", fetch: xFetch, now: () => new Date(NOW) });
+    return { ...setup({ ...options, provider, identityResolver, fixture: false }), xFetch, grokFetch, identityResolver };
+  }
+  it("renders X-returned case, binds the account assessment and signs the unchanged lowercase handle key", async () => {
+    const runtime = realSetup();
+    const request = await runtime.ready("@aLiCe");
+    const artifact = (await runtime.service.artifact("alice"))!;
+    expect(artifact.renderHandle).toBe("ALIce");
+    expect(artifact.assessment.xIdentity).toMatchObject({ username: "ALIce", userId: "1234", provenance: "x-api", verifiedAt: new Date(NOW).toISOString() });
+    expect(await runtime.service.asset(artifact.svgSha256, "svg")).toEqual(Buffer.from(renderSignatureSvg("ALIce", "INTJ")));
+    const metadata = JSON.parse((await runtime.service.asset(artifact.metadataSha256, "json"))!.toString());
+    expect(metadata.name).toBe("@ALIce · INTJ");
+    expect(metadata.renderer.handle).toBe("ALIce");
+    expect(metadata.assessment.xIdentity).toEqual(artifact.assessment.xIdentity);
+    await runtime.service.authorize(request.code, true, runtime.session);
+    expect(vi.mocked(runtime.network.sign).mock.calls[0][0].handleKey).toBe(handleDigest("alice"));
+    expect(vi.mocked(runtime.network.sign).mock.calls[0][0].assessmentDigest).toBe(artifact.assessment.digest);
+    expect(runtime.xFetch).toHaveBeenCalledTimes(1); expect(runtime.grokFetch).toHaveBeenCalledTimes(1);
+  });
+  it("reuses the snapshot after durable restart and window expiry without live-current confirmation", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "sg-verified-snapshot-test-")); paths.push(directory);
+    const repository = new FileAssessmentRepository(join(directory, "assessments"));
+    const runtime = realSetup({ repository, store: await FileKeyValueStore.create(join(directory, "records")) });
+    const first = await runtime.ready("ALICE");
+    const artifact = (await runtime.service.artifact("alice"))!;
+    const restarted = realSetup({ repository: new FileAssessmentRepository(join(directory, "assessments")), store: await FileKeyValueStore.create(join(directory, "records")), lookupResponse: { data: { id: "9999", username: "alice" } } });
+    restarted.setNow(first.expiresAt + 1);
+    const next = await restarted.ready("Alice", restarted.connectedSession());
+    expect(next.assessmentId).toBe(first.assessmentId);
+    expect(await restarted.service.artifact("alice")).toEqual(artifact);
+    expect(restarted.xFetch).not.toHaveBeenCalled(); expect(restarted.grokFetch).not.toHaveBeenCalled();
+  });
+  it("requires configured X lookup before spending any paid assessment or budget", async () => {
+    const runtime = realSetup({ omitResolver: true });
+    await expectCode(runtime.service.request("alice", runtime.session), "X_LOOKUP_NOT_CONFIGURED");
+    expect(runtime.xFetch).not.toHaveBeenCalled(); expect(runtime.grokFetch).not.toHaveBeenCalled();
+    expect(await runtime.store.entries("budget:")).toEqual([]);
+  });
+  it("fails closed on X account mismatch and does not automatically retry either paid stage", async () => {
+    const runtime = realSetup({ lookupResponse: { data: { id: "1234", username: "other" } } });
+    const request = await runtime.service.request("alice", runtime.session); await runtime.service.idle();
+    expect((await runtime.service.getRequest(request.code)).status).toBe("failed");
+    expect(await runtime.service.artifact("alice")).toBeUndefined();
+    expect(runtime.grokFetch).not.toHaveBeenCalled();
+    await expectCode(runtime.service.request("ALICE", runtime.session), "ASSESSMENT_RETRY_BLOCKED");
+    expect(runtime.xFetch).toHaveBeenCalledTimes(1);
+  });
+  it("preserves historical unverified real artifacts but refuses new preparation and signing", async () => {
+    const runtime = realSetup();
+    const request = await runtime.ready();
+    const artifact = (await runtime.service.artifact("alice"))!;
+    const { xIdentity: _identity, digest: _digest, ...oldUnsignedAssessment } = artifact.assessment;
+    const oldAssessment = { ...oldUnsignedAssessment, digest: assessmentDigest(oldUnsignedAssessment) };
+    const repository = new MemoryAssessmentRepository(); await repository.putIfAbsent(oldAssessment);
+    const { digest: _artifactDigest, ...oldUnsignedArtifact } = { ...artifact, assessment: oldAssessment };
+    const oldArtifact = { ...oldUnsignedArtifact, digest: keccak256(stringToHex(JSON.stringify(oldUnsignedArtifact))) };
+    await runtime.store.put("artifact:alice", oldArtifact);
+    const restarted = realSetup({ repository, store: runtime.store });
+    const service = new OpenMintService({ ...restarted.service.options });
+    expect(await service.artifact("alice")).toEqual(oldArtifact);
+    await expectCode(service.request("ALICE", runtime.session), "X_VERIFICATION_REQUIRED");
+    await expectCode(service.authorize(request.code, true, runtime.session), "X_VERIFICATION_REQUIRED");
+    expect(await runtime.store.get("artifact:alice")).toEqual(oldArtifact);
+    expect(await repository.get("alice")).toEqual(oldAssessment);
+    expect(restarted.network.sign).not.toHaveBeenCalled();
+    expect(restarted.xFetch).not.toHaveBeenCalled(); expect(restarted.grokFetch).not.toHaveBeenCalled();
   });
 });
 

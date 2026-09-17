@@ -275,4 +275,118 @@ describe("local open mint network", () => {
     const f = fixture(); f.latest.number = 1n;
     await expect(f.network.now()).rejects.toThrow(/Deployment block/);
   });
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])("rejects unsafe confirmation count %s before RPC access", confirmations => {
+    const f = fixture();
+    expect(() => createLocalOpenMintNetwork({ ...config, confirmations }, f.rpc)).toThrow(/Confirmations/);
+    expect(f.rpc.chainId).not.toHaveBeenCalled();
+  });
+
+  it("rejects a zero contract or negative deployment block before RPC access", () => {
+    const f = fixture();
+    expect(() => createLocalOpenMintNetwork({ ...config, contract: `0x${"0".repeat(40)}` }, f.rpc)).toThrow(/contract must be nonzero/);
+    expect(() => createLocalOpenMintNetwork({ ...config, deploymentBlock: -1n }, f.rpc)).toThrow(/Deployment block must be nonnegative/);
+    expect(f.rpc.chainId).not.toHaveBeenCalled();
+  });
+
+  it("defaults the deployment block to genesis and honors a custom confirmation count", async () => {
+    const f = fixture(); f.minted();
+    const network = createLocalOpenMintNetwork({ ...config, deploymentBlock: undefined, confirmations: 3 }, f.rpc);
+    expect((await network.state("bigu")).state).toBe("pending");
+    expect(f.rpc.logs).toHaveBeenCalledWith(contract, a.handleKey, 0n, 10n);
+    f.latest.number = 11n;
+    expect((await network.state("bigu")).state).toBe("minted");
+  });
+
+  it.each([0n, BigInt(Number.MAX_SAFE_INTEGER)])("returns exactly representable block timestamp %s", async timestamp => {
+    const f = fixture(); f.latest.timestamp = timestamp;
+    expect(await f.network.now()).toBe(Number(timestamp));
+  });
+
+  it.each([-1n, BigInt(Number.MAX_SAFE_INTEGER) + 1n])("rejects an unsafe block timestamp %s", async timestamp => {
+    const f = fixture(); f.latest.timestamp = timestamp;
+    await expect(f.network.now()).rejects.toThrow(/Block timestamp is outside the safe integer range/);
+  });
+
+  it.each([a.issuedAt, a.deadline])("accepts the inclusive authorization boundary %s", async timestamp => {
+    const f = fixture(); f.latest.timestamp = timestamp;
+    const signature = await f.network.sign(a);
+    await expect(f.network.transaction("bigu", a, uri, signature)).resolves.toMatchObject({ from: recipient, value: "0x0" });
+    expect(f.rpc.simulate).toHaveBeenCalledOnce();
+  });
+
+  it("accepts an absent EOA bytecode response for both preflight and signing", async () => {
+    const f = fixture();
+    vi.mocked(f.rpc.code).mockImplementation(async address => address === contract ? code : undefined);
+    await f.network.preflight!(recipient);
+    const signature = await f.network.sign(a);
+    await expect(f.network.transaction("bigu", a, uri, signature)).resolves.toMatchObject({ from: recipient });
+  });
+
+  it.each([undefined, "0x"] as const)("rejects missing contract runtime %s before any contract read", async runtime => {
+    const f = fixture(); vi.mocked(f.rpc.code).mockResolvedValue(runtime);
+    await expect(f.network.now()).rejects.toThrow(/runtime code mismatch/);
+    expect(f.rpc.read).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed or zero preflight recipients without RPC access", async () => {
+    const f = fixture();
+    await expect(f.network.preflight!("invalid" as Address)).rejects.toThrow();
+    await expect(f.network.preflight!(`0x${"0".repeat(40)}`)).rejects.toThrow(/recipient must be nonzero/);
+    expect(f.rpc.chainId).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, 0, "false"])("rejects ambiguous mintedHandle response %s instead of reporting unminted", async minted => {
+    const f = fixture();
+    const read = f.rpc.read;
+    f.rpc.read = vi.fn(async (address, name, args, block) => name === "mintedHandle" ? minted : read(address, name, args, block));
+    await expect(f.network.state("bigu")).rejects.toThrow(/Invalid minted handle response/);
+    expect(f.rpc.logs).not.toHaveBeenCalled();
+    await expect(f.network.sign(a)).rejects.toThrow(/already minted/);
+  });
+
+  it.each(["usedNonces", "revokedNonces", "paused"])("fails closed when %s is unavailable instead of authorizing", async name => {
+    const f = fixture(); const signature = await f.network.sign(a);
+    f.responses[name] = undefined;
+    await expect(f.network.sign(a)).rejects.toThrow();
+    await expect(f.network.transaction("bigu", a, uri, signature)).rejects.toThrow();
+    expect(f.rpc.simulate).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, 42, `0x${"0".repeat(40)}`])("rejects invalid token owner %s instead of revealing a minted token", async owner => {
+    const f = fixture(); f.minted(); f.responses.ownerOf = owner;
+    await expect(f.network.state("bigu")).rejects.toThrow(/Token owner/);
+  });
+
+  it.each([
+    { label: "not an array", provenance: undefined },
+    { label: "non-string field", provenance: ["bigu", 0, a.artifactDigest, recipient, a.tokenURIHash, digest] },
+    { label: "different handle", provenance: ["other", a.assessmentDigest, a.artifactDigest, recipient, a.tokenURIHash, digest] },
+    { label: "zero commitment", provenance: ["bigu", bytes32("00"), a.artifactDigest, recipient, a.tokenURIHash, digest] },
+  ])("rejects immutable provenance with $label", async ({ provenance }) => {
+    const f = fixture(); f.minted(); f.responses.provenance = provenance;
+    await expect(f.network.state("bigu")).rejects.toThrow(/provenance/);
+  });
+
+  it.each(["handle key", "token ID", "before deployment"])("rejects mismatched %s in otherwise valid event evidence", async kind => {
+    const f = fixture(); f.minted();
+    if (kind === "handle key") f.log.args.handleKey = openMintHandleKey("other");
+    if (kind === "token ID") f.log.args.tokenId += 1n;
+    if (kind === "before deployment") f.log.blockNumber = 1n;
+    await expect(f.network.state("bigu")).rejects.toThrow(/Mint event/);
+  });
+
+  it("rejects a changed block number even if a corrupt RPC repeats the trusted hash", async () => {
+    const f = fixture();
+    vi.mocked(f.rpc.block).mockImplementation(async number => ({ ...f.latest, number: number === undefined ? f.latest.number : f.latest.number + 1n }));
+    await expect(f.network.now()).rejects.toThrow(/Canonical block changed/);
+    await expect(f.network.state("bigu")).rejects.toThrow(/Canonical block changed/);
+  });
+
+  it("withholds prepared calldata if the canonical block changes during successful simulation", async () => {
+    const f = fixture(); const signature = await f.network.sign(a);
+    vi.mocked(f.rpc.simulate).mockImplementation(async () => { f.latest.hash = bytes32("ff"); });
+    await expect(f.network.transaction("bigu", a, uri, signature)).rejects.toThrow(/Canonical block changed/);
+    expect(f.rpc.simulate).toHaveBeenCalledOnce();
+  });
 });

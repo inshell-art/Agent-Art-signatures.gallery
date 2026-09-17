@@ -1,0 +1,56 @@
+{
+  "schema": "signatures-gallery-slogan-lock/1",
+  "status": "pinned",
+  "upstream": {
+    "repository": "https://github.com/inshell-art/agent-art-Signature-prototype",
+    "tag": "v2.0.1",
+    "tagObject": "5c68785c9723cd2cd9175d0283ee22d7cfcd6fc3",
+    "commit": "d00c018d1a740a5807480126d1f1bd0c620fb96d"
+  },
+  "algorithmVersion": "2.0.1",
+  "rendererVersion": "sg-renderer-2.0.1",
+  "adoption": {
+    "scope": "brand-slogan-only",
+    "accountRendererVersion": "sg-renderer-2.0.0",
+    "legacyRendererVersion": "sg-renderer-1.0.0"
+  },
+  "verification": {
+    "oracle": "Pinned upstream Python whole-phrase capture with reusable_text_curve_layout; UTF-8 path SHA-256",
+    "ownerVisualApproval": "Not asserted; ready for review"
+  },
+  "source": {
+    "displayText": "What_shape_do_you_go_by?",
+    "rendererVersion": "sg-renderer-2.0.1",
+    "upstreamCommit": "d00c018d1a740a5807480126d1f1bd0c620fb96d",
+    "pythonSha256": "bfa7ebdfb6e5ced7ddc0b92c3facb3709863ee6c6d10cf9a2f1596c018ecb896",
+    "adapter": "brand-only-whole-phrase-v2"
+  },
+  "layout": {
+    "extended": true,
+    "character_count": 24,
+    "reference_character_limit": 15,
+    "segment_width": 21.428571428571427,
+    "curve_span": 492.85714285714283,
+    "canonical_width": 612.8571428571429,
+    "canonical_height": 420,
+    "proportional_output_width": 1576,
+    "proportional_output_height": 1080
+  },
+  "files": {
+    "reference/algorithm-v2.0.1/signature_renderer_v2.0.1.py": "bfa7ebdfb6e5ced7ddc0b92c3facb3709863ee6c6d10cf9a2f1596c018ecb896",
+    "reference/algorithm-v2.0.1/signature_renderer_v2.0.1.json": "c305da7492b26749e9d4e88c4b0cb4de4deb1f654f334a6aaa6abe367078faa6",
+    "reference/algorithm-v2.0.1/SHA256SUMS": "1f04082c2cc02dfefb03864519021d67ec3be874d72ea65cf327eab8861c57e0",
+    "scripts/capture-slogan-v2.py": "ad8cd2e889370ed8662c0616528cf281c7d72d9953c0c0b7249146e15c569447",
+    "src/brand/sloganMbtiFrames.ts": "b75367361b1f1363808738b98962509162f1ebcedf0f6fb05874382a912018bf"
+  },
+  "frames": [
+    { "mbti": "ISTJ", "pairedMbti": "ESTJ", "sha256": "f2c8ee7007466d5cc38682823ac00932dfb8813d41fd07992a5591e1f62f2725" },
+    { "mbti": "ISFJ", "pairedMbti": "ESFJ", "sha256": "83a240ff33c6d220fa866c8213b07b5040168865c692cb4a73a0d2af028d7e35" },
+    { "mbti": "INFJ", "pairedMbti": "ENFJ", "sha256": "33b7c8523191cb1f8d0063dd35f8b0cd0089fe074bdb0153ae71884297f149e3" },
+    { "mbti": "INTJ", "pairedMbti": "ENTJ", "sha256": "133cd1248940c1d637e53c9b6ad8d121d34b777c398417a6b77f23933a82d184" },
+    { "mbti": "ISTP", "pairedMbti": "ESTP", "sha256": "582a7c0f575de5fcdbc15e276ecf2effac91d6c1b4a0e911d391553d0f1d3bd8" },
+    { "mbti": "ISFP", "pairedMbti": "ESFP", "sha256": "3d45cf83c7eb2d0b86125cd0580d2f57747c4be8fb076653dfe33d0ef99183ad" },
+    { "mbti": "INFP", "pairedMbti": "ENFP", "sha256": "5c6f9fe4f37ef33983d376bf9201ca566cbaabdc553fdf5b70e530b83d907a22" },
+    { "mbti": "INTP", "pairedMbti": "ENTP", "sha256": "dc9e1f0c66e143098352d4095a59ff89fdcba636d26aa7bc6de6d0a5dac02fa8" }
+  ]
+}

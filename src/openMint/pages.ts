@@ -2,9 +2,12 @@ import { SITE_FONT_PRELOAD } from "../v1/fonts.js";
 import { SITE_CSS_URL } from "../v1/siteCss.js";
 import { HOME_LINK } from "../v1/navigation.js";
 import { FAVICON_LINK } from "../brand/favicon.js";
-import { xProfileLink } from "../v1/xProfile.js";
-import { SLOGAN_DISPLAY_TEXT, SLOGAN_SIGNATURE_SVG, SLOGAN_SIGNATURE_MOBILE_SVG } from "../brand/sloganSignature.js";
+import { siteFooter } from "../brand/footer.js";
+import { handleLink, handleVariationsPath } from "./handleLink.js";
+import { SLOGAN_MBTI_HERO_MANIFEST, SLOGAN_MBTI_HERO_SVG, SLOGAN_MBTI_HERO_CSS, SLOGAN_MBTI_HERO_SCRIPT_URL } from "../brand/sloganMbtiHero.js";
+import { SLOGAN_TOOLTIP_SCRIPT_URL } from "../brand/sloganTooltipScript.js";
 import { isMbti, MBTI_TYPES, preservedHandle, RENDERER_VERSION, type MBTI } from "./identity.js";
+import type { PublicPreviewState } from "./previewState.js";
 
 export interface OpenMintPageOptions {
   csrfToken?: string;
@@ -20,6 +23,7 @@ export interface OpenMintPageOptions {
   development?: {
     fixture: boolean;
     localChain?: boolean;
+    galleryFixtures?: boolean;
     tools?: Array<{ label: string; href: string }>;
     notes?: string[];
   };
@@ -48,10 +52,13 @@ export interface AssessmentPageModel {
   svgSha256?: string;
   pngSha256?: string;
   assessedAt?: string;
+  identityVerifiedAt?: string;
   sourceLabel?: string;
   error?: string;
   tokenId?: string;
   mint?: MintPageState;
+  /** Presentation-only sample; never a chain-backed mint record. */
+  galleryFixture?: boolean;
 }
 
 export interface GalleryEntry {
@@ -85,19 +92,54 @@ const renderedPageHandle = (handle: string, renderHandle?: string): string => {
   return preserved;
 };
 const action = (label: string, attributes: string): string => `<button class="auth-action" type="button" ${attributes}><span>${e(label)}</span></button>`;
+const mbtiLink = (mbti: string): string => isMbti(mbti)
+  ? `<a class="mbti-link" href="/${mbti}/">${mbti}</a>`
+  : `<span>${e(mbti)}</span>`;
+
+const artworkLabel = (handle: string, mbti?: string): string => `@${handle}${mbti ? ` × ${mbti}` : ""}`;
+
+/** One caption policy for detail pages, previews, and every artwork grid. */
+function artworkCaption(handle: string, mbti: string | undefined, options: {
+  context: "detail" | "gallery" | "variation";
+  status?: "Minted" | "Preview";
+  mintStateLabel?: boolean;
+}): string {
+  const { context, status } = options;
+  const name = context === "detail" ? `<h1>${handleLink(handle)}</h1>`
+    : `<span class="artwork-handle">${handleLink(handle)}</span>`;
+  const personality = mbti ? `<span class="artwork-personality"><span class="artwork-personality-separator" aria-hidden="true">×</span>${mbtiLink(mbti)}</span>` : "";
+  const captionClass = context === "gallery" ? " gallery-card-copy" : context === "variation" ? " open-preview-caption" : "";
+  const statusClass = context === "variation" && status === "Minted" ? " open-preview-minted-badge" : "";
+  const statusTag = status === "Minted" ? "a" : "span";
+  const statusLink = status === "Minted" ? ' href="/"' : "";
+  return `<div class="artwork-caption${captionClass}"><div class="artwork-identity">${name}${personality}</div>${status ? `<${statusTag} class="signature-tag artwork-status${statusClass}"${statusLink}${options.mintStateLabel ? " data-mint-state-label" : ""}>${status}</${statusTag}>` : ""}</div>`;
+}
 
 /** Extends the existing paper, type, navigation and hairline controls without replacing them. */
 export const OPEN_MINT_CSS = `
-.open-mint .open-preview-note a{color:var(--ink);text-underline-offset:.2em}.open-mint .open-preview-note a:focus-visible{outline:2px solid var(--blue);outline-offset:3px}.open-mint .open-preview-variations{padding:5rem var(--page-gutter) 3rem}.open-mint .open-preview-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1.5rem 1rem;list-style:none;margin:2rem 0;padding:0}.open-mint .open-preview-grid>li{min-width:0}.open-mint .open-preview-card{display:block;text-decoration:none}.open-mint .open-preview-card img{display:block;width:100%;height:auto;aspect-ratio:1;background:var(--art-paper)}.open-mint .open-preview-card .signature-tag{margin-top:.6rem}.open-mint .open-preview-card:hover .signature-tag{text-decoration:underline;text-underline-offset:.2em}.open-mint .open-preview-card:focus-visible{outline:2px solid var(--blue);outline-offset:4px}@media(max-width:600px){.open-mint .open-preview-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+${SLOGAN_MBTI_HERO_CSS}
+.open-mint .home-grid .slogan-lockup{max-width:56rem}
+.open-mint .home-grid .intro-panel{padding-block-start:7rem;padding-block-end:clamp(2.5rem,4vw,4rem)}
+/* Let home artwork reach the page edges without widening the intro or other galleries. */
+.open-mint .home-grid .public-gallery-grid{margin-inline:calc(-1 * var(--page-gutter,32px))}
+/* Center home navigation on the gallery edges; keep the 44px targets on-screen on narrow viewports. */
+.open-mint:has(.home-grid){--home-nav-inset:clamp(-22px,calc((1024px - 100vw)/2 + 20px),12px)}
+.open-mint:has(.home-grid) .home-return{inset-inline-start:max(var(--home-nav-inset),calc(env(safe-area-inset-left) - 22px))}
+.open-mint:has(.home-grid) .collection-shortcut{inset-inline-end:max(var(--home-nav-inset),calc(env(safe-area-inset-right) - 22px))}
+.open-mint .open-preview-note a{color:var(--ink);text-underline-offset:.2em}.open-mint .open-preview-note a:focus-visible{outline:2px solid var(--blue);outline-offset:3px}.open-mint .open-preview-variations{padding:5rem var(--page-gutter) 3rem}.open-mint .open-preview-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1.5rem 1rem;list-style:none;margin:2rem 0;padding:0}.open-mint .open-preview-grid>li{min-width:0}.open-mint .open-preview-card{display:block;text-decoration:none}.open-mint .open-preview-card img{display:block;width:100%;height:auto;aspect-ratio:1;background:var(--art-paper)}.open-mint .open-preview-grid>li>.signature-tag{margin-top:.6rem}.open-mint .open-preview-card:focus-visible{outline:2px solid var(--blue);outline-offset:4px}@media(max-width:600px){.open-mint .open-preview-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.open-mint .open-preview-minted>.open-preview-card{outline:1px solid var(--ink);outline-offset:4px}.open-mint .open-preview-minted>.open-preview-card:focus-visible{outline:2px solid var(--blue)}
+.open-mint .open-preview-intro{color:var(--ink);line-height:1.6}.open-mint .open-preview-notice{max-width:48rem;margin-block:1rem;padding:.65rem .85rem;border-inline-start:2px solid var(--line);background:var(--paper-2);color:var(--ink);line-height:1.6}.open-mint .open-preview-notice-label{display:block;font-weight:600}.open-mint .open-preview-warning{--preview-warning:#806014;border-inline-start:1px solid var(--preview-warning);background:transparent;padding:.15rem 0 .15rem .65rem;color:var(--muted);font-size:.9em}.open-mint .open-preview-warning .open-preview-notice-label{display:inline;font-weight:500;color:var(--preview-warning)}.open-mint .open-preview-warning .open-preview-notice-label::after{content:":"}@media(prefers-color-scheme:dark){.open-mint .open-preview-warning{--preview-warning:#c6a65a}}
+.open-mint :is(.gallery-handle,.mbti-link){text-decoration:none;text-underline-offset:.18em}.open-mint :is(.gallery-handle,.mbti-link):hover,.open-mint :is(.gallery-handle,.mbti-link):focus-visible{text-decoration:underline}.open-mint :is(.gallery-handle,.mbti-link):focus-visible{outline:2px solid var(--blue);outline-offset:3px}
+.open-mint .artwork-caption{display:flex;align-items:baseline;flex-wrap:wrap;gap:.35rem .75rem;width:100%;min-width:0;line-height:1.5}.open-mint .artwork-identity{display:flex;align-items:baseline;flex-wrap:wrap;gap:.2em .35em;min-width:0;max-width:100%}.open-mint .artwork-identity h1,.open-mint .artwork-handle{margin:0;min-width:0;max-width:100%;line-height:inherit;overflow-wrap:anywhere}.open-mint .artwork-personality{display:inline-flex;align-items:baseline;gap:.35em;white-space:nowrap}.open-mint .artwork-personality-separator{color:var(--muted)}.open-mint .artwork-status{flex:none;margin-inline-start:auto;color:var(--ink)}.open-mint .open-preview-caption{padding-top:.6rem}
+.open-mint a.signature-tag{text-decoration:none}.open-mint a.signature-tag:hover,.open-mint a.signature-tag:focus-visible{background:var(--ink);color:var(--paper);text-decoration:none}.open-mint a.signature-tag:focus-visible{outline:2px solid var(--blue);outline-offset:3px}
 .open-mint [hidden]{display:none!important}.open-mint .open-handle-form{display:flex;align-items:center;flex-wrap:wrap;gap:0 .65rem;max-width:28rem}.open-mint .open-handle-input{width:14rem;max-width:100%;min-width:0;margin:0;padding:7px 9px;border:1px solid var(--line);border-radius:2px;background:transparent;color:var(--ink);line-height:1.4}.open-mint .open-handle-input:focus-visible{outline:2px solid var(--ink);outline-offset:3px}.open-mint .open-intro{width:100%;max-width:42rem;margin-inline:auto}.open-mint .open-intro p{line-height:1.6}.open-mint .open-handoff{margin-top:.25rem}.open-mint .open-handoff>summary{color:var(--muted)}.open-mint .open-handoff textarea{min-height:10rem}.open-mint .open-art-waiting{display:grid;place-items:center;aspect-ratio:1;background:var(--art-paper);color:#625f59;text-align:center;padding:2rem}.open-mint .open-art-waiting p{max-width:22rem;line-height:1.6}.open-mint .open-mint-panel{scroll-margin-top:5rem;margin-top:.5rem;padding-top:.5rem;border-top:1px solid var(--line)}.open-mint .open-mint-panel .consent-line{margin:.8rem 0}.open-mint .open-mint-panel .signature-facts{margin:.5rem 0}.open-mint .open-feedback{margin:.25rem 0;min-height:0;color:var(--muted);line-height:1.5}.open-mint .open-feedback:empty{margin:0}.open-mint .open-wallet-address{overflow-wrap:anywhere;font-variant-numeric:tabular-nums}.open-mint .open-mint-entry{margin-top:.3rem}.open-mint .open-mint-entry .auth-action{margin-inline-start:auto}.open-mint .open-mint-entry .signature-tag{margin-inline-end:auto}.open-mint .open-collection-wallet{display:flex;flex-wrap:wrap;align-items:center;gap:0 .75rem}.open-mint .open-dev-tools{display:flex;flex-wrap:wrap;gap:.5rem 1rem}.open-mint .open-poll-note{color:var(--muted)}
 .open-mint .open-mint-form{display:grid;align-items:start;gap:1rem;max-width:35rem}.open-mint .open-mint-form>label{display:grid;gap:.45rem}.open-mint .open-mint-form .auth-actions{margin:0}.open-mint .open-mint-form p{margin:0;line-height:1.6}.open-mint .open-mint-explanation{max-width:35rem;line-height:1.6}.open-mint .open-mint-cost{color:var(--muted)}.open-mint .open-mint-progress{max-width:35rem}.open-mint .open-mint-progress>p{line-height:1.6}.open-mint .open-mint-progress form{margin-block:1rem}.open-mint .open-gallery-empty{margin-block:2rem;color:var(--muted)}.open-mint .open-preview-note{color:var(--muted);line-height:1.6}.open-mint .open-preview-bridge{margin-block:1rem}.open-mint .open-mint-form .open-wallet-address{margin-bottom:.4rem}
 `;
 
 function layout(title: string, body: string, options: OpenMintPageOptions, description = "An X handle, an artist-defined system, and Grok’s reading become a signature."): string {
+  const sloganScript = body.includes('id="slogan-tooltip"') ? `<script src="${SLOGAN_TOOLTIP_SCRIPT_URL}" defer></script><script src="${SLOGAN_MBTI_HERO_SCRIPT_URL}" defer></script>` : "";
   const dev = options.development;
-  const walletTools = dev?.localChain && (body.includes("data-mint-entry") || body.includes("data-assessment-code") || body.includes("data-collection-page")) ? `<section><h2>Local test wallet</h2><p>These controls use a public test key on the local chain.</p><div class="auth-actions">${action("Use local test wallet", "data-dev-wallet")}${body.includes("data-mint-form") ? action("Mint with local test wallet", "data-dev-mint disabled") : ""}</div><p class="open-feedback" data-dev-feedback role="status" aria-live="polite"></p></section>` : "";
-  const overlay = dev ? `<aside class="rehearsal-watermark" aria-label="Developer overlay"><details class="rehearsal-disclosure"><summary aria-controls="open-dev-context"><span class="rehearsal-dev-badge">DEV</span><span>${dev.fixture ? "Fixture tools" : dev.localChain ? "Local chain" : "Developer tools"}</span></summary><div id="open-dev-context" class="rehearsal-context"><p class="rehearsal-context-heading">Developer overlay</p><section><h2>${dev.fixture ? "Simulated assessment" : "Assessment source"}</h2><p>${dev.fixture ? "Fixture results are simulated. Grok did not research these handles or choose these MBTI values." : "The backend calls Grok to research public X posts. Client input cannot choose the MBTI."}</p>${dev.localChain ? "<p>Local chain rehearsal. Public test funds have no value.</p>" : ""}</section>${dev.tools?.length ? `<section><h2>Tools</h2><div class="open-dev-tools">${dev.tools.map(tool => `<a href="${e(safeUrl(tool.href))}">${e(tool.label)}</a>`).join("")}</div></section>` : ""}${dev.notes?.length ? `<section><h2>Notes</h2>${dev.notes.map(note => `<p>${e(note)}</p>`).join("")}</section>` : ""}</div></details></aside>` : "";
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>${e(title === "Signatures Gallery" ? title : `${title} · Signatures Gallery`)}</title><meta name="description" content="${e(description)}">${FAVICON_LINK}${SITE_FONT_PRELOAD}<link rel="stylesheet" href="${e(safeUrl(options.stylesheetUrl, SITE_CSS_URL))}"><script src="${e(safeUrl(options.clientScriptUrl, "/assets/open-mint.js"))}" defer></script></head><body class="book-page open-mint" data-open-mint data-wallet-verified="${options.walletVerified ? "true" : "false"}" data-chain-id="${e(options.chainId)}" data-contract="${e(options.contract)}"${dev?.fixture ? ' data-fixture="true"' : ""}${dev?.localChain ? ' data-local-chain="true"' : ""}><main>${HOME_LINK}<a class="collection-shortcut" href="/me" aria-label="My Collection" title="My Collection"><span class="collection-shortcut-dot" aria-hidden="true"></span></a>${body}</main><footer><div class="footer-credit">by <a class="footer-agent" href="https://x.com/AgentArt_AA" target="_blank" rel="noopener noreferrer"><span>Agent Art</span><span aria-hidden="true">↗</span></a></div><a class="footer-about" href="/about">About the work</a></footer>${overlay.replace("</div></details></aside>", `${walletTools}</div></details></aside>`)}</body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>${e(title === "Signatures Gallery" ? title : `${title} · Signatures Gallery`)}</title><meta name="description" content="${e(description)}">${FAVICON_LINK}${SITE_FONT_PRELOAD}<link rel="stylesheet" href="${e(safeUrl(options.stylesheetUrl, SITE_CSS_URL))}"><script src="${e(safeUrl(options.clientScriptUrl, "/assets/open-mint.js"))}" defer></script>${sloganScript}</head><body class="book-page open-mint" data-open-mint data-wallet-verified="${options.walletVerified ? "true" : "false"}" data-chain-id="${e(options.chainId)}" data-contract="${e(options.contract)}"${dev?.fixture ? ' data-fixture="true"' : ""}${dev?.localChain ? ' data-local-chain="true"' : ""}><main>${HOME_LINK}<a class="collection-shortcut" href="/me" aria-label="My Collection" title="My Collection"><span class="collection-shortcut-dot" aria-hidden="true"></span></a>${body}</main>${siteFooter()}</body></html>`;
 }
 
 function walletControls(options: OpenMintPageOptions, proved = options.walletVerified): string {
@@ -106,7 +148,7 @@ function walletControls(options: OpenMintPageOptions, proved = options.walletVer
 
 export function handoffPrompt(publicOrigin?: string): string {
   const origin = safeUrl(publicOrigin, "https://signatures.gallery").replace(/\/$/, "");
-  return `First, ask me which X handle I want to explore. Accept a handle containing 1–15 letters, numbers, or underscores. Preserve its exact spelling and capitalization; only remove the leading @. For example, @Alice_Bob_Key must become Alice_Bob_Key, not alice_bob_key. After I provide a valid handle, use the public X information available to you to assess an MBTI for that handle in this chat. Treat the MBTI as an artistic interpretation, not a psychological diagnosis. If you cannot find enough information, say so instead of inventing an assessment. Choose one of these uppercase types: ${MBTI_TYPES.join(", ")}. Then return: Check the signature of @<handle>: ${origin}/s/<handle>/<MBTI>. For example: ${origin}/s/Alice_Bob_Key/ENFP. Use the letters, not a number. This is an editable preview, not a mint authorization. Do not call the site to request an assessment or ask for a wallet; minting is a separate action on the site.`;
+  return `First, ask me which X handle I want to explore. Accept a handle containing 1–15 letters, numbers, or underscores; remove a leading @. After I provide a valid handle, resolve its exact current X username spelling and capitalization from public X information before constructing the preview URL. Check that the resolved username matches my input after removing @ and ignoring letter case; do not substitute another account. Use the resolved capitalization in the link. For example, if I enter @alice_bob_key and X shows Alice_Bob_Key, use Alice_Bob_Key. If you cannot verify the current username spelling, say so and do not invent a resolved link. Then use the public X information available to you to assess an MBTI for that handle in this chat. Treat the MBTI as an artistic interpretation, not a psychological diagnosis. If you cannot find enough information, say so instead of inventing an assessment. Choose one of these uppercase types: ${MBTI_TYPES.join(", ")}. Then return: Check the signature of @<handle>: ${origin}/p/<handle>/<MBTI>. For example: ${origin}/p/Alice_Bob_Key/ENFP. Use the letters, not a number. Resolving the username here is a convenience, not proof for minting. This is an editable preview, not a mint authorization. The preview site renders the spelling in the URL without looking up X. Do not call the site to request an assessment or ask for a wallet; minting is a separate action on the site.`;
 }
 
 function handoff(options: OpenMintPageOptions): string {
@@ -116,15 +158,24 @@ function handoff(options: OpenMintPageOptions): string {
 function galleryCards(entries: GalleryEntry[]): string {
   return `<div class="public-gallery-grid">${entries.map(entry => {
     const handle = renderedPageHandle(entry.handle, entry.renderHandle);
-    return `<article class="gallery-item"><a class="gallery-card" href="${e(safeUrl(entry.url, signaturePath(handle)))}"><img src="${e(safeUrl(entry.imageUrl))}" alt="Signature for @${e(handle)}" loading="lazy"></a><div class="gallery-card-copy"><strong>${xProfileLink(handle)}</strong><span class="signature-tag">${e(entry.mbti)}</span></div></article>`;
+    return `<article class="gallery-item"><a class="gallery-card" href="${e(safeUrl(entry.url, signaturePath(handle)))}"><img src="${e(safeUrl(entry.imageUrl))}" alt="Signature for ${e(artworkLabel(handle, entry.mbti))}" loading="lazy"></a>${artworkCaption(handle, entry.mbti, { context: "gallery", status: entry.mint?.state === "minted" ? "Minted" : undefined })}</article>`;
   }).join("")}</div>`;
 }
 
 export function homePage(options: OpenMintPageOptions = {}, entries: GalleryEntry[] = []): string {
   const minted = entries.filter(entry => entry.mint?.state === "minted");
-  const slogan = `<div class="slogan-lockup"><h1 class="visually-hidden">${e(SLOGAN_DISPLAY_TEXT)}</h1><figure class="slogan-signature" title="${e(SLOGAN_DISPLAY_TEXT)}" role="img" aria-label="${e(SLOGAN_DISPLAY_TEXT)}"><span class="slogan-signature-layout slogan-signature-desktop">${SLOGAN_SIGNATURE_SVG}</span><span class="slogan-signature-layout slogan-signature-mobile">${SLOGAN_SIGNATURE_MOBILE_SVG}</span></figure></div>`;
+  const sloganText = e(SLOGAN_MBTI_HERO_MANIFEST.displayText);
+  const slogan = `<div class="slogan-lockup slogan-loop"><h1 id="slogan-heading" class="visually-hidden">${sloganText}</h1><figure class="slogan-signature" title="${sloganText}" tabindex="0" role="img" aria-labelledby="slogan-heading" data-slogan-signature-version="${e(SLOGAN_MBTI_HERO_MANIFEST.version)}" data-source-renderer="${e(SLOGAN_MBTI_HERO_MANIFEST.sourceRendererVersion)}"><span class="slogan-signature-layout">${SLOGAN_MBTI_HERO_SVG}</span></figure><span id="slogan-tooltip" class="slogan-tooltip" role="tooltip" aria-hidden="true" hidden>${sloganText}</span></div>`;
   const body = `<section class="home-grid"><div class="intro-panel">${slogan}</div><div class="gallery-shell"><section class="open-intro" aria-label="Mint a signature"><p>Any X handle. One minted signature.</p><div class="auth-actions"><a class="auth-action" href="/mint"><span>Mint a signature</span></a></div>${handoff(options)}</section>${minted.length ? galleryCards(minted) : '<p class="open-gallery-empty">No signatures minted yet.</p>'}</div></section>`;
   return layout("Signatures Gallery", body, options);
+}
+
+export function mbtiGalleryPage(mbti: MBTI, entries: GalleryEntry[], options: OpenMintPageOptions = {}): string {
+  if (!isMbti(mbti)) throw new Error("Choose one of the 16 MBTI types, such as ENFP.");
+  const minted = entries.filter(entry => entry.mint?.state === "minted" && entry.mbti === mbti);
+  const title = `Signatures × ${mbti}`;
+  const body = `<section class="collection-page" data-mbti-gallery="${mbti}"><div class="collection-intro"><h1>${title}</h1></div>${minted.length ? galleryCards(minted) : `<p class="open-gallery-empty">No signatures minted with ${mbti} yet.</p>`}</section>`;
+  return layout(title, body, options);
 }
 
 export function requestPage(handle: string, options: OpenMintPageOptions = {}): string {
@@ -136,23 +187,56 @@ export function mintPage(handle = "", options: OpenMintPageOptions = {}): string
   return layout("Mint & reveal", `<section class="auth-page" data-mint-entry data-wallet-verified="${options.walletVerified ? "true" : "false"}"><div class="auth-sheet"><h1>Mint &amp; reveal</h1><form class="open-mint-form" data-assessment-request><label for="open-handle">X handle<input class="open-handle-input" id="open-handle" name="handle" value="${e(spelling)}" placeholder="@handle" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="16" pattern="@?[A-Za-z0-9_]{1,15}" required aria-describedby="mint-explanation request-feedback"></label>${walletControls(options)}<p id="mint-explanation" class="open-mint-explanation">Grok chooses the final signature. It may differ from your preview. Reveal after minting.</p><p class="open-mint-cost">No mint fee. You pay network gas. Minting creates a permanent public token.</p><div class="auth-actions"><button class="auth-action" type="submit" data-request-submit${options.walletVerified ? "" : " disabled"}><span>Mint &amp; reveal</span></button></div><p class="open-feedback" id="request-feedback" data-request-feedback role="status" aria-live="polite"></p></form></div></section>`, options);
 }
 
-export function previewPage(handle: string, mbti: MBTI, options: OpenMintPageOptions = {}): string {
-  const spelling = preservedHandle(handle);
-  if (!isMbti(mbti)) throw new Error("Choose one of the 16 MBTI types, such as ENFP.");
-  const image = `/preview/${spelling}/${mbti}.svg?renderer=${RENDERER_VERSION}`;
-  return layout(`@${spelling} · ${mbti} preview`, `<article class="signature-page" data-preview-page><div class="signature-sheet"><figure class="signature-art"><img src="${e(image)}" alt="${e(mbti)} signature preview for @${e(spelling)}"></figure><div class="signature-record"><div class="signature-heading"><h1>${xProfileLink(spelling)}</h1><span class="signature-tag">${e(mbti)}</span><span class="signature-tag">Preview</span></div><p class="open-preview-note">A playful preview. Change the MBTI in the URL to explore. <a href="/s/${e(spelling)}/variations">View all 16 variations</a>.</p><div class="auth-actions open-preview-bridge"><a class="auth-action" href="${e(mintPath(spelling))}"><span>Mint for this handle →</span></a></div></div></div></article>`, options, "An editable signature preview. Minting uses an independent Grok assessment.");
+function previewContext(handle: string, options: OpenMintPageOptions, state: PublicPreviewState) {
+  if (state.state === "fixture" && !options.development?.fixture) throw new Error("Gallery samples require fixture mode.");
+  const record = state.state === "minted" || state.state === "fixture" ? state : undefined;
+  if (record && !isMbti(record.mbti)) throw new Error("Choose one of the 16 MBTI types, such as ENFP.");
+  const spelling = record ? renderedPageHandle(handle, record.renderHandle) : preservedHandle(handle);
+  const rendererVersion = record?.rendererVersion ?? RENDERER_VERSION;
+  const badge = "Minted";
+  const rendererNotice = record && rendererVersion !== RENDERER_VERSION ? `<p class="open-preview-notice" data-preview-renderer-notice><strong class="open-preview-notice-label">Renderer</strong> This signature uses an earlier renderer (${e(rendererVersion)}). Alternatives use that same renderer for comparison. The minted artwork remains the saved original.</p>` : "";
+  const statusNotice = state.state === "pending" ? '<p class="open-preview-notice" data-preview-status role="status"><strong class="open-preview-notice-label">Pending</strong> Mint submitted. Waiting for confirmation. These variations remain previews; the final signature will be revealed after confirmation.</p>'
+    : state.state === "unavailable" ? '<p class="open-preview-notice open-preview-warning" data-preview-status role="status"><strong class="open-preview-notice-label">Warning</strong> Mint status cannot be verified right now. You can still explore these previews.</p>' : "";
+  const bridge = record ? `<div class="auth-actions open-preview-bridge"><a class="auth-action" href="${e(safeUrl(record.url))}"><span>View minted signature</span></a></div>`
+    : state.state === "unminted" ? `<div class="auth-actions open-preview-bridge"><a class="auth-action" href="${e(mintPath(spelling))}"><span>Mint for this handle →</span></a></div>` : "";
+  return { record, spelling, rendererVersion, badge, notices: `${statusNotice}${rendererNotice}`, bridge };
 }
 
-export function previewVariationsPage(handle: string, options: OpenMintPageOptions = {}): string {
-  const spelling = preservedHandle(handle);
-  const cards = MBTI_TYPES.map(mbti => `<li><a class="open-preview-card" href="/s/${e(spelling)}/${mbti}" aria-label="Explore ${mbti} for @${e(spelling)}"><img src="/preview/${e(spelling)}/${mbti}.svg?renderer=${RENDERER_VERSION}" alt="${mbti} signature preview for @${e(spelling)}" width="400" height="400"><span class="signature-tag">${mbti}</span></a></li>`).join("");
-  return layout(`@${spelling} · 16 variations`, `<section class="open-preview-variations" data-preview-variations><header class="signature-heading"><h1>16 variations</h1>${xProfileLink(spelling)}<span class="signature-tag">Preview</span></header><p class="open-preview-note">One handle, all 16 MBTI interpretations. Choose a variation to explore.</p><ul class="open-preview-grid" aria-label="MBTI preview variations">${cards}</ul><div class="auth-actions open-preview-bridge"><a class="auth-action" href="${e(mintPath(spelling))}"><span>Mint for this handle →</span></a></div></section>`, options, "Explore all 16 editable MBTI signature previews for one handle. Minting uses an independent Grok assessment.");
+export function previewPage(handle: string, mbti: MBTI, options: OpenMintPageOptions = {}, state: PublicPreviewState = { state: "unminted" }): string {
+  if (!isMbti(mbti)) throw new Error("Choose one of the 16 MBTI types, such as ENFP.");
+  const { record, spelling, rendererVersion, badge, notices, bridge } = previewContext(handle, options, state);
+  const selected = record?.mbti === mbti;
+  const image = selected ? safeUrl(record.imageUrl) : `/preview/${spelling}/${mbti}.svg?renderer=${encodeURIComponent(rendererVersion)}`;
+  const label = selected ? badge : "Preview";
+  const description = selected ? "The minted signature, shown from its saved artwork."
+    : record ? "An alternative interpretation, for exploration only." : "A playful preview. Change the MBTI in the URL to explore.";
+  return layout(`${artworkLabel(spelling, mbti)} ${selected ? label.toLowerCase() : "preview"}`, `<article class="signature-page" data-preview-page data-preview-mint-state="${state.state}"><div class="signature-sheet"><figure class="signature-art"><img src="${e(image)}" alt="${selected ? "Minted signature" : "Signature preview"} for ${e(artworkLabel(spelling, mbti))}"></figure><div class="signature-record">${artworkCaption(spelling, mbti, { context: "detail", status: selected ? "Minted" : "Preview" })}<p class="open-preview-note">${description} <a href="${e(handleVariationsPath(spelling))}">View all 16 variations</a>.</p>${notices}${bridge}</div></div></article>`, options, selected ? "The saved signature for this handle." : "An editable signature preview. Minting uses an independent Grok assessment.");
+}
+
+// Presentation only: pair field polarities without changing the renderer's MBTI order.
+const PREVIEW_MBTI_ORDER: readonly MBTI[] = [
+  "ISTJ", "ESTJ", "ISFJ", "ESFJ",
+  "INFJ", "ENFJ", "INTJ", "ENTJ",
+  "ISTP", "ESTP", "ISFP", "ESFP",
+  "INFP", "ENFP", "INTP", "ENTP",
+];
+
+export function previewVariationsPage(handle: string, options: OpenMintPageOptions = {}, state: PublicPreviewState = { state: "unminted" }): string {
+  const { record, spelling, rendererVersion, badge, notices, bridge } = previewContext(handle, options, state);
+  const cards = PREVIEW_MBTI_ORDER.map(mbti => {
+    const selected = record?.mbti === mbti;
+    const image = selected ? safeUrl(record.imageUrl) : `/preview/${spelling}/${mbti}.svg?renderer=${encodeURIComponent(rendererVersion)}`;
+    const href = selected ? safeUrl(record.url) : `/p/${spelling}/${mbti}`;
+    return `<li${selected ? ` class="open-preview-minted" data-preview-minted="${mbti}"` : ""}><a class="open-preview-card" href="${e(href)}" aria-label="${selected ? `View ${badge.toLowerCase()} ${mbti} signature` : `Explore ${mbti}`} for @${e(spelling)}"><img src="${e(image)}" alt="${selected ? "Minted signature" : "Signature preview"} for ${e(artworkLabel(spelling, mbti))}" width="400" height="400"></a>${artworkCaption(spelling, mbti, { context: "variation", status: selected ? "Minted" : "Preview" })}</li>`;
+  }).join("");
+  const mintedNote = record ? '<p class="open-preview-note" data-preview-minted-note>One minted signature. Fifteen alternative interpretations, for exploration only.</p>' : "";
+  return layout(`@${spelling} · 16 variations`, `<section class="open-preview-variations" data-preview-variations data-preview-mint-state="${state.state}"><header class="signature-heading"><h1>16 variations</h1>${handleLink(spelling)}</header><p class="open-preview-intro" data-preview-intro>One handle, all 16 MBTI interpretations. Choose a variation to explore.</p>${mintedNote}${notices}<ul class="open-preview-grid" aria-label="MBTI preview variations">${cards}</ul>${bridge}</section>`, options, "Explore all 16 MBTI signature interpretations for one handle.");
 }
 
 function mintControls(model: AssessmentPageModel, options: OpenMintPageOptions): string {
   const mint = model.mint?.state ?? "unminted";
   const explorerUrl = safeUrl(model.mint?.explorerUrl, "");
-  if (mint === "minted") return `<div class="auth-actions open-mint-entry"><span class="signature-tag" data-mint-state-label>Minted</span>${explorerUrl ? `<a class="auth-action" href="${e(explorerUrl)}" target="_blank" rel="noopener noreferrer"><span>View token ↗</span></a>` : ""}</div>`;
+  if (mint === "minted") return explorerUrl ? `<div class="auth-actions open-mint-entry"><a class="auth-action" href="${e(explorerUrl)}" target="_blank" rel="noopener noreferrer"><span>View token ↗</span></a></div>` : "";
   if (mint === "pending") return `<p class="open-feedback" data-mint-feedback role="status" aria-live="polite">Waiting for the transaction to be confirmed.</p>`;
   if (model.requestExpired) return `<p class="auth-note">This mint request has expired.</p><div class="auth-actions"><a class="auth-action" href="${e(mintPath(renderedPageHandle(model.handle, model.renderHandle)))}"><span>Return to mint</span></a></div>`;
   if (model.status === "failed") return `<p class="open-feedback" data-mint-feedback role="status" aria-live="polite">${e(model.error ?? "The assessment could not be completed. No mint transaction was submitted.")}</p>`;
@@ -161,19 +245,21 @@ function mintControls(model: AssessmentPageModel, options: OpenMintPageOptions):
 }
 
 export function assessmentPage(model: AssessmentPageModel, options: OpenMintPageOptions = {}): string {
+  if (model.galleryFixture && !options.development?.fixture) throw new Error("Gallery samples require fixture mode.");
   const canonical = canonicalPageHandle(model.handle);
   const handle = renderedPageHandle(model.handle, model.renderHandle);
   const attributes = `data-assessment-code="${e(model.code)}" data-assessment-handle="${e(canonical)}" data-assessment-state="${e(model.status)}" data-can-mint="${model.canMint ? "true" : "false"}" data-wallet-proved="${model.walletProvedForCode ? "true" : "false"}" data-mint-state="${e(model.mint?.state ?? "unminted")}" data-token-id="${e(model.tokenId ?? model.mint?.tokenId)}"`;
   if (model.mint?.state !== "minted") {
     const progress = model.mint?.state === "pending" ? "Mint submitted. Waiting to reveal your signature…" : model.status === "failed" ? "The assessment could not be completed." : model.status === "pending" ? "Preparing your signature…" : "Your signature is ready to mint. Approve the transaction in your wallet to reveal it.";
-    return layout(`Mint & reveal · @${handle}`, `<section class="auth-page" ${attributes}><div class="auth-sheet open-mint-progress"><h1>Mint &amp; reveal</h1><p>${xProfileLink(handle)}</p><p data-assessment-status role="status" aria-live="polite">${progress}</p><p class="open-mint-explanation">Grok chooses the final signature. It may differ from your preview. Reveal after minting.</p><p class="open-mint-cost">No mint fee. You pay network gas. Minting creates a permanent public token.</p>${mintControls(model, options)}<p class="open-feedback" data-poll-feedback role="status" aria-live="polite"></p></div></section>`, options);
+    return layout(`Mint & reveal · @${handle}`, `<section class="auth-page" ${attributes}><div class="auth-sheet open-mint-progress"><h1>Mint &amp; reveal</h1><p>${handleLink(handle)}</p><p data-assessment-status role="status" aria-live="polite">${progress}</p><p class="open-mint-explanation">Grok chooses the final signature. It may differ from your preview. Reveal after minting.</p><p class="open-mint-cost">No mint fee. You pay network gas. Minting creates a permanent public token.</p>${mintControls(model, options)}<p class="open-feedback" data-poll-feedback role="status" aria-live="polite"></p></div></section>`, options);
   }
   const image = safeUrl(model.svgUrl ?? model.imageUrl);
   const fixture = Boolean(options.development?.fixture);
-  const art = image !== "#" ? `<img src="${e(image)}" alt="Signature for @${e(handle)}">` : `<div class="open-art-waiting"><p role="status">The minted artwork is temporarily unavailable.</p></div>`;
-  const facts: Array<[string, unknown]> = [["Handle", `@${handle}`], ["Assessment", fixture ? undefined : model.sourceLabel ?? "Grok · public X research"], ["MBTI", model.mbti], ["Renderer", model.rendererVersion], ["SVG SHA-256", model.svgSha256], ["PNG SHA-256", model.pngSha256], [fixture ? "Created" : "Assessed", model.assessedAt], ["Token", model.mint?.tokenId ?? model.tokenId], ["Transaction", model.mint?.transactionHash]];
-  const provenance = `<div class="signature-tools"><details class="signature-provenance"><summary>Provenance</summary><div class="signature-provenance-body"><p>${fixture ? "The MBTI shapes the signature’s expression. It is an artistic input, not a psychological diagnosis." : "The backend asked Grok to research public X posts and select an MBTI for this handle. The classification is an artistic input, not a psychological diagnosis."}</p><p>The handle identifies the token. Anyone can request a signature for a handle; holding its token does not establish control of the X account.</p><dl class="signature-facts">${facts.filter(([, value]) => value !== undefined && value !== "").map(([label, value]) => `<div><dt>${e(label)}</dt><dd>${e(value)}</dd></div>`).join("")}</dl></div></details>${model.status === "ready" && model.svgUrl ? `<a class="signature-svg" href="${e(safeUrl(model.svgUrl))}" target="_blank" rel="noopener noreferrer" aria-label="Open original SVG">SVG ↗</a>` : ""}</div>`;
-  return layout(`@${handle}${model.mbti ? ` · ${model.mbti}` : ""}`, `<article class="signature-page" data-mint-state="minted"><div class="signature-sheet"><figure class="signature-art">${art}</figure><div class="signature-record"><div class="signature-heading"><h1>${xProfileLink(handle)}</h1>${model.mbti ? `<span class="signature-tag">${e(model.mbti)}</span>` : ""}</div>${mintControls(model, options)}${provenance}</div></div></article>`, options);
+  const art = image !== "#" ? `<img src="${e(image)}" alt="Signature for ${e(artworkLabel(handle, model.mbti))}">` : `<div class="open-art-waiting"><p role="status">The minted artwork is temporarily unavailable.</p></div>`;
+  const identityVerifiedAt = fixture ? undefined : model.identityVerifiedAt;
+  const facts: Array<[string, unknown]> = [["Handle", `@${handle}`], ["Spelling verified at preparation", identityVerifiedAt], ["Assessment", fixture ? undefined : model.sourceLabel ?? "Grok · public X research"], ["MBTI", model.mbti], ["Renderer", model.rendererVersion], ["SVG SHA-256", model.svgSha256], ["PNG SHA-256", model.pngSha256], [fixture ? "Created" : "Assessed", model.assessedAt], ["Token", model.mint?.tokenId ?? model.tokenId], ["Transaction", model.mint?.transactionHash]];
+  const provenance = `<div class="signature-tools"><details class="signature-provenance"><summary>Provenance</summary><div class="signature-provenance-body"><p>${fixture ? "The MBTI shapes the signature’s expression. It is an artistic input, not a psychological diagnosis." : "The backend asked Grok to research public X posts and select an MBTI for this handle. The classification is an artistic input, not a psychological diagnosis."}</p>${identityVerifiedAt ? "<p>This is the spelling verified during preparation, not a live X profile lookup.</p>" : ""}<p>The handle identifies the token. Anyone can request a signature for a handle; holding its token does not establish control of the X account.</p><dl class="signature-facts">${facts.filter(([, value]) => value !== undefined && value !== "").map(([label, value]) => `<div><dt>${e(label)}</dt><dd>${label === "Handle" ? handleLink(handle) : e(value)}</dd></div>`).join("")}</dl></div></details>${model.status === "ready" && model.svgUrl ? `<a class="signature-svg" href="${e(safeUrl(model.svgUrl))}" target="_blank" rel="noopener noreferrer" aria-label="Open original SVG">SVG ↗</a>` : ""}</div>`;
+  return layout(artworkLabel(handle, model.mbti), `<article class="signature-page" data-mint-state="minted"><div class="signature-sheet"><figure class="signature-art">${art}</figure><div class="signature-record">${artworkCaption(handle, model.mbti, { context: "detail", status: "Minted", mintStateLabel: true })}${mintControls(model, options)}${provenance}</div></div></article>`, options);
 }
 
 export function collectionPage(entries: GalleryEntry[] = [], options: OpenMintPageOptions = {}): string {
@@ -184,7 +270,10 @@ export function collectionPage(entries: GalleryEntry[] = [], options: OpenMintPa
 }
 
 export function aboutPage(options: OpenMintPageOptions = {}): string {
-  return layout("About the work", `<article class="about-page"><div class="about-sheet"><h1>About the work</h1><p>Signatures Gallery turns an X handle into a handwriting-like mark. A public identifier becomes a drawn signature.</p><section><h2>Explore</h2><p>Ask Grok on X or Grok.com to interpret a handle’s MBTI and share a preview link. A preview combines the handle and the MBTI in its URL. You can change either to play with the result. Preview pages do not call our assessment service or authorize a mint.</p><p>The MBTI is an artistic input, not a diagnosis or a fact about the person behind an account.</p></section><section><h2>Mint &amp; reveal</h2><p>Anyone can mint for any handle. Connect a wallet, enter a handle, and choose Mint &amp; reveal. Our backend asks Grok to independently research public X posts and choose the MBTI. It does not accept the preview’s MBTI. The final signature may differ from your preview.</p><p>The first accepted assessment is kept for that handle; cancelling a transaction does not create another result. The artwork is prepared before the wallet transaction and revealed on the site after the mint is confirmed. This is a reveal experience, not cryptographic secrecy.</p><p>No mint fee. You pay network gas. A token is identified by the canonical handle, regardless of letter case: one minted token per handle. A token can move between wallets; holding one does not prove control of the X account. Minting leaves a permanent public record.</p></section><section><h2>Agent Art</h2><p>Project 01 by <a href="https://x.com/AgentArt_AA" target="_blank" rel="noopener noreferrer">Agent Art ↗</a>.</p></section></div></article>`, options);
+  return layout("About the work", `<article class="about-page"><div class="about-sheet"><h1>About the work</h1><p>Signatures Gallery turns an X handle into a handwriting-like mark. A public identifier becomes a drawn signature.</p>
+<section><h2>Explore</h2><p>Ask Grok on X or Grok.com to resolve a handle’s current username spelling, interpret its MBTI, and share a preview link. A preview combines the handle and the MBTI in its URL. You can change either to play with the result. Preview pages keep the capitalization in the URL without looking up X. Preview pages do not call our assessment service or authorize a mint.</p><p>The MBTI is an artistic input, not a diagnosis or a fact about the person behind an account.</p></section>
+<section><h2>Mint &amp; reveal</h2><p>Anyone can mint for any handle. Connect a wallet, enter a handle, and choose Mint &amp; reveal. During preparation, our backend independently verifies the current X username spelling and asks Grok to research public X posts and choose the MBTI. It does not accept the preview’s MBTI. The final signature may differ from your preview.</p><p>The verified spelling, first accepted assessment, and artwork are saved as a snapshot at preparation. The spelling is not checked again at transaction confirmation. The first accepted assessment is kept for that handle; cancelling a transaction does not create another result. Later mint attempts reuse the saved assessment and artwork, including after a mint request expires. Expiry does not trigger another assessment.</p><p>The artwork is prepared before the wallet transaction and revealed on the site after the mint is confirmed. This is a reveal experience, not cryptographic secrecy.</p><p>No mint fee. You pay network gas. A token is identified by the canonical handle, regardless of letter case: one minted token per handle. Identity follows the handle, not the X account ID. A renamed handle is a different identity; changing capitalization alone does not create another token. A token can move between wallets; holding one does not prove control of the X account. Minting leaves a permanent public record.</p></section>
+<section><h2>Agent Art</h2><p>Project 01 by <a href="https://x.com/AgentArt_AA" target="_blank" rel="noopener noreferrer">Agent Art ↗</a>.</p></section></div></article>`, options);
 }
 
 export function errorPage(message: string, options: OpenMintPageOptions = {}): string {

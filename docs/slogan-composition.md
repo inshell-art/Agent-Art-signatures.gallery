@@ -1,5 +1,69 @@
 # Slogan signature composition
 
+## Current homepage: eight v2 shapes
+
+The open-mint homepage now uses `sloganMbtiHero.ts`, not the historical v1
+composition below. The exact literal remains `What_shape_do_you_go_by?`, including
+case, underscores, and punctuation. No single MBTI is assigned to the brand:
+the hero loops through ISTJ, ISFJ, INFJ, INTJ, ISTP, ISFP, INFP, and INTP. Each
+frame also represents its E twin; v2 uses I/E only for the two palettes. The hero
+uses `currentColor` on the existing site background, following the light/dark
+theme rather than flashing between palettes.
+
+`scripts/capture-slogan-v2.py` captures the eight outlines from the unchanged,
+hash-pinned v2.0.1 Python reference at upstream commit
+`d00c018d1a740a5807480126d1f1bd0c620fb96d`. Its brand-only adapter accepts only the
+fixed 24-character slogan. The upstream `reusable_text_curve_layout` policy
+expands the curve span to `(300 / 14) × 23 = 492.857…` and the canonical canvas
+to `612.857… × 420`. It supplies the expanded span before geometry generation
+and translates the outlined geometry to the new horizontal center; it never
+stretches a finished path or changes vertical geometry or stroke weight.
+This is not a valid account handle: public rendering and route validation still
+enforce the original 1–15 character limit. Signature artwork remains on the
+unchanged `sg-renderer-2.0.0` implementation; this adoption is brand-only.
+The snapshot records the adapter identity and renderer source hash honestly;
+it does not describe the slogan as a Grok assessment or mintable artwork.
+
+`sloganMbtiFrames.ts` stores eight frozen paths and SHA-256 hashes. Runtime uses
+only these checked-in paths, with no Python, model calls, randomness, or renderer
+execution. Verify the capture with `python3 scripts/capture-slogan-v2.py --check`;
+`--emit` prints a candidate for an explicit reviewed snapshot update. Tests
+reproduce all eight paths, verify E-twin geometry equality, and keep public input
+validation strict. The old v1 renderer and snapshot remain intact for historical
+legacy pages and study tests; the favicon is unchanged.
+
+The hero uses one responsive SVG with a common viewport for all frames, retaining
+the selected Ink hook question mark. A 16-second loop gives each frame two
+seconds: a 1000ms hold followed by a 1000ms crossfade. On initial load, all frames
+start 1000ms into the cycle, so ISTJ immediately crossfades to ISFJ instead of
+waiting through the first hold. ISFJ then holds for 1000ms, and the regular cadence
+continues. This is an opacity transition between exact
+locked paths, not path interpolation that invents new renderer geometry. There
+is no visible playback control. Hover, keyboard focus, hidden tabs, and an
+offscreen hero pause playback; reduced motion and no JavaScript show a static
+first frame. The literal tooltip and accessible heading remain unchanged.
+
+## Selected v2 punctuation: Ink hook
+
+In fixture mode, `/dev/question-mark-study` compares three authored question
+marks (Ink hook, Ribbon turn, Quiet solid) with the previous Open flow. The page
+shows each at large and small sizes and allows all eight fixed slogan shapes to
+be compared, with equal scale and placement. Selection is a read-only GET query;
+it never updates the live hero or its shape locks. The study and its stylesheet
+are unavailable outside fixture mode. Ink hook is now selected for the live v2
+hero as `sg-question-mark-ink-hook-1`, shared directly with its study specimen.
+The hero presentation version is `sg-slogan-mbti-1.2.3`. The eight paths now use
+the upstream extended-text spacing. The common horizontal crop and punctuation
+position grow with that canvas; the Ink hook's outline and canonical size are
+unchanged, as is the frame order. Playback starts at the first crossfade, using the
+1000ms fade and 1000ms hold cadence. Open flow remains in
+the legacy v1 hero and as the study's historical comparison.
+
+## Historical v1 composition boundary
+
+The following records the retained v1 presentation and its original review flow.
+References to its homepage describe the legacy homepage, not the current v2 hero.
+
 The boundary between word rendering and homepage layout is the **Signature Composition Adapter**. Its reviewed artifact is the **shape-lock snapshot**.
 
 The separation is intentional:

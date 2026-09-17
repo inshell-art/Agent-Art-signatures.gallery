@@ -24,6 +24,13 @@ describe("open mint handle identity", () => {
     expect(handleDigest("alice")).toBe(expected);
     expect(handleDigest("bob")).not.toBe(expected);
   });
+  it("keeps a renamed handle distinct while case-only edits keep the same mint identity", () => {
+    // X account IDs are provenance only: even when one account used both names,
+    // the contract protects the literal name, not the account behind that name.
+    expect(handleDigest("@OldName")).toBe(handleDigest("OLDNAME"));
+    expect(handleDigest("@NewName")).toBe(handleDigest("newname"));
+    expect(handleDigest("@OldName")).not.toBe(handleDigest("@NewName"));
+  });
   it("locks all sixteen explicit enum-to-seed mappings", () => {
     expect(LEGACY_MBTI_TYPES.map(seedForMbti)).toEqual([1, 7, 14, 20, 27, 34, 40, 47, 53, 60, 67, 73, 80, 86, 93, 100]);
     expect(new Set(LEGACY_MBTI_TYPES.map(seedForMbti)).size).toBe(16);

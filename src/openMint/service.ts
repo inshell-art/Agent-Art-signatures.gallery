@@ -28,7 +28,7 @@ export interface SignatureRequest {
 }
 export interface SignatureArtifact {
   assessment: Assessment; svgSha256: string; pngSha256: string; metadataSha256: string;
-  /** Frozen first artwork spelling. Older artifacts retain their original lowercase bytes. */
+  /** New real artwork uses assessment.xIdentity.username. Historical bytes remain unchanged. */
   renderHandle?: string;
   tokenURI: string; digest: Hex;
 }
@@ -98,6 +98,8 @@ export class OpenMintService {
       const active = requests.map(([, request]) => request).filter(request => request.owner === ownerKey(session) && request.expiresAt > this.now());
       const existing = active.find(request => request.handle === handle && request.wallet === wallet && request.status !== "failed");
       const cached = await this.options.assessments.get(handle);
+      if (!this.options.fixture && cached && cached.xIdentity?.provenance !== "x-api") throw new PublicError(409, "X_VERIFICATION_REQUIRED", "This saved assessment predates X username verification. It is preserved, but cannot receive a new mint authorization. Contact support.");
+      if (!this.options.fixture && !cached && this.options.assessments.identityProvenance !== "x-api") throw new PublicError(503, "X_LOOKUP_NOT_CONFIGURED", "X username verification is not configured. No assessment was requested.");
       const joining = this.#assessing.get(handle);
       if (existing && (existing.status === "ready" || joining)) {
         this.#requirePreparationWallet(session);
@@ -122,7 +124,9 @@ export class OpenMintService {
         // A crash between writes may over-count a budget slot, never under-count a call.
         await this.options.store.put<AssessmentAttempt>(`attempt:${handle}`, { handle, createdAt: this.now(), status: "started" });
       }
-      const request: SignatureRequest = recovering || { code: opaqueCode(), handle, requestedHandle: preservedHandle(value), owner: ownerKey(session), wallet, status: "pending", createdAt: this.now(), expiresAt: this.now() + 900_000 };
+      // Keep the persisted lifetime exact even if the clock ticks while creating the record.
+      const createdAt = recovering?.createdAt ?? this.now();
+      const request: SignatureRequest = recovering || { code: opaqueCode(), handle, requestedHandle: preservedHandle(value), owner: ownerKey(session), wallet, status: "pending", createdAt, expiresAt: createdAt + 900_000 };
       await this.options.store.put(`request:${request.code}`, request);
       this.#requirePreparationWallet(session);
       if (session.wallet !== wallet || session.generation !== generation) throw new PublicError(409, "WALLET_CHANGED", "Your wallet changed. Connect it again before preparing a mint.");
@@ -149,7 +153,8 @@ export class OpenMintService {
   async #complete(request: SignatureRequest, result: Promise<Assessment>): Promise<void> {
     try {
       const assessment = await result;
-      await this.#locks.run(request.handle, () => this.#artifact(assessment, request.requestedHandle ?? request.handle));
+      if (!this.options.fixture && assessment.xIdentity?.provenance !== "x-api") throw new Error("Verified X preparation is required.");
+      await this.#locks.run(request.handle, () => this.#artifact(assessment, assessment.xIdentity?.username ?? request.requestedHandle ?? request.handle));
       await this.options.store.put(`request:${request.code}`, { ...request, status: "ready", assessmentId: assessment.id });
     } catch {
       // Provider responses and credentials are never exposed in browser errors or logs.
@@ -209,6 +214,7 @@ export class OpenMintService {
     validateAssessment(value.assessment);
     if (value.assessment.handle !== canonicalHandle(handle) || (value.assessment.provenance === "development-fixture") !== this.options.fixture) throw new Error("Artifact provenance mismatch.");
     if (value.renderHandle !== undefined && (preservedHandle(value.renderHandle) !== value.renderHandle || canonicalHandle(value.renderHandle) !== value.assessment.handle)) throw new Error("Artifact spelling does not match its identity.");
+    if (value.assessment.xIdentity && value.renderHandle !== value.assessment.xIdentity.username) throw new Error("Artifact spelling does not match its verified X snapshot.");
     const { digest, ...unsigned } = value;
     if (digest !== artifactDigest(unsigned)) throw new Error("Corrupt artifact commitment.");
     for (const [hash, extension] of [[value.svgSha256, "svg"], [value.pngSha256, "png"], [value.metadataSha256, "json"]]) {
@@ -223,7 +229,9 @@ export class OpenMintService {
     const existing = await this.artifact(assessment.handle);
     if (existing) { if (existing.assessment.digest !== assessment.digest) throw new Error("Canonical artwork cannot be replaced."); return existing; }
     if ((assessment.provenance === "development-fixture") !== this.options.fixture) throw new Error("Wrong assessment mode.");
+    if (!this.options.fixture && assessment.xIdentity?.provenance !== "x-api") throw new Error("Verified X preparation is required.");
     if (preservedHandle(renderHandle) !== renderHandle || canonicalHandle(renderHandle) !== assessment.handle) throw new Error("Invalid artwork spelling.");
+    if (assessment.xIdentity && renderHandle !== assessment.xIdentity.username) throw new Error("Artwork must use the frozen X username.");
     const svg = assessment.rendererVersion === LEGACY_RENDERER_VERSION
       ? formalSignatureRenderer.render({ handle: renderHandle, gr0kRaw: assessment.seed, gr0kScale: 1, rendererVersion: assessment.rendererVersion }).svgUtf8
       : Buffer.from(renderSignatureSvg(renderHandle, assessment.mbti), "utf8");
@@ -280,6 +288,10 @@ export class OpenMintService {
       const artifact = await this.artifact(request.handle);
       const assessment = await this.options.assessments?.get(request.handle);
       if (!artifact || !assessment || assessment.id !== current.assessmentId || artifact.assessment.digest !== assessment.digest) throw new Error("Trusted assessment is unavailable.");
+      // Old records remain valid historical data; do not bless or replace their artwork.
+      // Already signed vouchers cannot be revoked here, but this endpoint never issues
+      // or re-signs an unverified real artifact, including after its old voucher expires.
+      if (!this.options.fixture && assessment.xIdentity?.provenance !== "x-api") throw new PublicError(409, "X_VERIFICATION_REQUIRED", "This artwork predates X username verification. It is preserved, but cannot receive a new mint authorization. Contact support.");
       const chainTime = await this.network!.now();
       if (Math.abs(chainTime - nowSeconds(this.now)) > 60) throw new PublicError(503, "CHAIN_CLOCK", "The chain is not synchronized. Please try again shortly.");
       const state = await this.state(request.handle);

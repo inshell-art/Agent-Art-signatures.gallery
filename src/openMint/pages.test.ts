@@ -1,14 +1,192 @@
 import { describe, expect, it } from "vitest";
-import { aboutPage, assessmentPage, canonicalPageHandle, collectionPage, errorPage, handoffPrompt, homePage, mintPage, OPEN_MINT_CSS, previewPage, previewVariationsPage, requestPage, type AssessmentPageModel, type GalleryEntry } from "./pages.js";
+import { aboutPage, assessmentPage, canonicalPageHandle, collectionPage, errorPage, handoffPrompt, homePage, mbtiGalleryPage, mintPage, OPEN_MINT_CSS, previewPage, previewVariationsPage, requestPage, type AssessmentPageModel, type GalleryEntry } from "./pages.js";
 import { MBTI_TYPES, RENDERER_VERSION } from "./identity.js";
 import { HOME_LINK } from "../v1/navigation.js";
 import { SITE_CSS_URL } from "../v1/siteCss.js";
+import { SLOGAN_DISPLAY_TEXT } from "../brand/sloganSignature.js";
+import { SLOGAN_MBTI_HERO_MANIFEST, SLOGAN_MBTI_HERO_SCRIPT_URL, SLOGAN_MBTI_HERO_SVG } from "../brand/sloganMbtiHero.js";
+import { SLOGAN_TOOLTIP_SCRIPT_URL } from "../brand/sloganTooltipScript.js";
+import type { PublicPreviewState } from "./previewState.js";
 
 const ready: AssessmentPageModel = { handle: "agent_art", renderHandle: "Agent_Art", code: "opaque-request-code", status: "ready", canMint: true, mbti: "INTJ", imageUrl: "/art/hidden.png", svgUrl: "/art/hidden.svg", tokenId: "123", svgSha256: "secret-svg-digest", pngSha256: "secret-png-digest" };
 const minted: AssessmentPageModel = { ...ready, mint: { state: "minted" } };
 const entry: GalleryEntry = { handle: "alice_bob_key", renderHandle: "Alice_Bob_Key", code: "code", mbti: "INTJ", imageUrl: "/art/test.svg", mint: { state: "minted" } };
+const publicMint: PublicPreviewState = {
+  state: "minted", renderHandle: "Alice_Bob_Key", mbti: "INTJ", rendererVersion: RENDERER_VERSION,
+  imageUrl: "/art/archived-mint.svg", url: "/signatures/alice_bob_key",
+};
+const previewRows = [
+  ["ISTJ", "ESTJ", "ISFJ", "ESFJ"],
+  ["INFJ", "ENFJ", "INTJ", "ENTJ"],
+  ["ISTP", "ESTP", "ISFP", "ESFP"],
+  ["INFP", "ENFP", "INTP", "ENTP"],
+] as const;
+
+function artworkCaptions(html: string): string[] {
+  return [...html.matchAll(/<div class="artwork-caption\b[^"]*"[^>]*>/g)].map(start => {
+    const tags = /<\/?div\b[^>]*>/g;
+    tags.lastIndex = start.index! + start[0].length;
+    let depth = 1;
+    for (let tag = tags.exec(html); tag; tag = tags.exec(html)) {
+      depth += tag[0].startsWith("</") ? -1 : 1;
+      if (depth === 0) return html.slice(start.index, tags.lastIndex);
+    }
+    throw new Error("Unclosed artwork caption");
+  });
+}
+
+// This is a user-facing navigation contract, independent of the rendering helper
+// or CSS classes: a displayed @handle always opens its case-preserved variations.
+function expectHandleNavigation(html: string, handle: string, count?: number): void {
+  const main = html.match(/<main\b[^>]*>([\s\S]*?)<\/main>/)?.[1] ?? html;
+  const links = [...main.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/g)]
+    .filter(([, , label]) => label!.replace(/<[^>]*>/g, "").trim() === `@${handle}`);
+  if (count === undefined) expect(links.length).toBeGreaterThan(0);
+  else expect(links).toHaveLength(count);
+  for (const [, attributes] of links) {
+    expect(attributes!.match(/\bhref="([^"]*)"/)?.[1]).toBe(`/p/${handle}/variations`);
+    expect(attributes).not.toMatch(/\btarget=/);
+  }
+}
+
+function expectArtworkIdentity(caption: string, handle: string, mbti: string, status?: "Minted" | "Preview"): void {
+  expect(caption).toContain('class="artwork-identity"');
+  expect(caption).toContain(`@${handle}</a>`);
+  expectHandleNavigation(caption, handle, 1);
+  expect(caption).toContain('<span class="artwork-personality-separator" aria-hidden="true">×</span>');
+  expect(caption).toContain(`<a class="mbti-link" href="/${mbti}/">${mbti}</a>`);
+  expect(caption.indexOf(`@${handle}</a>`)).toBeLessThan(caption.indexOf('class="artwork-personality-separator"'));
+  expect(caption.indexOf('class="artwork-personality-separator"')).toBeLessThan(caption.indexOf('class="mbti-link"'));
+  const statusLabels = [...caption.matchAll(/<(a|span) class="[^"]*\bartwork-status\b[^"]*"([^>]*)>([^<]+)<\/\1>/g)];
+  expect(statusLabels.map(match => match[3])).toEqual(status ? [status] : []);
+  for (const [, tag, attributes, label] of statusLabels) {
+    expect(tag).toBe(label === "Minted" ? "a" : "span");
+    if (label === "Minted") expect(attributes).toContain('href="/"');
+    else expect(attributes).not.toContain('href=');
+  }
+  if (status) expect(caption.indexOf('class="mbti-link"')).toBeLessThan(caption.indexOf('artwork-status'));
+  expect(caption).not.toMatch(/<img\b|<a\b[^>]*>(?:(?!<\/a>)[\s\S])*<a\b/);
+}
+
+function expectCleanProductCopy(html: string): void {
+  const product = [...html.matchAll(/<(?:main|footer)\b[^>]*>([\s\S]*?)<\/(?:main|footer)>/g)].map(match => match[1]).join(" ");
+  expect(product).not.toContain("data-gallery-fixture-notice");
+  expect(product.replace(/<[^>]*>/g, " ")).not.toMatch(/\bfixtures?\b|\bsimulat(?:ed|ions?)\b|No tokens were minted/i);
+}
+
+function expectNoDevelopmentChrome(html: string): void {
+  expectCleanProductCopy(html);
+  expect(html).not.toMatch(/rehearsal-watermark|Developer overlay|open-dev-context|data-gallery-fixture-notice|data-dev-wallet|data-dev-mint/);
+  expect(html.replace(/<[^>]*>/g, " ")).not.toMatch(/\bfixtures?\b|\bsimulat(?:ed|ions?)\b|\bDEV\b|No tokens were minted|Grok was not called|Grok did not research/i);
+}
 
 describe("open mint pages", () => {
+  it.each([
+    ["home", () => homePage({}, [entry])],
+    ["MBTI gallery", () => mbtiGalleryPage("INTJ", [entry])],
+    ["preview", () => previewPage("Alice", "INTJ")],
+    ["variations", () => previewVariationsPage("Alice")],
+    ["mint", () => mintPage("Alice")],
+    ["request", () => requestPage("Alice")],
+    ["assessment", () => assessmentPage(ready)],
+    ["minted signature", () => assessmentPage(minted)],
+    ["collection", () => collectionPage([entry])],
+    ["about", () => aboutPage()],
+    ["error", () => errorPage("Unavailable")],
+  ] as const)("preserves the linked X icon in the %s footer", (_name, render) => {
+    const html = render();
+    const footers = html.match(/<footer>[\s\S]*?<\/footer>/g)!;
+    expect(footers).toHaveLength(1);
+    const footer = footers[0]!;
+    expect(footer).toContain('href="https://x.com/AgentArt_AA" target="_blank" rel="noopener noreferrer" aria-label="Agent Art on X (opens in a new tab)"');
+    expect(footer.match(/class="footer-x-icon"/g)).toHaveLength(1);
+    expect(footer).toMatch(/<svg class="footer-x-icon"[^>]*fill="currentColor"[^>]*aria-hidden="true" focusable="false"><path d="[^"]+"\/><\/svg><span>Agent Art<\/span><span aria-hidden="true">↗<\/span><\/a>/);
+    expect(footer).toContain('href="/about"');
+  });
+
+  it("keeps development chrome and sample notices off the gallery", () => {
+    const fixture = { development: { fixture: true, galleryFixtures: true } };
+    expectNoDevelopmentChrome(homePage(fixture, [entry]));
+    expect(homePage({ development: { fixture: false, galleryFixtures: true } }, [entry])).not.toContain("data-gallery-fixture-notice");
+    expect(homePage({ development: { fixture: true, localChain: true } }, [entry])).not.toContain("data-gallery-fixture-notice");
+  });
+
+  it("requires fixture mode for simulated minted detail pages without inventing token facts", () => {
+    const sample: AssessmentPageModel = { handle: "grok", code: "", status: "ready", canMint: false,
+      galleryFixture: true, mint: { state: "minted" }, mbti: "ENFP", svgUrl: "/preview/grok/ENFP.svg" };
+    expect(() => assessmentPage(sample)).toThrow("Gallery samples require fixture mode");
+    const html = assessmentPage(sample, { development: { fixture: true } });
+    expect(html).toContain("data-mint-state-label>Minted</a>");
+    expectNoDevelopmentChrome(html);
+    expect(html).toContain('href="/preview/grok/ENFP.svg"');
+    expect(html).toContain('<a class="mbti-link" href="/ENFP/">ENFP</a>');
+    expect(html).not.toContain("The backend asked Grok to research public X posts");
+    expect(html).not.toMatch(/<dt>(Assessment|Spelling verified at preparation)<\/dt>/);
+    expect(html).not.toMatch(/<dt>(Token|Transaction)<\/dt>|View token|data-submit-mint|data-mint-form/);
+  });
+
+  it("presents the eight v2 slogan shapes once while preserving the literal tooltip and keyboard label", () => {
+    const html = homePage();
+    const heading = html.match(/<h1\b[^>]*id="slogan-heading"[^>]*>([\s\S]*?)<\/h1>/);
+    expect(heading?.[1]).toBe(SLOGAN_DISPLAY_TEXT);
+    expect(heading?.[0]).toContain('class="visually-hidden"');
+    const figure = html.match(/<figure\b[^>]*class="slogan-signature"[^>]*>[\s\S]*?<\/figure>/)?.[0];
+    expect(figure).toBeDefined();
+    expect(figure).toContain('tabindex="0"');
+    expect(figure).toContain('role="img"');
+    expect(figure).toContain('aria-labelledby="slogan-heading"');
+    expect(figure).toContain(`title="${SLOGAN_DISPLAY_TEXT}"`);
+    expect(figure).toContain(SLOGAN_MBTI_HERO_SVG);
+    expect(figure!.match(/<svg\b/g)).toHaveLength(1);
+    expect(figure).toContain('data-source-renderer="sg-renderer-2.0.1"');
+    expect([...figure!.matchAll(/data-slogan-frame="([A-Z]{4})"/g)].map(match => match[1])).toEqual([
+      "ISTJ", "ISFJ", "INFJ", "INTJ", "ISTP", "ISFP", "INFP", "INTP",
+    ]);
+    expect(figure).not.toMatch(/slogan-signature-desktop|slogan-signature-mobile/);
+    const tip = html.match(/<span\b[^>]*id="slogan-tooltip"[^>]*>([\s\S]*?)<\/span>/);
+    expect(tip?.[1]).toBe(SLOGAN_DISPLAY_TEXT);
+    expect(tip?.[0]).toContain('role="tooltip"');
+    expect(tip?.[0]).toMatch(/\shidden(?:\s|>)/);
+    expect(html.match(/id="slogan-heading"/g)).toHaveLength(1);
+    expect(html.match(/id="slogan-tooltip"/g)).toHaveLength(1);
+    expect(SLOGAN_MBTI_HERO_MANIFEST.sourceRendererVersion).toBe("sg-renderer-2.0.1");
+    expect(SLOGAN_MBTI_HERO_MANIFEST.frameCount).toBe(8);
+    expect(SLOGAN_MBTI_HERO_MANIFEST).not.toHaveProperty("sourceGr0kRaw");
+    expect(RENDERER_VERSION).toBe("sg-renderer-2.0.0");
+  });
+
+  it("omits the pause button while retaining a focusable slogan for the tooltip and motion pause", () => {
+    for (const html of [homePage(), homePage({}, [entry])]) {
+      const hero = html.match(/<div\b[^>]*class="slogan-lockup slogan-loop"[^>]*>[\s\S]*?<\/div>/)?.[0];
+      expect(hero).toBeDefined();
+      expect(hero).not.toMatch(/<button\b/);
+      expect(html).not.toMatch(/data-slogan-toggle|slogan-motion-toggle|Pause slogan animation|Resume slogan animation/);
+      const figure = hero!.match(/<figure\b[^>]*class="slogan-signature"[^>]*>[\s\S]*?<\/figure>/)?.[0];
+      expect(figure).toContain('tabindex="0"');
+      expect(figure).toContain('aria-labelledby="slogan-heading"');
+      expect(figure).toContain(SLOGAN_MBTI_HERO_SVG);
+    }
+  });
+
+  it("loads the slogan tooltip and animation once on home and nowhere in mint or preview flows", () => {
+    for (const html of [homePage(), homePage({}, [entry])]) {
+      for (const url of [SLOGAN_TOOLTIP_SCRIPT_URL, SLOGAN_MBTI_HERO_SCRIPT_URL]) {
+        const script = `<script src="${url}" defer></script>`;
+        expect(html.split(script)).toHaveLength(2);
+        expect(html.indexOf(script)).toBeLessThan(html.indexOf("</head>"));
+      }
+    }
+    for (const html of [mintPage("Alice_Bob_Key"), requestPage("Alice_Bob_Key"),
+      previewPage("Alice_Bob_Key", "ENFP"), previewVariationsPage("Alice_Bob_Key"),
+      collectionPage([entry]), mbtiGalleryPage("INTJ", [entry]), assessmentPage(ready), assessmentPage(minted), aboutPage(), errorPage("Not found")]) {
+      expect(html).not.toContain(SLOGAN_TOOLTIP_SCRIPT_URL);
+      expect(html).not.toContain(SLOGAN_MBTI_HERO_SCRIPT_URL);
+      expect(html).not.toContain('id="slogan-tooltip"');
+      expect(html).not.toContain("data-slogan-frame");
+      expect(html).not.toContain("data-slogan-toggle");
+    }
+  });
+
   it("preserves navigation, type assets, hairline controls and a wallet collection", () => {
     const html = homePage();
     expect(html).toContain('<title>Signatures Gallery</title>');
@@ -23,18 +201,26 @@ describe("open mint pages", () => {
     expect(OPEN_MINT_CSS).not.toMatch(/font-family:|--paper:|--font-family:/);
   });
 
-  it("asks consumer Grok for a handle then an MBTI and a case-preserved letter URL", () => {
+  it("asks consumer Grok to verify current username capitalization before an MBTI preview link", () => {
     const prompt = handoffPrompt("https://example.com");
     expect(prompt).toContain("First, ask me which X handle");
     expect(prompt).toContain("After I provide a valid handle");
     expect(prompt).toContain("assess an MBTI for that handle in this chat");
-    expect(prompt).toContain("Check the signature of @<handle>: https://example.com/s/<handle>/<MBTI>");
-    expect(prompt).toContain("Preserve its exact spelling and capitalization; only remove the leading @");
-    expect(prompt).toContain("@Alice_Bob_Key must become Alice_Bob_Key, not alice_bob_key");
-    expect(prompt).toContain("https://example.com/s/Alice_Bob_Key/ENFP");
+    expect(prompt).toContain("Check the signature of @<handle>: https://example.com/p/<handle>/<MBTI>");
+    expect(prompt).toContain("resolve its exact current X username spelling and capitalization");
+    expect(prompt).toContain("before constructing the preview URL");
+    expect(prompt).toContain("matches my input after removing @ and ignoring letter case");
+    expect(prompt).toContain("do not substitute another account");
+    expect(prompt).toContain("if I enter @alice_bob_key and X shows Alice_Bob_Key, use Alice_Bob_Key");
+    expect(prompt).toContain("If you cannot verify the current username spelling, say so");
+    expect(prompt).toContain("do not invent a resolved link");
+    expect(prompt).toContain("https://example.com/p/Alice_Bob_Key/ENFP");
     expect(prompt).toContain("Use the letters, not a number");
     expect(prompt).toContain("Do not call the site to request an assessment or ask for a wallet");
     expect(prompt).toContain("editable preview, not a mint authorization");
+    expect(prompt).toContain("a convenience, not proof for minting");
+    expect(prompt).toContain("renders the spelling in the URL without looking up X");
+    expect(prompt).not.toContain("Preserve its exact spelling and capitalization");
     expect(prompt).not.toContain("Create signature");
     for (const mbti of MBTI_TYPES) expect(prompt).toContain(mbti);
     expect(homePage()).toContain("Grok on X or Grok.com");
@@ -51,6 +237,44 @@ describe("open mint pages", () => {
     expect(() => mintPage("agent/art")).toThrow();
     expect(() => assessmentPage({ ...ready, handle: '<img src=x>' })).toThrow();
     expect(() => assessmentPage({ ...ready, renderHandle: "Someone_Else" })).toThrow("does not match");
+  });
+
+  it.each(["Alice_Bob_Key", undefined])("keeps one handle-link policy across every page and mint state (saved spelling: %s)", renderHandle => {
+    const handle = renderHandle ?? "alice_bob_key";
+    const model: AssessmentPageModel = { ...ready, handle: "alice_bob_key", renderHandle };
+    const galleryEntry: GalleryEntry = { ...entry, renderHandle };
+    const state: PublicPreviewState = { ...publicMint, renderHandle: handle };
+    const fixtureOptions = { development: { fixture: true } };
+    const pages: [string, string, number][] = [
+      ["home", homePage({}, [galleryEntry]), 1],
+      ["MBTI gallery", mbtiGalleryPage("INTJ", [galleryEntry]), 1],
+      ["collection", collectionPage([galleryEntry]), 1],
+      ["single preview", previewPage(handle, "INTJ"), 1],
+      ["variations header and cards", previewVariationsPage(handle), 17],
+      ["minted preview", previewPage(handle, "INTJ", {}, state), 1],
+      ["minted variations", previewVariationsPage(handle, {}, state), 17],
+      ["fixture detail", assessmentPage({ ...model, galleryFixture: true, mint: { state: "minted" } }, fixtureOptions), 2],
+      ["fixture preview", previewPage(handle, "INTJ", fixtureOptions, { ...state, state: "fixture" }), 1],
+      ["fixture variations", previewVariationsPage(handle, fixtureOptions, { ...state, state: "fixture" }), 17],
+      ["assessment pending", assessmentPage({ ...model, status: "pending" }), 1],
+      ["assessment failed", assessmentPage({ ...model, status: "failed", canMint: false }), 1],
+      ["assessment prepared", assessmentPage(model), 1],
+      ["mint submitted", assessmentPage({ ...model, mint: { state: "pending" } }), 1],
+      ["request expired", assessmentPage({ ...model, canMint: false, requestExpired: true }), 1],
+      ["reveal and provenance", assessmentPage({ ...model, mint: { state: "minted" } }), 2],
+    ];
+    for (const [name, html, count] of pages) {
+      expect(html, name).toContain(`@${handle}</a>`);
+      expectHandleNavigation(html, handle, count);
+      // Agent Art footer credits and explicit source references are not artwork
+      // identities, so the contract is scoped to visible @handle links in main.
+      expect(html.match(/<main\b[^>]*>([\s\S]*?)<\/main>/)?.[1], name).not.toContain(`href="https://x.com/${handle}"`);
+    }
+    for (const html of [mintPage(handle), requestPage(handle)]) {
+      expect(html).toContain(`name="handle" value="${handle}"`);
+      expectHandleNavigation(html, handle, 0);
+      expect(html).not.toContain(`href="https://x.com/${handle}"`);
+    }
   });
 
   it("requires wallet proof and explicit Mint & reveal without a separate review checkbox", () => {
@@ -79,11 +303,15 @@ describe("open mint pages", () => {
     expect(main).toContain(`src="/preview/Alice_Bob_Key/${mbti}.svg?renderer=${RENDERER_VERSION}"`);
     expect(main).not.toContain(`src="/preview/Alice_Bob_Key/${mbti}.svg"`);
     expect(main).not.toContain('renderer=sg-renderer-1.0.0');
-    expect(main).toContain('href="https://x.com/Alice_Bob_Key"');
-    expect(main).toContain('<span class="signature-tag">' + mbti + '</span>');
+    expectHandleNavigation(main, "Alice_Bob_Key", 1);
+    expect(main).toContain(`<a class="mbti-link" href="/${mbti}/">${mbti}</a>`);
+    const captions = artworkCaptions(main);
+    expect(captions).toHaveLength(1);
+    expectArtworkIdentity(captions[0]!, "Alice_Bob_Key", mbti, "Preview");
+    expect(main.indexOf('<figure')).toBeLessThan(main.indexOf('class="artwork-caption'));
     expect(main).toContain('href="/mint?handle=Alice_Bob_Key"><span>Mint for this handle →');
     expect(main).toContain('Change the MBTI in the URL to explore');
-    expect(main).toContain('href="/s/Alice_Bob_Key/variations">View all 16 variations</a>');
+    expect(main).toContain('href="/p/Alice_Bob_Key/variations">View all 16 variations</a>');
     expect(main).not.toMatch(/data-assessment-request|data-assessment-code|data-mint-form|data-connect-wallet|data-token-id|Provenance/);
     expect(main).not.toContain('href="/mint?handle=Alice_Bob_Key&amp;');
   });
@@ -101,31 +329,273 @@ describe("open mint pages", () => {
     expect(main).toContain('data-preview-variations');
     expect(main).toContain('class="open-preview-grid"');
     expect(main).toContain('16 variations');
-    expect(main).toContain('href="https://x.com/Alice_Bob_Key"');
-    expect(main).toContain('<span class="signature-tag">Preview</span>');
+    expectHandleNavigation(main, "Alice_Bob_Key", 17);
+    expect(main.match(/<span class="signature-tag artwork-status">Preview<\/span>/g)).toHaveLength(16);
     expect(main.match(/<img\b/g)).toHaveLength(16);
-    const previewLinks = [...main.matchAll(/href="(\/s\/Alice_Bob_Key\/[A-Z]{4})"/g)].map(match => match[1]);
+    const previewLinks = [...main.matchAll(/href="(\/p\/Alice_Bob_Key\/[A-Z]{4})"/g)].map(match => match[1]);
     expect(previewLinks).toHaveLength(16);
-    expect(new Set(previewLinks)).toEqual(new Set(MBTI_TYPES.map(mbti => `/s/Alice_Bob_Key/${mbti}`)));
+    expect(new Set(previewLinks)).toEqual(new Set(MBTI_TYPES.map(mbti => `/p/Alice_Bob_Key/${mbti}`)));
     for (const mbti of MBTI_TYPES) {
       expect(main).toContain(`src="/preview/Alice_Bob_Key/${mbti}.svg?renderer=${RENDERER_VERSION}"`);
-      const card = main.match(new RegExp(`<a\\b[^>]*href="/s/Alice_Bob_Key/${mbti}"[^>]*>[\\s\\S]*?</a>`))?.[0];
+      const card = main.match(new RegExp(`<a\\b[^>]*href="/p/Alice_Bob_Key/${mbti}"[^>]*>[\\s\\S]*?</a>`))?.[0];
       expect(card).toBeDefined();
       expect(card).toMatch(/<img\b[^>]*alt="[^"]+"/);
-      expect(card!.replace(/<[^>]+>/g, "")).toContain(mbti);
+      expect(card).toContain(`aria-label="Explore ${mbti} for @Alice_Bob_Key"`);
+      expect(card).not.toContain('mbti-link');
+      const caption = artworkCaptions(main).find(value => value.includes(`href="/${mbti}/"`));
+      expect(caption).toBeDefined();
+      expectArtworkIdentity(caption!, "Alice_Bob_Key", mbti, "Preview");
+      expect(caption).toContain('class="gallery-handle" href="/p/Alice_Bob_Key/variations"');
     }
+    expect(main.match(/class="mbti-link"/g)).toHaveLength(16);
+    expect(main).not.toMatch(/<a\b[^>]*>(?:(?!<\/a>)[\s\S])*<a\b/);
     const imageUrls = [...main.matchAll(/<img\b[^>]*src="([^"]+)"/g)].map(match => match[1]);
-    expect(imageUrls).toEqual(MBTI_TYPES.map(mbti => `/preview/Alice_Bob_Key/${mbti}.svg?renderer=${RENDERER_VERSION}`));
+    expect(imageUrls).toEqual(previewRows.flat().map(mbti => `/preview/Alice_Bob_Key/${mbti}.svg?renderer=${RENDERER_VERSION}`));
     expect(main).not.toMatch(/src="\/preview\/[^"?]+\.svg"/);
     expect(main).not.toContain('renderer=sg-renderer-1.0.0');
     expect(main).not.toMatch(/data-assessment-request|data-assessment-code|data-mint-form|data-connect-wallet|data-token-id|Provenance|\/signatures\//);
     expect(main).not.toContain('mbti=');
   });
 
+  it.each(["unminted", "pending", "unavailable", "minted", "fixture"] as const)("labels each %s variation below its image without putting Preview in the page header", state => {
+    const hasMintedArtwork = state === "minted" || state === "fixture";
+    const context: PublicPreviewState = hasMintedArtwork ? { ...publicMint, state } : { state };
+    const html = previewVariationsPage("Alice_Bob_Key", { development: { fixture: state === "fixture" } }, context);
+    const main = html.match(/<main>([\s\S]*?)<\/main>/)![1]!;
+    const header = main.match(/<header class="signature-heading">([\s\S]*?)<\/header>/)![1]!;
+    const previewTags = [...main.matchAll(/<(a|span)\b([^>]*)>Preview<\/\1>/g)];
+
+    expect(previewTags).toHaveLength(hasMintedArtwork ? 15 : 16);
+    for (const [tag] of previewTags) expect(tag).toBe('<span class="signature-tag artwork-status">Preview</span>');
+    expect(header).not.toContain('signature-tag');
+    expectHandleNavigation(header, "Alice_Bob_Key", 1);
+    expectHandleNavigation(main, "Alice_Bob_Key", 17);
+    expect(main.match(/<img\b/g)).toHaveLength(16);
+    expect(main.match(/>Minted<\/(?:a|span)>/g) ?? []).toHaveLength(hasMintedArtwork ? 1 : 0);
+    expect(main.match(/data-preview-minted=/g) ?? []).toHaveLength(hasMintedArtwork ? 1 : 0);
+    const captions = artworkCaptions(main);
+    expect(captions).toHaveLength(16);
+    for (const [index, caption] of captions.entries()) {
+      const mbti = previewRows.flat()[index]!;
+      expectArtworkIdentity(caption, "Alice_Bob_Key", mbti, hasMintedArtwork && mbti === publicMint.mbti ? "Minted" : "Preview");
+    }
+    const tiles = [...main.matchAll(/<li\b[^>]*>[\s\S]*?<\/li>/g)].map(match => match[0]);
+    expect(tiles).toHaveLength(16);
+    for (const tile of tiles) {
+      expect(tile.indexOf('<img ')).toBeLessThan(tile.indexOf('artwork-caption'));
+      expect(tile.indexOf('artwork-caption')).toBeLessThan(tile.indexOf('artwork-status'));
+      expect(tile).toMatch(/<\/a><div class="artwork-caption/);
+    }
+  });
+
+  it("pairs I/E variations in four rows without changing the renderer's canonical order", () => {
+    const html = previewVariationsPage("Alice_Bob_Key");
+    const types = [...html.matchAll(/href="\/p\/Alice_Bob_Key\/([A-Z]{4})"/g)].map(match => match[1]!);
+    const rows = Array.from({ length: 4 }, (_, row) => types.slice(row * 4, row * 4 + 4));
+    expect(types).toHaveLength(16);
+    expect(rows).toEqual(previewRows);
+    for (const row of rows) {
+      expect(row.map(mbti => mbti[0])).toEqual(["I", "E", "I", "E"]);
+      expect(row[0]!.slice(1)).toBe(row[1]!.slice(1));
+      expect(row[2]!.slice(1)).toBe(row[3]!.slice(1));
+    }
+    expect(MBTI_TYPES).toEqual([
+      "ISTJ", "ISFJ", "INFJ", "INTJ", "ISTP", "ISFP", "INFP", "INTP",
+      "ESTP", "ESFP", "ENFP", "ENTP", "ESTJ", "ESFJ", "ENFJ", "ENTJ",
+    ]);
+  });
+
+  it.each(["unminted", "pending", "unavailable", "minted", "fixture"] as const)("separates the permanent variations introduction from conditional %s notices", state => {
+    const hasMintedArtwork = state === "minted" || state === "fixture";
+    const context: PublicPreviewState = hasMintedArtwork ? { ...publicMint, state } : { state };
+    const options = { development: { fixture: state === "fixture" } };
+    const grid = previewVariationsPage("Alice_Bob_Key", options, context);
+    const introduction = '<p class="open-preview-intro" data-preview-intro>One handle, all 16 MBTI interpretations. Choose a variation to explore.</p>';
+    expect(grid.split(introduction)).toHaveLength(2);
+    expect(grid.match(/data-preview-intro/g)).toHaveLength(1);
+    expect(grid.indexOf(introduction)).toBeLessThan(grid.indexOf('<ul class="open-preview-grid"'));
+    const mintedNotes = [...grid.matchAll(/<p\b[^>]*data-preview-minted-note[^>]*>([\s\S]*?)<\/p>/g)];
+    expect(mintedNotes).toHaveLength(hasMintedArtwork ? 1 : 0);
+    if (hasMintedArtwork) {
+      expect(mintedNotes[0]![0]).toContain('class="open-preview-note"');
+      expect(mintedNotes[0]![1]).toBe("One minted signature. Fifteen alternative interpretations, for exploration only.");
+      expect(mintedNotes[0]![0]).not.toMatch(/open-preview-warning|open-preview-notice-label|role=/);
+      expect(grid.indexOf(introduction)).toBeLessThan(grid.indexOf(mintedNotes[0]![0]));
+    }
+
+    for (const html of [grid, previewPage("Alice_Bob_Key", "ENFP", options, context)]) {
+      const notices = [...html.matchAll(/<p\b[^>]*data-preview-status[^>]*>[\s\S]*?<\/p>/g)].map(match => match[0]);
+      expect(notices).toHaveLength(state === "pending" || state === "unavailable" ? 1 : 0);
+      expect(html).not.toContain('data-preview-renderer-notice');
+      if (state === "unavailable") {
+        expect(notices[0]).toContain('class="open-preview-notice open-preview-warning"');
+        expect(notices[0]).toContain('<strong class="open-preview-notice-label">Warning</strong>');
+        expect(notices[0]).toContain('Mint status cannot be verified right now. You can still explore these previews.');
+      } else {
+        expect(html).not.toContain('class="open-preview-notice open-preview-warning"');
+        expect(html).not.toContain('<strong class="open-preview-notice-label">Warning</strong>');
+      }
+      if (state === "pending") {
+        expect(notices[0]).toContain('class="open-preview-notice"');
+        expect(notices[0]).toContain('<strong class="open-preview-notice-label">Pending</strong>');
+        expect(notices[0]).toContain('Mint submitted. Waiting for confirmation.');
+      }
+      for (const notice of notices) {
+        expect(notice).toContain('role="status"');
+        expect(notice).not.toMatch(/data-preview-intro|class="open-preview-intro"|role="alert"/);
+        expect(html).not.toMatch(/href="\/mint|Mint for this handle|data-connect-wallet/);
+      }
+    }
+  });
+
+  it("keeps warnings compact and unfilled without losing their conditional status label", () => {
+    expect(OPEN_MINT_CSS).toContain('.open-mint .open-preview-warning{--preview-warning:#806014;border-inline-start:1px solid var(--preview-warning);background:transparent;padding:.15rem 0 .15rem .65rem;color:var(--muted);font-size:.9em}');
+    expect(OPEN_MINT_CSS).toContain('.open-mint .open-preview-warning .open-preview-notice-label{display:inline;font-weight:500;color:var(--preview-warning)}');
+    expect(OPEN_MINT_CSS).toContain('.open-mint .open-preview-warning .open-preview-notice-label::after{content:":"}');
+    expect(OPEN_MINT_CSS).toContain('@media(prefers-color-scheme:dark){.open-mint .open-preview-warning{--preview-warning:#c6a65a}}');
+    for (const html of [previewPage('Alice_Bob_Key', 'INTJ', {}, { state: 'unavailable' }), previewVariationsPage('Alice_Bob_Key', {}, { state: 'unavailable' })]) {
+      expect(html).toContain('class="open-preview-notice open-preview-warning" data-preview-status role="status"');
+      expect(html).toContain('Mint status cannot be verified right now. You can still explore these previews.');
+    }
+  });
+
+  it.each(MBTI_TYPES)("keeps all 16 variations in order and marks only the archived %s mint", mbti => {
+    const state = { ...publicMint, mbti };
+    const html = previewVariationsPage("alice_bob_key", {}, state);
+    const main = html.match(/<main>([\s\S]*?)<\/main>/)![1]!;
+    const tiles = [...main.matchAll(/<li\b[^>]*>[\s\S]*?<\/li>/g)].map(match => match[0]);
+    expect(main).toContain('data-preview-mint-state="minted"');
+    expect(main).toContain("One minted signature. Fifteen alternative interpretations, for exploration only.");
+    expectHandleNavigation(main, "Alice_Bob_Key", 17);
+    expect(tiles).toHaveLength(16);
+    expect(tiles.map(tile => tile.match(/class="mbti-link" href="\/([A-Z]{4})\/"/)![1])).toEqual(previewRows.flat());
+    const selected = tiles[previewRows.flat().indexOf(mbti)]!;
+    expect(selected).toContain(`class="open-preview-minted" data-preview-minted="${mbti}"`);
+    expect(selected).toContain('class="open-preview-card" href="/signatures/alice_bob_key"');
+    expect(selected).toContain('src="/art/archived-mint.svg"');
+    expect(selected).toMatch(/<a class="[^"]*artwork-status[^"]*open-preview-minted-badge[^"]*" href="\/">Minted<\/a>/);
+    expectArtworkIdentity(artworkCaptions(selected)[0]!, "Alice_Bob_Key", mbti, "Minted");
+    expect(selected).not.toContain('/preview/');
+    for (const [index, tile] of tiles.entries()) {
+      if (tile === selected) continue;
+      const type = previewRows.flat()[index]!;
+      expect(tile).toContain(`href="/p/Alice_Bob_Key/${type}"`);
+      expect(tile).toContain(`src="/preview/Alice_Bob_Key/${type}.svg?renderer=${RENDERER_VERSION}"`);
+      expect(tile).not.toContain("open-preview-minted");
+      expectArtworkIdentity(artworkCaptions(tile)[0]!, "Alice_Bob_Key", type, "Preview");
+    }
+    expect(main.match(/data-preview-minted=/g)).toHaveLength(1);
+    expect(main).toContain('href="/signatures/alice_bob_key"><span>View minted signature</span>');
+    expect(main).not.toMatch(/href="\/mint|Mint for this handle|data-connect-wallet|data-assessment-code/);
+    expect(main).not.toMatch(/<a\b[^>]*>(?:(?!<\/a>)[\s\S])*<a\b/);
+  });
+
+  it("uses the saved work for the minted single preview and keeps alternatives labeled Preview", () => {
+    for (const mbti of MBTI_TYPES) {
+      const html = previewPage("ALICE_BOB_KEY", mbti, {}, publicMint);
+      expect(html).toContain('data-preview-mint-state="minted"');
+      expectHandleNavigation(html, "Alice_Bob_Key", 1);
+      expect(html).toContain('href="/p/Alice_Bob_Key/variations"');
+      expect(html).toContain('href="/signatures/alice_bob_key"><span>View minted signature</span>');
+      expect(html).not.toMatch(/href="\/mint|Mint for this handle/);
+      if (mbti === publicMint.mbti) {
+        expect(html).toContain('src="/art/archived-mint.svg"');
+        expectArtworkIdentity(artworkCaptions(html)[0]!, "Alice_Bob_Key", mbti, "Minted");
+        expect(html).toContain('The minted signature, shown from its saved artwork.');
+        expect(html).not.toContain('/preview/');
+      } else {
+        expect(html).toContain(`src="/preview/Alice_Bob_Key/${mbti}.svg?renderer=${RENDERER_VERSION}"`);
+        expectArtworkIdentity(artworkCaptions(html)[0]!, "Alice_Bob_Key", mbti, "Preview");
+        expect(html).toContain('An alternative interpretation, for exploration only.');
+        expect(html).not.toContain('/art/archived-mint.svg');
+      }
+    }
+  });
+
+  it("compares legacy minted work with its saved renderer instead of silently upgrading it", () => {
+    const legacy: PublicPreviewState = { ...publicMint, renderHandle: "alice_bob_key", rendererVersion: "sg-renderer-1.0.0" };
+    const grid = previewVariationsPage("Alice_Bob_Key", {}, legacy);
+    const urls = [...grid.matchAll(/<img\b[^>]*src="([^"]+)"/g)].map(match => match[1]);
+    expect(urls).toEqual(previewRows.flat().map(mbti => mbti === publicMint.mbti ? "/art/archived-mint.svg" : `/preview/alice_bob_key/${mbti}.svg?renderer=sg-renderer-1.0.0`));
+    for (const html of [grid, previewPage("Alice_Bob_Key", "ENFP", {}, legacy), previewPage("Alice_Bob_Key", "INTJ", {}, legacy)]) {
+      expect(html).toContain('data-preview-renderer-notice');
+      expect(html).toMatch(/<p class="open-preview-notice"[^>]*data-preview-renderer-notice[^>]*><strong class="open-preview-notice-label">Renderer<\/strong>/);
+      expect(html).not.toContain('class="open-preview-notice open-preview-warning"');
+      expect(html).not.toContain('<strong class="open-preview-notice-label">Warning</strong>');
+      expect(html).toContain('This signature uses an earlier renderer (sg-renderer-1.0.0).');
+      expect(html).toContain('Alternatives use that same renderer for comparison.');
+      expect(html).toContain('The minted artwork remains the saved original.');
+      expect(html).not.toContain('renderer=sg-renderer-2.0.0');
+      expectHandleNavigation(html, "alice_bob_key", html === grid ? 17 : 1);
+    }
+    expect(previewVariationsPage("Alice_Bob_Key", {}, publicMint)).not.toContain('data-preview-renderer-notice');
+  });
+
+  it.each(["pending", "unavailable"] as const)("leaves %s previews exploratory without a chosen result or mint CTA", state => {
+    const context: PublicPreviewState = { state };
+    const grid = previewVariationsPage("aLiCe_BoB_KeY", {}, context);
+    expect(grid.match(/<img\b/g)).toHaveLength(16);
+    for (const mbti of MBTI_TYPES) {
+      expect(grid).toContain(`href="/p/aLiCe_BoB_KeY/${mbti}"`);
+      expect(grid).toContain(`src="/preview/aLiCe_BoB_KeY/${mbti}.svg?renderer=${RENDERER_VERSION}"`);
+    }
+    for (const html of [grid, previewPage("aLiCe_BoB_KeY", "INTJ", {}, context)]) {
+      expect(html).toContain(`data-preview-mint-state="${state}"`);
+      expect(html).toContain('>Preview</span>');
+      expectHandleNavigation(html, "aLiCe_BoB_KeY", html === grid ? 17 : 1);
+      expect(html).toContain(state === "pending" ? "Mint submitted. Waiting for confirmation." : "Mint status cannot be verified right now.");
+      expect(html).not.toMatch(/href="\/mint|Mint for this handle|View minted signature|data-preview-minted=|\/art\/|\/signatures\//);
+      expect(html).not.toMatch(/No signatures minted|One minted signature|data-token-id|data-assessment-code/);
+    }
+    expect(artworkCaptions(grid)).toHaveLength(16);
+    for (const [index, caption] of artworkCaptions(grid).entries()) expectArtworkIdentity(caption, "aLiCe_BoB_KeY", previewRows.flat()[index]!, "Preview");
+    expectArtworkIdentity(artworkCaptions(previewPage("aLiCe_BoB_KeY", "INTJ", {}, context))[0]!, "aLiCe_BoB_KeY", "INTJ", "Preview");
+  });
+
+  it("uses production preview copy and paths while limiting samples to fixture mode", () => {
+    const fixture: PublicPreviewState = { ...publicMint, state: "fixture", imageUrl: `/preview/Alice_Bob_Key/INTJ.svg?renderer=${RENDERER_VERSION}`, url: "/signatures/alice_bob_key" };
+    const options = { development: { fixture: true } };
+    expect(() => previewVariationsPage("Alice_Bob_Key", {}, fixture)).toThrow("Gallery samples require fixture mode");
+    expect(() => previewPage("Alice_Bob_Key", "INTJ", {}, fixture)).toThrow("Gallery samples require fixture mode");
+    const grid = previewVariationsPage("alice_bob_key", options, fixture);
+    const selected = previewPage("alice_bob_key", "INTJ", options, fixture);
+    expect(grid).toContain("One minted signature. Fifteen alternative interpretations, for exploration only.");
+    expect(selected).toContain("The minted signature, shown from its saved artwork.");
+    for (const html of [grid, selected]) {
+      expect(html).toContain('data-preview-mint-state="fixture"');
+      expect(html).toContain('>Minted</a>');
+      expectNoDevelopmentChrome(html);
+      expect(html).toContain('href="/signatures/alice_bob_key"');
+      expect(html).not.toMatch(/href="\/mint|data-token-id|View token/);
+    }
+    const alternative = previewPage("Alice_Bob_Key", "ENFP", options, fixture);
+    expectArtworkIdentity(artworkCaptions(alternative)[0]!, "Alice_Bob_Key", "ENFP", "Preview");
+    expectNoDevelopmentChrome(alternative);
+    expect(alternative).not.toMatch(/>Minted<\/(?:span|a)>/);
+  });
+
+  it("validates minted identity and keeps markup from artifact URLs escaped", () => {
+    expect(() => previewVariationsPage("other", {}, publicMint)).toThrow("does not match");
+    expect(() => previewPage("other", "INTJ", {}, publicMint)).toThrow("does not match");
+    const unsafe: PublicPreviewState = { ...publicMint, imageUrl: "javascript:boom()", url: "javascript:boom()" };
+    for (const html of [previewVariationsPage("Alice_Bob_Key", {}, unsafe), previewPage("Alice_Bob_Key", "INTJ", {}, unsafe)]) {
+      expect(html).not.toContain("javascript:");
+      expect(html).toContain('src="#"');
+      expect(html).toContain('href="#"');
+    }
+    const escaped: PublicPreviewState = { ...publicMint, imageUrl: '/art/minted.svg?x="&q=1' };
+    expect(previewPage("Alice_Bob_Key", "INTJ", {}, escaped)).toContain('src="/art/minted.svg?x=&quot;&amp;q=1"');
+  });
+
+  it("marks the minted tile with a thin outline and keeps alternative artwork in full color", () => {
+    expect(OPEN_MINT_CSS).toContain('.open-mint .open-preview-minted>.open-preview-card{outline:1px solid var(--ink);outline-offset:4px}');
+    expect(OPEN_MINT_CSS).not.toMatch(/(?:open-preview-card|open-preview-grid)[^{]*\{[^}]*(?:filter:|opacity:)/);
+  });
+
   it("validates variations handles and keeps developer wallet actions outside preview exploration", () => {
     const options = { development: { fixture: true, localChain: true } };
     const html = previewVariationsPage("@Agent_Art", options);
-    expect(html).toContain('/s/Agent_Art/ENFP');
+    expect(html).toContain('/p/Agent_Art/ENFP');
     expect(html).toContain('/preview/Agent_Art/ENFP.svg');
     expect(html).not.toContain('data-dev-wallet');
     expect(html).not.toContain('data-dev-mint');
@@ -138,15 +608,174 @@ describe("open mint pages", () => {
     const entries: GalleryEntry[] = [entry, { ...entry, handle: "pending", renderHandle: "Pending", imageUrl: "/art/pending.svg", mint: { state: "pending" } }, { ...entry, handle: "cancelled", renderHandle: "Cancelled", imageUrl: "/art/cancelled.svg", mint: { state: "unminted" } }, { ...entry, handle: "unverified", renderHandle: "Unverified", imageUrl: "/art/unverified.svg", mint: undefined }];
     for (const html of [homePage({}, entries), collectionPage(entries)]) {
       expect(html.match(/class="gallery-item"/g)).toHaveLength(1);
-      expect(html).toContain('alt="Signature for @Alice_Bob_Key"');
-      expect(html).toContain('href="https://x.com/Alice_Bob_Key"');
+      expect(html).toContain('alt="Signature for @Alice_Bob_Key × INTJ"');
+      expect(html).toContain('class="gallery-handle" href="/p/Alice_Bob_Key/variations"');
       expect(html).toContain('href="/signatures/alice_bob_key"');
+      expect(html).toContain('<a class="mbti-link" href="/INTJ/">INTJ</a>');
       expect(html).not.toMatch(/\/art\/(?:pending|cancelled|unverified)\.svg/);
     }
     expect(homePage({}, entries.slice(1))).toContain('No signatures minted yet.');
     const legacy = collectionPage([{ ...entry, renderHandle: undefined }]);
-    expect(legacy).toContain('alt="Signature for @alice_bob_key"');
+    expect(legacy).toContain('alt="Signature for @alice_bob_key × INTJ"');
     expect(legacy).toContain('href="/signatures/alice_bob_key"');
+    expect(legacy).toContain('class="gallery-handle" href="/p/alice_bob_key/variations"');
+  });
+
+  it("shows only existing minted signatures with the exact requested MBTI", () => {
+    const entries: GalleryEntry[] = [
+      entry,
+      { ...entry, handle: "other", renderHandle: "Other", mbti: "ENFP", imageUrl: "/art/other.svg" },
+      { ...entry, handle: "pending", renderHandle: "Pending", imageUrl: "/art/pending.svg", mint: { state: "pending" } },
+      { ...entry, handle: "unminted", renderHandle: "Unminted", imageUrl: "/art/unminted.svg", mint: { state: "unminted" } },
+      { ...entry, handle: "unverified", renderHandle: "Unverified", imageUrl: "/art/unverified.svg", mint: undefined },
+      { ...entry, handle: "lowercase", renderHandle: "Lowercase", imageUrl: "/art/lowercase.svg", mbti: "intj" },
+      { ...entry, handle: "existing", renderHandle: "Existing", imageUrl: "/art/frozen.svg", url: "/signatures/existing" },
+    ];
+    const original = structuredClone(entries);
+    const html = mbtiGalleryPage("INTJ", entries);
+    expect(html).toContain('<title>Signatures × INTJ · Signatures Gallery</title>');
+    expect(html).toContain('<section class="collection-page" data-mbti-gallery="INTJ">');
+    expect(html).toContain('<h1>Signatures × INTJ</h1>');
+    expect(html).toContain(HOME_LINK);
+    expect(html.match(/class="gallery-item"/g)).toHaveLength(2);
+    expect(html).toContain('class="gallery-handle" href="/p/Alice_Bob_Key/variations"');
+    expect(html).toContain('href="/signatures/alice_bob_key"');
+    expect(html).toContain('src="/art/test.svg"');
+    expect(html).toContain('href="/signatures/existing"');
+    expect(html).toContain('src="/art/frozen.svg"');
+    expect(html).not.toMatch(/\/art\/(other|pending|unminted|unverified|lowercase)\.svg/);
+    expect(html).not.toMatch(/slogan-heading|data-slogan-frame|\/preview\/|data-connect-wallet|data-assessment-request/);
+    expect(html).not.toMatch(/<a\b[^>]*>(?:(?!<\/a>)[\s\S])*<a\b/);
+    expect(entries).toEqual(original);
+  });
+
+  it.each(MBTI_TYPES)("groups gallery handles with %s tags while keeping both destinations distinct", mbti => {
+    const taggedEntry = { ...entry, mbti };
+    for (const html of [homePage({}, [taggedEntry]), collectionPage([taggedEntry]), mbtiGalleryPage(mbti, [taggedEntry])]) {
+      const card = html.match(/<article class="gallery-item">[\s\S]*?<\/article>/)![0];
+      const handle = '<a class="gallery-handle" href="/p/Alice_Bob_Key/variations">@Alice_Bob_Key</a>';
+      expect(card).toContain(handle);
+      const captions = artworkCaptions(card);
+      expect(captions).toHaveLength(1);
+      expectArtworkIdentity(captions[0]!, "Alice_Bob_Key", mbti, "Minted");
+      expect(card.indexOf('<img')).toBeLessThan(card.indexOf('class="artwork-caption'));
+      expect(card).toContain('class="gallery-card" href="/signatures/alice_bob_key"');
+      expect(card).toContain('src="/art/test.svg"');
+      expect(card).not.toContain('https://x.com/');
+      expect(card).not.toContain('/p/alice_bob_key/');
+      expect(card).not.toMatch(/<a\b[^>]*>(?:(?!<\/a>)[\s\S])*<a\b/);
+    }
+    expectArtworkIdentity(artworkCaptions(assessmentPage({ ...minted, mbti }))[0]!, "Agent_Art", mbti, "Minted");
+    const empty = mbtiGalleryPage(mbti, [{ ...taggedEntry, mint: { state: "pending" } }]);
+    expect(empty).toContain(`<h1>Signatures × ${mbti}</h1>`);
+    expect(empty).toContain(`No signatures minted with ${mbti} yet.`);
+    expect(empty).not.toContain('class="gallery-item"');
+  });
+
+  it("omits gallery fixture notices on populated and empty MBTI pages", () => {
+    for (const entries of [[entry], []]) {
+      const html = mbtiGalleryPage("INTJ", entries, { development: { fixture: true, galleryFixtures: true } });
+      expectNoDevelopmentChrome(html);
+    }
+    for (const options of [{}, { development: { fixture: false, galleryFixtures: true } }, { development: { fixture: true, localChain: true } }]) {
+      expect(mbtiGalleryPage("INTJ", [entry], options)).not.toContain('data-gallery-fixture-notice');
+    }
+  });
+
+  it("rejects invalid MBTI page types and keeps malformed stored types as plain escaped text", () => {
+    for (const invalid of ['intj', '17', '<img src=x onerror="boom">']) {
+      expect(() => mbtiGalleryPage(invalid as "INTJ", [entry])).toThrow();
+      for (const html of [homePage({}, [{ ...entry, mbti: invalid }]), collectionPage([{ ...entry, mbti: invalid }]), assessmentPage({ ...minted, mbti: invalid })]) {
+        expect(html).not.toContain('class="mbti-link"');
+        expect(html).not.toContain('<img src=x onerror=');
+        const personality = html.match(/<span class="artwork-personality">([\s\S]*?)<\/span><\/span>/)![1]!;
+        expect(personality).not.toContain('signature-tag');
+        expect(personality).not.toContain('<a');
+      }
+    }
+  });
+
+  it("keeps a maximum-length handle intact across details, previews, variations, and galleries", () => {
+    const handle = "Long_Handle_123";
+    expect(handle).toHaveLength(15);
+    const longEntry: GalleryEntry = { ...entry, handle: handle.toLowerCase(), renderHandle: handle };
+    const detail = assessmentPage({ ...minted, handle: handle.toLowerCase(), renderHandle: handle });
+    for (const html of [detail, previewPage(handle, "INTJ"), homePage({}, [longEntry]), mbtiGalleryPage("INTJ", [longEntry]), collectionPage([longEntry])]) {
+      const captions = artworkCaptions(html);
+      expect(captions).toHaveLength(1);
+      expectArtworkIdentity(captions[0]!, handle, "INTJ", html.includes('data-preview-mint-state=') ? "Preview" : "Minted");
+    }
+    const captions = artworkCaptions(previewVariationsPage(handle));
+    expect(captions).toHaveLength(16);
+    for (const [index, caption] of captions.entries()) expectArtworkIdentity(caption, handle, previewRows.flat()[index]!, "Preview");
+  });
+
+  it("does not invent an MBTI or leave a dangling multiplication sign when stored metadata has no type", () => {
+    for (const mbti of [undefined, ""]) {
+      const html = assessmentPage({ ...minted, mbti });
+      const caption = artworkCaptions(html)[0]!;
+      expect(caption).toContain('@Agent_Art</a>');
+      expect(caption).toContain('href="/" data-mint-state-label>Minted</a>');
+      expect(caption).not.toMatch(/artwork-personality|mbti-link|undefined|>×</);
+    }
+    for (const html of [homePage({}, [{ ...entry, mbti: "" }]), collectionPage([{ ...entry, mbti: "" }])]) {
+      const caption = artworkCaptions(html)[0]!;
+      expect(caption).toContain('@Alice_Bob_Key</a>');
+      expect(caption).toContain('href="/">Minted</a>');
+      expect(caption).not.toMatch(/artwork-personality|mbti-link|undefined|>×</);
+    }
+  });
+
+  it("links every Minted tag to the home gallery while leaving Preview tags as plain status", () => {
+    const sample: PublicPreviewState = { ...publicMint, state: "fixture" };
+    const options = { development: { fixture: true } };
+    const pages = [
+      homePage({}, [entry]), mbtiGalleryPage("INTJ", [entry]), collectionPage([entry]),
+      assessmentPage(minted), previewPage("Alice_Bob_Key", "INTJ", {}, publicMint),
+      previewVariationsPage("Alice_Bob_Key", {}, publicMint),
+      previewPage("Alice_Bob_Key", "INTJ", options, sample), previewVariationsPage("Alice_Bob_Key", options, sample),
+    ];
+    for (const html of pages) {
+      const mintedTags = [...html.matchAll(/<(a|span)\b([^>]*)>Minted<\/\1>/g)];
+      expect(mintedTags).toHaveLength(1);
+      for (const [, tag, attributes] of mintedTags) {
+        expect(tag).toBe("a");
+        expect(attributes).toContain('href="/"');
+        expect(attributes).toContain('artwork-status');
+      }
+    }
+    for (const html of [previewPage("Alice_Bob_Key", "ENFP"), previewVariationsPage("Alice_Bob_Key"), previewPage("Alice_Bob_Key", "ENFP", {}, publicMint)]) {
+      expect(html).toMatch(/<span\b[^>]*>Preview<\/span>/);
+      expect(html).not.toMatch(/<a\b[^>]*>Preview<\/a>/);
+    }
+  });
+
+  it("underlines handle and MBTI text links on hover and keyboard focus without giving them tag styling", () => {
+    expect(OPEN_MINT_CSS).toContain('.open-mint :is(.gallery-handle,.mbti-link){text-decoration:none;text-underline-offset:.18em}');
+    expect(OPEN_MINT_CSS).toContain('.open-mint :is(.gallery-handle,.mbti-link):hover,.open-mint :is(.gallery-handle,.mbti-link):focus-visible{text-decoration:underline}');
+    expect(OPEN_MINT_CSS).toContain('.open-mint :is(.gallery-handle,.mbti-link):focus-visible{outline:2px solid var(--blue);outline-offset:3px}');
+    const identityRules = [...OPEN_MINT_CSS.matchAll(/[^{}]*:is\(\.gallery-handle,\.mbti-link\)[^{}]*\{([^}]*)\}/g)].map(match => match[1]!);
+    expect(identityRules).toHaveLength(3);
+    for (const declarations of identityRules) expect(declarations).not.toMatch(/\b(?:background|color|padding|border-radius|margin|width|height|line-height|font-size|transform):/);
+    for (const html of [homePage({}, [entry]), collectionPage([entry]), assessmentPage(minted), previewPage("Alice_Bob_Key", "ENFP"), previewVariationsPage("Alice_Bob_Key")]) {
+      expect(html).not.toMatch(/<a\b[^>]*class="[^"]*signature-tag[^"]*"[^>]*>[A-Z]{4}<\/a>/);
+    }
+  });
+
+  it("keeps Minted tag inversion and plain Preview status separate from identity text links", () => {
+    expect(OPEN_MINT_CSS).toContain('.open-mint a.signature-tag{text-decoration:none}');
+    expect(OPEN_MINT_CSS).toContain('.open-mint a.signature-tag:hover,.open-mint a.signature-tag:focus-visible{background:var(--ink);color:var(--paper);text-decoration:none}');
+    expect(OPEN_MINT_CSS).toContain('.open-mint a.signature-tag:focus-visible{outline:2px solid var(--blue);outline-offset:3px}');
+    expect(OPEN_MINT_CSS).not.toMatch(/\.artwork-status[^{]*\{[^}]*text-decoration:underline/);
+    expect(OPEN_MINT_CSS).not.toMatch(/(?:span\.signature-tag|\.open-mint \.signature-tag):(?:hover|focus-visible)/);
+    const interactiveTagRules = [...OPEN_MINT_CSS.matchAll(/(?:\.open-mint a\.signature-tag[^{}]*)\{([^}]*)\}/g)].map(match => match[1]!);
+    expect(interactiveTagRules).toHaveLength(3);
+    for (const declarations of interactiveTagRules) expect(declarations).not.toMatch(/\b(?:padding|border-radius|margin|width|height|line-height|font-size|transform):/);
+    expect(OPEN_MINT_CSS).toMatch(/\.open-mint \.artwork-caption\{[^}]*display:(?:grid|flex)/);
+    expect(OPEN_MINT_CSS).toMatch(/\.open-mint \.artwork-caption\{[^}]*width:100%/);
+    expect(OPEN_MINT_CSS).toMatch(/\.open-mint \.artwork-status\{[^}]*margin-inline-start:auto/);
+    expect(OPEN_MINT_CSS).toMatch(/\.open-mint \.artwork-identity\{[^}]*flex-wrap:wrap/);
+    expect(OPEN_MINT_CSS).not.toMatch(/(?:\.mbti-link|\.artwork-status)[^{]*\{[^}]*\b(?:padding|border-radius):/);
   });
 
   it.each(["pending", "ready", "failed"] as const)("withholds artwork and metadata for %s assessments until confirmed mint", status => {
@@ -154,11 +783,12 @@ describe("open mint pages", () => {
     const main = html.match(/<main>([\s\S]*?)<\/main>/)![1]!;
     expect(main).toContain('data-assessment-handle="agent_art"');
     expect(main).toContain('data-assessment-state="' + status + '"');
-    expect(main).toContain('href="https://x.com/Agent_Art"');
+    expectHandleNavigation(main, "Agent_Art", 1);
     expect(main).toContain('data-assessment-status role="status"');
     expect(main).not.toMatch(/<img\b|<figure\b|signature-provenance|INTJ|\/art\/hidden|secret-svg-digest|secret-png-digest|SVG ↗/);
-    expect(html).not.toContain('<title>@Agent_Art · INTJ');
+    expect(html).not.toMatch(/<title>[^<]*INTJ/);
     expect(main).not.toMatch(/checkbox|data-mint-review|exact artwork/);
+    expect(artworkCaptions(main)).toEqual([]);
   });
 
   it("offers progress and continuation without another artwork-review step", () => {
@@ -194,16 +824,17 @@ describe("open mint pages", () => {
 
   it("reveals frozen rendering spelling and provenance only after confirmed mint", () => {
     const html = assessmentPage({ ...minted, sourceLabel: 'Grok · independent X Search assessment' });
-    expect(html).toContain('alt="Signature for @Agent_Art"');
-    expect(html).toContain('<dt>Handle</dt><dd>@Agent_Art</dd>');
-    expect(html).toContain('<span class="signature-tag">INTJ</span>');
+    expect(html).toContain('alt="Signature for @Agent_Art × INTJ"');
+    expectHandleNavigation(html, "Agent_Art", 2);
+    expect(html).toContain('<dt>Handle</dt><dd><a class="gallery-handle" href="/p/Agent_Art/variations">@Agent_Art</a></dd>');
+    expect(html).toContain('<a class="mbti-link" href="/INTJ/">INTJ</a>');
     expect(html).toContain('<dt>Assessment</dt><dd>Grok · independent X Search assessment</dd>');
     expect(html).toContain('The backend asked Grok to research public X posts');
     expect(html).toContain('class="signature-provenance"');
     expect(html).toContain('SVG ↗');
     expect(html).not.toContain('data-mint-form');
     expect(html).not.toContain('data-assessment-code');
-    expect(assessmentPage({ ...minted, handle: "alice_bob_key", renderHandle: undefined })).toContain('alt="Signature for @alice_bob_key"');
+    expect(assessmentPage({ ...minted, handle: "alice_bob_key", renderHandle: undefined })).toContain('alt="Signature for @alice_bob_key × INTJ"');
   });
 
   it("escapes external data and does not turn unsafe URL schemes into links", () => {
@@ -217,18 +848,35 @@ describe("open mint pages", () => {
     expect(errorPage('<img src=x>')).toContain('&lt;img src=x&gt;');
   });
 
-  it("keeps fixture explanations and local wallet tools in the separate DEV overlay", () => {
-    const options = { development: { fixture: true, localChain: true } };
-    const html = assessmentPage(ready, options);
-    const main = html.match(/<main>([\s\S]*?)<\/main>/)![1]!;
-    expect(main).not.toMatch(/fixture|simulated|<dt>Assessment<\/dt>/i);
-    expect(html).toContain('Simulated assessment');
-    expect(html).toContain('Grok did not research these handles');
-    expect(html.indexOf('data-dev-wallet')).toBeGreaterThan(html.indexOf('</main>'));
-    expect(html.indexOf('data-dev-mint')).toBeGreaterThan(html.indexOf('</main>'));
-    expect(mintPage("", options)).toContain('data-dev-wallet');
-    expect(assessmentPage(ready)).not.toContain('data-dev-wallet');
-    expect(previewPage("Agent_Art", "ENFP", options)).not.toContain('data-dev-wallet');
+  it("dates verified mint spelling as a preparation snapshot without claiming live verification", () => {
+    const identityVerifiedAt = "2026-09-16T08:30:00.000Z";
+    const html = assessmentPage({ ...minted, identityVerifiedAt });
+    expect(html).toContain(`<dt>Spelling verified at preparation</dt><dd>${identityVerifiedAt}</dd>`);
+    expect(html).toContain("This is the spelling verified during preparation, not a live X profile lookup.");
+    for (const unverified of [assessmentPage(minted), assessmentPage({ ...minted, identityVerifiedAt }, { development: { fixture: true } })]) {
+      expect(unverified).not.toContain("Spelling verified at preparation");
+      expect(unverified).not.toContain("This is the spelling verified during preparation");
+      expect(unverified).not.toContain(identityVerifiedAt);
+    }
+    for (const mint of [{ state: "unminted" as const }, { state: "pending" as const }]) {
+      const hidden = assessmentPage({ ...ready, identityVerifiedAt, mint });
+      expect(hidden).not.toContain(identityVerifiedAt);
+      expect(hidden).not.toContain("Spelling verified at preparation");
+    }
+  });
+
+  it("removes developer chrome on every product page without changing runtime mode or provenance", () => {
+    const options = { development: { fixture: true, localChain: true, galleryFixtures: true,
+      tools: [{ label: "Fixture tools", href: "/dev/tools" }], notes: ["Development fixture notice"] } };
+    for (const html of [homePage(options, [entry]), mintPage("", options), collectionPage([], options),
+      assessmentPage(ready, options), assessmentPage(minted, options), aboutPage(options),
+      mbtiGalleryPage("INTJ", [entry], options), previewPage("Agent_Art", "ENFP", options),
+      previewVariationsPage("Agent_Art", options), errorPage("Not found", options)]) {
+      expectNoDevelopmentChrome(html);
+      expect(html).toContain('data-fixture="true"');
+      expect(html).toContain('data-local-chain="true"');
+      expect(html).not.toContain('href="/dev/tools"');
+    }
     const revealed = assessmentPage(minted, options);
     expect(revealed).toContain('The MBTI shapes the signature’s expression.');
     expect(revealed).not.toContain('<dt>Assessment</dt>');
@@ -252,9 +900,20 @@ describe("open mint pages", () => {
     expect(html).not.toMatch(/claim|\/auth\/x|Sign in with X/i);
     const about = aboutPage();
     expect(about).toContain("Preview pages do not call our assessment service or authorize a mint.");
+    expect(about).toContain("Preview pages keep the capitalization in the URL without looking up X.");
     expect(about).toContain("It does not accept the preview’s MBTI.");
+    expect(about).toContain("independently verifies the current X username spelling");
+    expect(about).toContain("saved as a snapshot at preparation");
+    expect(about).toContain("The spelling is not checked again at transaction confirmation.");
     expect(about).toContain("cancelling a transaction does not create another result");
+    expect(about).toContain("Later mint attempts reuse the saved assessment and artwork, including after a mint request expires.");
+    expect(about).toContain("Expiry does not trigger another assessment.");
     expect(about).toContain("not cryptographic secrecy");
     expect(about).toContain("one minted token per handle");
+    expect(about).toContain("Identity follows the handle, not the X account ID.");
+    expect(about).toContain("A renamed handle is a different identity; changing capitalization alone does not create another token.");
+    expectCleanProductCopy(about);
+    const fixtureAbout = aboutPage({ development: { fixture: true, galleryFixtures: true } });
+    expectNoDevelopmentChrome(fixtureAbout);
   });
 });

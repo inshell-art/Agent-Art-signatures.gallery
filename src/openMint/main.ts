@@ -8,6 +8,14 @@ import { OpenMintService } from "./service.js";
 import { createOpenMintServer } from "./server.js";
 import { localTestMinter, startIsolatedLocalChain } from "./localChain.js";
 import { closeHttpServer } from "./shutdown.js";
+import { DevelopmentXIdentityResolver, XApiIdentityResolver } from "./xIdentity.js";
+
+/** Configuration only; constructing providers performs no X or Grok requests. */
+export function openMintProviders(fixture: boolean, env: NodeJS.ProcessEnv) {
+  const provider = fixture ? new DevelopmentAssessmentProvider() : env.XAI_API_KEY ? new GrokAssessmentProvider({ apiKey: env.XAI_API_KEY, model: env.OPEN_MINT_GROK_MODEL }) : undefined;
+  const identityResolver = fixture ? new DevelopmentXIdentityResolver() : env.OPEN_MINT_X_BEARER_TOKEN ? new XApiIdentityResolver({ bearerToken: env.OPEN_MINT_X_BEARER_TOKEN }) : undefined;
+  return { provider, identityResolver };
+}
 
 export async function startOpenMintApp() {
   if (process.env.NODE_ENV === "production") throw new Error("Production startup refused: open mint requires public artifact publication, production persistence/rate limits, a reviewed deployment and external security review. The current chain adapter is local only.");
@@ -21,12 +29,12 @@ export async function startOpenMintApp() {
   if (!root.startsWith(`${resolve(".local/open-mint")}/`)) throw new Error("Open-mint data must use a dedicated directory under .local/open-mint/.");
   const limit = Number(process.env.OPEN_MINT_DAILY_ASSESSMENT_LIMIT ?? 25);
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) throw new Error("Invalid daily assessment limit.");
+  const { provider, identityResolver } = openMintProviders(fixture, process.env);
   const unlock = await acquireProcessLock(root);
   let chain: Awaited<ReturnType<typeof startIsolatedLocalChain>> | undefined;
   try {
     if (localChain) chain = await startIsolatedLocalChain({ directory: join(root, "chain"), port: Number(process.env.OPEN_MINT_RPC_PORT ?? (fixture ? 18547 : 18546)), origin, fixture });
-    const provider = fixture ? new DevelopmentAssessmentProvider() : process.env.XAI_API_KEY ? new GrokAssessmentProvider({ apiKey: process.env.XAI_API_KEY, model: process.env.OPEN_MINT_GROK_MODEL }) : undefined;
-    const assessments = provider ? new AssessmentCoordinator({ provider, repository: new FileAssessmentRepository(join(root, "assessments")) }) : undefined;
+    const assessments = provider ? new AssessmentCoordinator({ provider, identityResolver, repository: new FileAssessmentRepository(join(root, "assessments")) }) : undefined;
     const store = await FileKeyValueStore.create(join(root, "records"));
     const service = new OpenMintService({ assessments, store, origin, network: chain?.network, fixture, dailyAssessmentLimit: limit });
     await service.recoverInterruptedRequests();
@@ -57,6 +65,7 @@ export async function startOpenMintApp() {
     process.once("SIGINT", () => { void close(); });
     console.log(`Open-mint development app: ${origin}`);
     console.log(`Assessment: ${fixture ? "EXPLICIT DEVELOPMENT FIXTURE (not Grok)" : provider ? "backend Grok + native X Search" : "disabled — XAI_API_KEY is not configured"}`);
+    console.log(`X username verification: ${fixture ? "EXPLICIT DEVELOPMENT FIXTURE (not X verification)" : identityResolver ? "X API username lookup at first preparation; frozen snapshot reused" : "disabled — OPEN_MINT_X_BEARER_TOKEN is not configured; new real preparation is blocked"}`);
     console.log(`Minting: ${chain ? `isolated local Anvil ${chain.rpcUrl}` : "disabled — start with --local-chain"}`);
     return { server, service, sessions, chain, close, origin };
   } catch (error) { await chain?.close(); await unlock(); throw error; }

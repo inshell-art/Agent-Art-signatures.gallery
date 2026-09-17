@@ -20,6 +20,16 @@ export const OPEN_FLOW_QUESTION_MARK = Object.freeze({
     svgMarkup: '<g fill="currentColor" aria-hidden="true"><path d="M3.9 12.8C5 5.9 11.5 1.8 17.8 3.2C25.9 4.7 27.9 12.8 23.3 19C20.9 22.2 16.5 23.8 14.8 27.2C13.8 29.2 13.5 31.3 13.3 34L11.6 34C11.4 30.7 11.8 27.7 13.3 25.2C15.2 22 19.7 19.6 21.5 16.5C24.3 11.8 22.5 6.1 17.4 5C12.2 3.8 7.1 7 5.3 13.4Q4.9 14.8 4 14.1Q3.6 13.6 3.9 12.8Z"/><circle cx="12.5" cy="43" r="1.9"/></g>',
   });
 
+/** Selected for the v2 slogan; kept independent of renderer-generated geometry. */
+export const INK_HOOK_QUESTION_MARK = Object.freeze({
+    id: "ink-hook",
+    version: "sg-question-mark-ink-hook-1",
+    label: "Ink hook",
+    rationale: "A full ink shoulder narrows into a fine stem, matching v2's thick-to-thin drawing without competing with it. An angled ink dot keeps the finish expressive.",
+    svgMarkup: '<g fill="currentColor" aria-hidden="true"><path d="M3.4 13.7C4.2 5.4 10.7 1.6 17.5 2.4C25.9 3.3 28.4 10.4 24.4 17.1C22.2 20.8 17.5 23 15.4 27C14.1 29.5 13.8 32.1 13.7 35L12.1 35C11.4 29.1 12.5 25.7 15.6 22C18.1 19 20.9 16.5 21.2 12.8C21.6 8.2 18.4 5.2 14.5 5.9C10.5 6.7 8.7 10.1 7.4 15.9L3.4 13.7Z"/><path d="M11.1 41.1L14.9 41.7C15.5 43.3 14.7 45.3 13.1 45.6C11.7 45.8 10.5 44.6 10.7 43.2L11.1 41.1Z"/></g>',
+  });
+
+
 export const QUESTION_MARK_STUDIES: readonly QuestionMarkStudy[] = Object.freeze([
   OPEN_FLOW_QUESTION_MARK,
   Object.freeze({

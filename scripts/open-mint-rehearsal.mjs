@@ -22,7 +22,7 @@ const post = async (path, body, expected = 200) => {
 const handle = `check_${randomBytes(3).toString("hex")}`;
 await post("/api/assessments", { handle, mbti: "INTJ" }, 400);
 await post("/api/assessments", { handle }, 403);
-const preview = await fetch(`${origin}/s/${handle}/ENFP`);
+const preview = await fetch(`${origin}/p/${handle}/ENFP`);
 assert.equal(preview.status, 200);
 assert.ok((await preview.text()).includes(`/mint?handle=${handle}`));
 const wallet = await post("/api/dev/wallet", {});

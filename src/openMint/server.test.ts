@@ -1,32 +1,106 @@
-import { createServer as createProbeServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { createServer as createProbeServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { once } from "node:events";
 import { Readable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { privateKeyToAccount } from "viem/accounts";
-import { createOpenMintServer } from "./server.js";
+import { createOpenMintServer, type OpenMintServerOptions } from "./server.js";
 import { OpenMintService } from "./service.js";
 import { WalletSessions } from "./security.js";
 import { MemoryKeyValueStore } from "./storage.js";
-import { AssessmentCoordinator } from "./assessment.js";
+import { assessmentDigest, AssessmentCoordinator, type LegacyAssessment } from "./assessment.js";
 import { MemoryAssessmentRepository } from "./assessmentStore.js";
 import { DevelopmentAssessmentProvider } from "./grok.js";
-import { handleDigest, MBTI_TYPES } from "./identity.js";
+import { handleDigest, LEGACY_MAPPING_VERSION, LEGACY_RENDERER_VERSION, MBTI_TYPES, RENDERER_VERSION, seedForMbti } from "./identity.js";
 import { openMintTokenURIHash } from "./authorization.js";
 import type { OpenMintNetwork } from "./network.js";
-import type { MintState } from "./service.js";
+import type { MintState, SignatureRequest } from "./service.js";
 import { renderSignatureSvg } from "../algorithmV2/index.js";
+import { formalSignatureRenderer, sha256Hex } from "../v1/renderer.js";
+import { SLOGAN_DISPLAY_TEXT } from "../brand/sloganSignature.js";
+import { SLOGAN_TOOLTIP_SCRIPT, SLOGAN_TOOLTIP_SCRIPT_URL } from "../brand/sloganTooltipScript.js";
+import { SLOGAN_MBTI_HERO_SCRIPT, SLOGAN_MBTI_HERO_SCRIPT_URL } from "../brand/sloganMbtiHero.js";
+import { INK_HOOK_QUESTION_MARK, OPEN_FLOW_QUESTION_MARK } from "../brand/sloganQuestionMark.js";
+import { QUESTION_MARK_V2_CANDIDATES } from "../brand/sloganQuestionMarkCandidates.js";
+import { QUESTION_MARK_STUDY_CSS, QUESTION_MARK_STUDY_CSS_PATH, QUESTION_MARK_STUDY_PATH } from "../brand/sloganQuestionMarkStudy.js";
+import { OPEN_MINT_GALLERY_FIXTURES } from "./galleryFixtures.js";
 
 const servers: Server[] = [];
 const wallet = privateKeyToAccount(`0x${"7".repeat(64)}`);
-interface RequestOptions { method?: string; body?: unknown; rawBody?: string; headers?: Record<string, string>; skipOrigin?: boolean; skipCsrf?: boolean; skipCookie?: boolean }
+interface RequestOptions { method?: string; body?: unknown; rawBody?: string; headers?: Record<string, string>; skipOrigin?: boolean; skipCsrf?: boolean; skipCookie?: boolean; followRedirects?: boolean }
+
+function expectProductionPresentation(html: string): void {
+  expect(html).not.toMatch(/data-gallery-fixture-notice|Developer overlay|Fixture tools|Developer tools|rehearsal-overlay/);
+  expect(html.replace(/<[^>]*>/g, " ")).not.toMatch(/\bfixtures?\b|\bsimulat(?:ed|ions?)\b|No tokens were minted/i);
+  expect(html).not.toContain('href="/dev/gallery/');
+}
+
+function expectHandleNavigation(html: string, handle?: string, count?: number): void {
+  const main = html.match(/<main\b[^>]*>([\s\S]*?)<\/main>/)?.[1] ?? html;
+  const links = [...main.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/g)]
+    .map(([, attributes, label]) => ({ attributes: attributes!, handle: label!.replace(/<[^>]*>/g, "").trim().match(/^@([A-Za-z0-9_]{1,15})$/)?.[1] }))
+    .filter(link => link.handle && (!handle || link.handle === handle));
+  if (count === undefined) expect(links.length).toBeGreaterThan(0);
+  else expect(links).toHaveLength(count);
+  for (const link of links) {
+    expect(link.attributes.match(/\bhref="([^"]*)"/)?.[1]).toBe(`/p/${link.handle}/variations`);
+    expect(link.attributes).not.toMatch(/\btarget=/);
+  }
+}
+
+function expectArtworkCaptionPolicy(html: string, count: number, mintedCount: number, previewCount = 0): void {
+  const captions = [...html.matchAll(/<div class="artwork-caption\b[^"]*">[\s\S]*?<\/div>(?:<(a|span)\b[^>]*>[^<]*<\/\1>)?<\/div>/g)].map(match => match[0]);
+  expect(captions).toHaveLength(count);
+  for (const caption of captions) {
+    expect(caption).toContain('class="artwork-identity"');
+    expect(caption).toContain('<span class="artwork-personality-separator" aria-hidden="true">×</span>');
+    expect(caption).toMatch(/@[A-Za-z0-9_]+<\/a>[\s\S]*artwork-personality-separator[\s\S]*class="mbti-link"/);
+    expectHandleNavigation(caption, undefined, 1);
+    expect(caption).not.toMatch(/<img\b|<a\b[^>]*>(?:(?!<\/a>)[\s\S])*<a\b/);
+  }
+  const statuses = captions.flatMap(caption => [...caption.matchAll(/<(a|span) class="[^"]*\bartwork-status\b[^"]*"([^>]*)>([^<]+)<\/\1>/g)]);
+  for (const [, tag, attributes, label] of statuses) {
+    expect(tag).toBe(label === "Minted" ? "a" : "span");
+    if (label === "Minted") expect(attributes).toContain('href="/"');
+    else expect(attributes).not.toContain('href=');
+  }
+  const labels = statuses.map(match => match[3]);
+  expect(labels.filter(label => label === "Minted")).toHaveLength(mintedCount);
+  expect(labels.filter(label => label === "Preview")).toHaveLength(previewCount);
+}
+
+function expectPreviewNoticePolicy(html: string, state: "unminted" | "pending" | "unavailable" | "minted" | "fixture", variations = true): void {
+  const main = html.match(/<main\b[^>]*>([\s\S]*?)<\/main>/)![1]!;
+  const intros = [...main.matchAll(/<p\b[^>]*data-preview-intro[^>]*>([\s\S]*?)<\/p>/g)];
+  expect(intros).toHaveLength(variations ? 1 : 0);
+  if (variations) {
+    expect(intros[0]![0]).toContain('class="open-preview-intro"');
+    expect(intros[0]![1]).toBe("One handle, all 16 MBTI interpretations. Choose a variation to explore.");
+    expect(intros[0]![0]).not.toMatch(/role=|open-preview-notice|open-preview-warning/);
+  }
+  const notices = [...main.matchAll(/<p\b[^>]*data-preview-status[^>]*>[\s\S]*?<\/p>/g)].map(match => match[0]);
+  expect(notices).toHaveLength(state === "pending" || state === "unavailable" ? 1 : 0);
+  for (const notice of notices) {
+    expect(notice).toContain('role="status"');
+    expect(notice).not.toMatch(/data-preview-intro|role="alert"/);
+    expect(notice).toContain(`<strong class="open-preview-notice-label">${state === "unavailable" ? "Warning" : "Pending"}</strong>`);
+    expect(notice).toContain(state === "unavailable" ? 'class="open-preview-notice open-preview-warning"' : 'class="open-preview-notice"');
+    if (variations) expect(main.indexOf(intros[0]![0])).toBeLessThan(main.indexOf(notice));
+  }
+  if (state !== "unavailable") expect(main).not.toContain('open-preview-warning');
+  const mintedNotes = [...main.matchAll(/<p\b[^>]*data-preview-minted-note[^>]*>([\s\S]*?)<\/p>/g)];
+  expect(mintedNotes).toHaveLength(variations && (state === "minted" || state === "fixture") ? 1 : 0);
+  for (const [, note] of mintedNotes) expect(note).toBe("One minted signature. Fifteen alternative interpretations, for exploration only.");
+}
+
 afterEach(async () => {
   for (const server of servers.splice(0)) {
     server.closeAllConnections();
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
   }
+  vi.restoreAllMocks();
 });
 
-async function fixture() {
+async function fixture(options: Pick<OpenMintServerOptions, "rpcUrl" | "devWallet" | "devMint"> & { offline?: boolean; now?: () => number; fixture?: boolean } = {}) {
   // By default exercise the actual asynchronous HTTP request listener through streams,
   // without opening a socket. Opt in to transport-level loopback coverage when permitted.
   const httpTransport = process.env.OPEN_MINT_TEST_HTTP === "1";
@@ -40,7 +114,8 @@ async function fixture() {
   const origin = `http://127.0.0.1:${port}`;
   const provider = new DevelopmentAssessmentProvider();
   const assess = vi.spyOn(provider, "assess");
-  const assessments = new AssessmentCoordinator({ provider, repository: new MemoryAssessmentRepository() });
+  const repository = new MemoryAssessmentRepository();
+  const assessments = new AssessmentCoordinator({ provider, repository });
   const store = new MemoryKeyValueStore();
   const states = new Map<string, MintState>();
   const network: OpenMintNetwork = {
@@ -51,12 +126,28 @@ async function fixture() {
     sign: async () => `0x${"1".repeat(130)}`,
     transaction: async (_handle, authorization) => ({ from: authorization.recipient, to: wallet.address, data: "0x1234", value: "0x0", chainId: "0x7a69" }),
   };
-  const service = new OpenMintService({ assessments, store, origin, fixture: true, network });
+  const service = new OpenMintService({ assessments: options.offline ? undefined : assessments, store, origin, fixture: options.fixture ?? true, network: options.offline ? undefined : network, now: options.now });
   const sessions = new WalletSessions(origin, 31337);
-  const server = createOpenMintServer({ origin, fixture: true, service, sessions });
+  const server = createOpenMintServer({ origin, fixture: options.fixture ?? true, service, sessions, rpcUrl: options.rpcUrl, devWallet: options.devWallet, devMint: options.devMint });
   if (httpTransport) { server.listen(port, "127.0.0.1"); await once(server, "listening"); servers.push(server); }
   const dispatch = async (path: string, method: string, headers: Record<string, string>, body?: string): Promise<Response> => {
-    if (httpTransport) return fetch(origin + path, { method, headers, ...(body === undefined ? {} : { body }), redirect: "manual" });
+    if (httpTransport) return new Promise((resolve, reject) => {
+      // Unlike fetch, preserve caller-supplied Host so host-boundary tests reach
+      // the server with the exact HTTP headers they claim to exercise.
+      const outgoing = httpRequest(origin + path, { method, headers }, incoming => {
+        const chunks: Buffer[] = [];
+        incoming.on("data", (chunk: Buffer) => chunks.push(chunk));
+        incoming.on("error", reject);
+        incoming.on("end", () => {
+          const responseHeaders = new Headers();
+          for (let index = 0; index < incoming.rawHeaders.length; index += 2) responseHeaders.append(incoming.rawHeaders[index]!, incoming.rawHeaders[index + 1]!);
+          resolve(new Response(Buffer.concat(chunks), { status: incoming.statusCode, headers: responseHeaders }));
+        });
+      });
+      outgoing.on("error", reject);
+      outgoing.setTimeout(5_000, () => outgoing.destroy(new Error("Test HTTP request timed out.")));
+      outgoing.end(body);
+    });
     const incoming = new Headers(headers);
     if (!incoming.has("host")) incoming.set("host", new URL(origin).host);
     const request = Object.assign(Readable.from(body === undefined ? [] : [Buffer.from(body)]), {
@@ -98,17 +189,18 @@ async function fixture() {
           const issued = response.headers.get("set-cookie");
           if (issued) cookie = issued.split(";")[0]!;
           const location = response.headers.get("location");
-          if (method !== "GET" || ![301, 302, 303, 307, 308].includes(response.status) || !location) break;
+          if (init.followRedirects === false || method !== "GET" || ![301, 302, 303, 307, 308].includes(response.status) || !location) break;
           if (redirects >= 5) throw new Error("Too many test-client redirects.");
           const target = new URL(location, origin + currentPath);
           if (target.origin !== origin) throw new Error("Unexpected cross-origin test redirect.");
           await response.arrayBuffer();
           currentPath = target.pathname + target.search;
         }
-        const text = await response.text();
+        const bytes = Buffer.from(await response.arrayBuffer());
+        const text = bytes.toString("utf8");
         const json = response.headers.get("content-type")?.includes("application/json") ? JSON.parse(text) : undefined;
         if (path === "/api/session" && response.ok) csrf = json.csrfToken;
-        return { status: response.status, headers: response.headers, text, json };
+        return { status: response.status, headers: response.headers, text, bytes, json };
       },
       async init() { return this.request("/api/session"); },
       async assess(handle = "Agent_Art") {
@@ -134,10 +226,759 @@ async function fixture() {
       transactionHash: `0x${"a".repeat(64)}`, assessmentDigest: artifact.assessment.digest, artifactDigest: artifact.digest,
       tokenURIHash: openMintTokenURIHash(artifact.tokenURI) });
   };
-  return { origin, client, service, store, sessions, assess, network, mint };
+  return { origin, client, service, store, sessions, assess, network, mint, repository };
 }
 
 describe("open mint HTTP boundary", () => {
+  it("serves local question-mark proposals and their CSS without sessions, assessment, or weaker CSP", async () => {
+    const test = await fixture();
+    const session = vi.spyOn(test.sessions, "session");
+    const page = await test.client().request(`${QUESTION_MARK_STUDY_PATH}?mark=ribbon-fold&shape=ISTJ`);
+    expect(page.status).toBe(200);
+    expect(page.text).toContain('data-context="ribbon-fold" data-shape="ISTJ"');
+    expect(page.text).toContain('data-context="previous" data-shape="ISTJ"');
+    expect(page.text).not.toMatch(/<script\b|<form\b/);
+    const css = await test.client().request(QUESTION_MARK_STUDY_CSS_PATH);
+    expect(css.status).toBe(200);
+    expect(css.text).toBe(QUESTION_MARK_STUDY_CSS);
+    expect(css.headers.get("content-type")).toBe("text/css; charset=utf-8");
+    expect(page.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    for (const response of [page, css]) {
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(response.headers.get("set-cookie")).toBeNull();
+      expect(response.headers.get("content-security-policy")).toContain("script-src 'self';");
+      expect(response.headers.get("content-security-policy")).not.toMatch(/unsafe-inline|unsafe-eval/);
+      expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    }
+    expect(session).not.toHaveBeenCalled();
+    expect(test.assess).not.toHaveBeenCalled();
+    expect(test.network.state).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid question-mark selections without reflecting inputs or issuing sessions", async () => {
+    const test = await fixture();
+    const session = vi.spyOn(test.sessions, "session");
+    for (const query of ["mark=unknown", "shape=ENFP", "mark=", "shape=infp", "shape=INFP%0A", "mark=%22%3E%3Cscript%3Ealert(1)%3C/script%3E"]) {
+      const response = await test.client().request(`${QUESTION_MARK_STUDY_PATH}?${query}`);
+      expect(response.status).toBe(400);
+      expect(response.text).toContain("Choose a listed question mark and slogan shape.");
+      expect(response.text).not.toContain("alert(1)");
+      expect(response.text).not.toContain('class="qm-options"');
+      expect(response.headers.get("set-cookie")).toBeNull();
+      expect(response.headers.get("cache-control")).toBe("no-store");
+    }
+    expect(session).not.toHaveBeenCalled();
+    expect(test.assess).not.toHaveBeenCalled();
+  });
+
+  it("does not expose the question-mark proposal routes outside fixture mode", async () => {
+    const test = await fixture({ fixture: false });
+    for (const path of [QUESTION_MARK_STUDY_PATH, `${QUESTION_MARK_STUDY_PATH}?mark=ink-hook&shape=INFP`, QUESTION_MARK_STUDY_CSS_PATH]) {
+      const response = await test.client().request(path);
+      expect(response.status).toBe(404);
+      expect(response.text).not.toContain('class="qm-options"');
+      expect(response.text).not.toBe(QUESTION_MARK_STUDY_CSS);
+    }
+    expect(test.assess).not.toHaveBeenCalled();
+  });
+
+  it("proposal selections never replace the current question mark on home", async () => {
+    const test = await fixture(); const client = test.client();
+    for (const mark of QUESTION_MARK_V2_CANDIDATES) {
+      expect((await client.request(`${QUESTION_MARK_STUDY_PATH}?mark=${mark.id}&shape=INTP`)).status).toBe(200);
+      const home = await client.request("/");
+      expect(home.status).toBe(200);
+      expect(home.text).toContain(INK_HOOK_QUESTION_MARK.svgMarkup);
+      expect(home.text).not.toContain(OPEN_FLOW_QUESTION_MARK.svgMarkup);
+      if (mark.id !== "ink-hook") expect(home.text).not.toContain(mark.svgMarkup);
+      expect(home.text).not.toContain(QUESTION_MARK_STUDY_CSS_PATH);
+    }
+    expect(test.assess).not.toHaveBeenCalled();
+  });
+
+  it("serves the home slogan tooltip as a content-addressed session-free script under the existing CSP", async () => {
+    const test = await fixture(); const client = test.client();
+    const home = await client.request("/");
+    expect(home.status).toBe(200);
+    const scripts = [...home.text.matchAll(/<script src="([^"]+)" defer><\/script>/g)].map(match => match[1]!);
+    expect(scripts.filter(path => path === SLOGAN_TOOLTIP_SCRIPT_URL)).toHaveLength(1);
+    expect(home.text).toContain('aria-labelledby="slogan-heading"');
+    expect(home.text).toContain(`role="tooltip" aria-hidden="true" hidden>${SLOGAN_DISPLAY_TEXT}</span>`);
+    const csp = home.headers.get("content-security-policy")!;
+    expect(csp).toContain("script-src 'self';");
+    expect(csp).not.toMatch(/unsafe-inline|unsafe-eval/);
+    expect(SLOGAN_TOOLTIP_SCRIPT_URL).toBe(`/assets/slogan-tooltip-${sha256Hex(Buffer.from(SLOGAN_TOOLTIP_SCRIPT)).slice(0, 16)}.js`);
+
+    const session = vi.spyOn(test.sessions, "session"); session.mockClear();
+    for (const path of [SLOGAN_TOOLTIP_SCRIPT_URL, `${SLOGAN_TOOLTIP_SCRIPT_URL}?cache-check=1`]) {
+      const asset = await test.client().request(path);
+      expect(asset.status).toBe(200);
+      expect(asset.text).toBe(SLOGAN_TOOLTIP_SCRIPT);
+      expect(asset.headers.get("content-type")).toBe("text/javascript; charset=utf-8");
+      expect(asset.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
+      expect(asset.headers.get("set-cookie")).toBeNull();
+      expect(asset.headers.get("content-security-policy")).toBe(csp);
+      expect(asset.headers.get("x-content-type-options")).toBe("nosniff");
+    }
+    expect(session).not.toHaveBeenCalled();
+    expect(test.assess).not.toHaveBeenCalled();
+    for (const path of ["/mint", "/me", "/about", "/p/Alice_Bob_Key/ENFP", "/p/Alice_Bob_Key/variations"]) {
+      const page = await client.request(path);
+      expect(page.status).toBe(200);
+      expect(page.text).not.toContain(SLOGAN_TOOLTIP_SCRIPT_URL);
+      expect(page.text).not.toContain('id="slogan-tooltip"');
+    }
+  });
+
+  it("serves the eight-shape animation script without sessions, assessment calls, or weaker CSP", async () => {
+    const test = await fixture(); const client = test.client();
+    const home = await client.request("/");
+    const script = `<script src="${SLOGAN_MBTI_HERO_SCRIPT_URL}" defer></script>`;
+    expect(home.status).toBe(200);
+    expect(home.text.split(script)).toHaveLength(2);
+    expect(home.text).toContain('data-source-renderer="sg-renderer-2.0.1"');
+    expect(home.text.match(/data-slogan-frame="[A-Z]{4}"/g)).toHaveLength(8);
+    const csp = home.headers.get("content-security-policy")!;
+    expect(csp).toContain("script-src 'self';");
+    expect(csp).not.toMatch(/unsafe-inline|unsafe-eval/);
+    expect(SLOGAN_MBTI_HERO_SCRIPT_URL).toMatch(new RegExp(`/assets/[^/]+-${sha256Hex(Buffer.from(SLOGAN_MBTI_HERO_SCRIPT)).slice(0, 16)}\\.js$`));
+
+    const session = vi.spyOn(test.sessions, "session"); session.mockClear();
+    for (const path of [SLOGAN_MBTI_HERO_SCRIPT_URL, `${SLOGAN_MBTI_HERO_SCRIPT_URL}?cache-check=1`]) {
+      const asset = await test.client().request(path);
+      expect(asset.status).toBe(200);
+      expect(asset.text).toBe(SLOGAN_MBTI_HERO_SCRIPT);
+      expect(asset.headers.get("content-type")).toBe("text/javascript; charset=utf-8");
+      expect(asset.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
+      expect(asset.headers.get("set-cookie")).toBeNull();
+      expect(asset.headers.get("content-security-policy")).toBe(csp);
+      expect(asset.headers.get("x-content-type-options")).toBe("nosniff");
+    }
+    expect(session).not.toHaveBeenCalled();
+    expect(test.assess).not.toHaveBeenCalled();
+    for (const path of ["/mint", "/me", "/about", "/p/Alice_Bob_Key/ENFP", "/p/Alice_Bob_Key/variations"]) {
+      const page = await client.request(path);
+      expect(page.status).toBe(200);
+      expect(page.text).not.toContain(SLOGAN_MBTI_HERO_SCRIPT_URL);
+      expect(page.text).not.toContain('id="slogan-animation"');
+    }
+  });
+
+  it("rejects an unexpected Host before creating a session or accessing application state", async () => {
+    const test = await fixture(); const client = test.client();
+    const session = vi.spyOn(test.sessions, "session");
+    for (const path of ["/", "/api/session", "/preview/alice/ENFP.svg"]) {
+      const response = await client.request(path, { headers: { Host: "attacker.example" } });
+      expect(response.status).toBe(421);
+      expect(response.headers.get("set-cookie")).toBeNull();
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(response.headers.get("x-frame-options")).toBe("DENY");
+      if (path.startsWith("/api/")) expect(response.json.code).toBe("WRONG_HOST");
+      else expect(response.text).toContain("Open the configured site address.");
+    }
+    expect(session).not.toHaveBeenCalled();
+    expect(test.assess).not.toHaveBeenCalled();
+    expect(test.network.state).not.toHaveBeenCalled();
+  });
+
+  it("keeps the preview available when assessment and mint services are not configured", async () => {
+    const test = await fixture({ offline: true, rpcUrl: "http://127.0.0.1:18548/rpc" });
+    const client = test.client();
+    const session = await client.init();
+    expect(session.json).toMatchObject({ wallet: null, walletVerified: false, chainId: "31337", rpcUrl: "http://127.0.0.1:18548/rpc" });
+    const preview = await client.request("/p/Alice_Bob/ENFP");
+    expect(preview.status).toBe(200);
+    expectProductionPresentation(preview.text);
+    expect(preview.text).not.toContain("Set XAI_API_KEY");
+    expect(preview.text).not.toContain("Minting is disabled until the isolated local chain is started.");
+    expect(preview.headers.get("content-security-policy")).toContain("connect-src 'self' http://127.0.0.1:18548;");
+    expect(preview.headers.get("content-security-policy")).not.toContain("18548/rpc");
+    expect((await client.request("/preview/Alice_Bob/ENFP.svg")).status).toBe(200);
+    await client.prove();
+    const mint = await client.request("/api/assessments", { method: "POST", body: { handle: "alice" } });
+    expect(mint.status).toBe(503);
+    expect(mint.json.code).toBe("MINT_UNAVAILABLE");
+    expect(test.assess).not.toHaveBeenCalled();
+    expect(await test.store.entries("")).toEqual([]);
+  });
+
+  it("serves all 80 offline gallery fixtures and their minted views without assessment, chain, or durable operations", async () => {
+    const test = await fixture({ offline: true }); const client = test.client();
+    const gallery = vi.spyOn(test.service, "gallery");
+    const state = vi.spyOn(test.service, "state");
+    const artifact = vi.spyOn(test.service, "artifact");
+    const request = vi.spyOn(test.service, "request");
+    const authorize = vi.spyOn(test.service, "authorize");
+    const sign = vi.spyOn(test.network, "sign");
+    const put = vi.spyOn(test.store, "put");
+    const home = await client.request("/");
+    expect(home.status).toBe(200);
+    expect(home.text.match(/class="gallery-item"/g)).toHaveLength(80);
+    expectArtworkCaptionPolicy(home.text, 80, 80);
+    expect([...home.text.matchAll(/class="gallery-card" href="([^"]+)"/g)].map(match => match[1])).toEqual(OPEN_MINT_GALLERY_FIXTURES.map(entry => entry.url));
+    expectProductionPresentation(home.text);
+    expect(home.text).not.toContain("No signatures minted yet.");
+    expect(home.text).toContain('href="/signatures/');
+    expect(new Set(OPEN_MINT_GALLERY_FIXTURES.map(entry => entry.mbti))).toEqual(new Set(MBTI_TYPES));
+    for (const entry of OPEN_MINT_GALLERY_FIXTURES) {
+      expect(home.text).toContain(`src="${entry.imageUrl}"`);
+      expect(entry.imageUrl).toBe(`/preview/${entry.renderHandle}/${entry.mbti}.svg?renderer=sg-renderer-2.0.0`);
+      const svg = await client.request(entry.imageUrl);
+      expect(svg.status).toBe(200);
+      expect(svg.headers.get("content-type")).toBe("image/svg+xml");
+      expect(svg.headers.get("set-cookie")).toBeNull();
+      expect(svg.headers.get("content-security-policy")).toBe("default-src 'none'; sandbox");
+      expect(svg.text).toBe(renderSignatureSvg(entry.renderHandle, entry.mbti));
+      const detail = await client.request(entry.url);
+      expect(detail.status).toBe(200);
+      expect(detail.text).toContain('class="signature-page" data-mint-state="minted"');
+      expect(detail.text).toContain("data-mint-state-label>Minted</a>");
+      expectArtworkCaptionPolicy(detail.text, 1, 1);
+      expect(detail.text).toContain(`<title>@${entry.renderHandle} × ${entry.mbti} · Signatures Gallery</title>`);
+      expect(detail.text).toContain(`@${entry.renderHandle}`);
+      expect(detail.text).toContain(`src="${entry.imageUrl}"`);
+      expect(detail.text).toContain(`href="${entry.imageUrl}"`);
+      expect(detail.text).toContain('class="signature-provenance"');
+      expect(detail.text).toContain("sg-renderer-2.0.0");
+      expectProductionPresentation(detail.text);
+      expect(detail.text).not.toContain("The backend asked Grok to research public X posts");
+      expect(detail.text).not.toMatch(/<dt>(Assessment|Spelling verified at preparation)<\/dt>/);
+      expect(detail.text).not.toMatch(/data-assessment-request|data-assessment-code|data-mint-form|data-connect-wallet|data-dev-wallet|data-dev-mint|<dt>(?:Token|Transaction|Wallet)<\/dt>|View token/);
+      const alternateCase = await client.request(`/signatures/${entry.handle.toUpperCase()}`, { followRedirects: false });
+      expect(alternateCase.status).toBe(303);
+      expect(alternateCase.headers.get("location")).toBe(entry.url);
+      expect(alternateCase.text).toBe("");
+    }
+    for (const operation of [gallery, state, artifact, request, authorize, test.assess, test.network.state, sign, put]) expect(operation).not.toHaveBeenCalled();
+    expect(await test.store.entries("")).toEqual([]);
+  });
+
+  it("rejects unknown and malformed gallery fixture paths without consulting mint state", async () => {
+    const test = await fixture({ offline: true }); const client = test.client();
+    const artifact = vi.spyOn(test.service, "artifact");
+    const state = vi.spyOn(test.service, "state");
+    const entry = OPEN_MINT_GALLERY_FIXTURES[0]!;
+    for (const path of ["/dev/gallery/", "/dev/gallery/not_a_fixture", `/dev/gallery/@${entry.handle}`, `/dev/gallery/%40${entry.handle}`, "/dev/gallery/invalid-handle", `/dev/gallery/${"a".repeat(16)}`, `/dev/gallery/${entry.handle}/extra`, `/dev/gallery/${entry.handle}%2Fextra`, "/dev/gallery/%3Cscript%3E"]) {
+      const response = await client.request(path);
+      expect(response.status).toBe(404);
+      expect(response.text).not.toContain('data-mint-state="minted"');
+    }
+    expect(artifact).not.toHaveBeenCalled();
+    expect(state).not.toHaveBeenCalled();
+    expect(test.assess).not.toHaveBeenCalled();
+    expect(await test.store.entries("")).toEqual([]);
+  });
+
+  it("redirects legacy sample URLs to canonical product URLs without exposing data or permitting writes", async () => {
+    const test = await fixture({ offline: true }); const client = test.client();
+    const artifact = vi.spyOn(test.service, "artifact");
+    const state = vi.spyOn(test.service, "state");
+    const put = vi.spyOn(test.store, "put");
+    for (const entry of OPEN_MINT_GALLERY_FIXTURES) {
+      for (const spelling of [entry.handle, entry.renderHandle, entry.handle.toUpperCase()]) {
+        const redirect = await client.request(`/dev/gallery/${spelling}?returnTo=https://example.invalid`, { followRedirects: false });
+        expect(redirect.status).toBe(303);
+        expect(redirect.headers.get("location")).toBe(`/signatures/${entry.handle}`);
+        expect(redirect.headers.get("cache-control")).toBe("no-store");
+        expect(redirect.text).toBe("");
+      }
+    }
+    const followed = await client.request("/dev/gallery/TYLERXHOBBS");
+    expect(followed.status).toBe(200);
+    expect(followed.text).toContain("@tylerxhobbs");
+    expectProductionPresentation(followed.text);
+    await client.init();
+    for (const path of ["/dev/gallery/tylerxhobbs", "/signatures/tylerxhobbs"]) {
+      const response = await client.request(path, { method: "POST", body: {}, followRedirects: false });
+      expect(response.status).toBe(404);
+      expect(response.headers.get("location")).toBeNull();
+    }
+    for (const operation of [artifact, state, put, test.assess, test.network.state]) expect(operation).not.toHaveBeenCalled();
+    expect(await test.store.entries("")).toEqual([]);
+  });
+
+  it("rejects unknown or malformed sample product URLs without creating a mint", async () => {
+    const test = await fixture({ offline: true }); const client = test.client();
+    const put = vi.spyOn(test.store, "put");
+    for (const path of ["/signatures/", "/signatures/not_a_fixture", "/signatures/@grok", "/signatures/%40grok", "/signatures/grok/extra", "/signatures/grok%2Fextra", "/signatures/invalid-handle", `/signatures/${"a".repeat(16)}`, "/signatures/%3Cscript%3E"]) {
+      const response = await client.request(path, { followRedirects: false });
+      expect(response.status).toBe(404);
+      expect(response.headers.get("location")).toBeNull();
+      expect(response.text).not.toContain('data-mint-state="minted"');
+      expectProductionPresentation(response.text);
+    }
+    for (const operation of [put, test.assess, test.network.state]) expect(operation).not.toHaveBeenCalled();
+    expect(await test.store.entries("")).toEqual([]);
+  });
+
+  it("serves all 16 MBTI galleries using only matching offline fixtures and their original images", async () => {
+    const test = await fixture({ offline: true }); const client = test.client();
+    const gallery = vi.spyOn(test.service, "gallery");
+    const request = vi.spyOn(test.service, "request");
+    const authorize = vi.spyOn(test.service, "authorize");
+    const sign = vi.spyOn(test.network, "sign");
+    const put = vi.spyOn(test.store, "put");
+    for (const mbti of MBTI_TYPES) {
+      const entries = OPEN_MINT_GALLERY_FIXTURES.filter(candidate => candidate.mbti === mbti);
+      expect(entries, mbti).toHaveLength(5);
+      const page = await client.request(`/${mbti}/`, { followRedirects: false });
+      expect(page.status, mbti).toBe(200);
+      expect(page.headers.get("content-type")).toBe("text/html; charset=utf-8");
+      expect(page.headers.get("location")).toBeNull();
+      expect(page.headers.get("cache-control")).toBe("no-store");
+      expect(page.headers.get("content-security-policy")).toContain("script-src 'self';");
+      expect(page.headers.get("content-security-policy")).not.toMatch(/unsafe-inline|unsafe-eval/);
+      expect(page.headers.get("x-content-type-options")).toBe("nosniff");
+      expect(page.headers.get("referrer-policy")).toBe("no-referrer");
+      expect(page.text.match(/class="gallery-item"/g)).toHaveLength(5);
+      expect([...page.text.matchAll(/class="gallery-card" href="([^"]+)"/g)].map(match => match[1])).toEqual(entries.map(entry => entry.url));
+      for (const entry of entries) expect(page.text).toContain(`src="${entry.imageUrl}"`);
+      expect(page.text).toContain(`href="/${mbti}/"`);
+      expectProductionPresentation(page.text);
+      expect(page.text).toContain('href="/signatures/');
+      for (const other of OPEN_MINT_GALLERY_FIXTURES.filter(candidate => candidate.mbti !== mbti)) {
+        expect(page.text).not.toContain(`href="${other.url}"`);
+        expect(page.text).not.toContain(`src="${other.imageUrl}"`);
+      }
+    }
+    for (const operation of [gallery, request, authorize, test.assess, test.network.state, sign, put]) expect(operation).not.toHaveBeenCalled();
+    expect(await test.store.entries("")).toEqual([]);
+  });
+
+  it("canonicalizes MBTI gallery paths and rejects invalid types and non-GET browsing", async () => {
+    const test = await fixture({ offline: true }); const client = test.client();
+    const gallery = vi.spyOn(test.service, "gallery");
+    const request = vi.spyOn(test.service, "request");
+    const authorize = vi.spyOn(test.service, "authorize");
+    const put = vi.spyOn(test.store, "put");
+    for (const mbti of MBTI_TYPES) {
+      for (const path of [`/${mbti}`, `/${mbti.toLowerCase()}`, `/${mbti.toLowerCase()}/`, `/${mbti[0]}${mbti.slice(1).toLowerCase()}/`]) {
+        const response = await client.request(path, { followRedirects: false });
+        expect(response.status, path).toBe(303);
+        expect(response.headers.get("location"), path).toBe(`/${mbti}/`);
+        expect(response.text).toBe("");
+      }
+    }
+    for (const path of ["/INXX/", "/XXXX", "/IST/", "/ISTJJ/", "/ISTJ/extra", "/ISTJ//", "/ISTJ%2Fextra/", "/%3Cscript%3E/"]) {
+      const response = await client.request(path, { followRedirects: false });
+      expect(response.status, path).toBe(404);
+      expect(response.headers.get("location")).toBeNull();
+      expect(response.text).not.toContain('class="gallery-item"');
+    }
+    await client.init();
+    for (const path of ["/ISTJ/", "/istj"]) {
+      const response = await client.request(path, { method: "POST", body: {}, followRedirects: false });
+      expect(response.status).toBe(404);
+      expect(response.headers.get("location")).toBeNull();
+    }
+    expect((await client.request("/ISTJ/", { method: "HEAD" })).status).toBe(405);
+    for (const operation of [gallery, request, authorize, test.assess, test.network.state, put]) expect(operation).not.toHaveBeenCalled();
+  });
+
+  it("filters chain-confirmed works by stored MBTI without exposing unminted or pending artwork or creating new work", async () => {
+    const test = await fixture(); const owner = test.client(); await owner.init();
+    const provider = new DevelopmentAssessmentProvider();
+    test.assess.mockImplementation(async handle => ({ ...await provider.assess(handle), mbti: handle === "other_type" ? "ENFP" : "ISTJ" }));
+    for (const handle of ["matching", "other_type", "unminted", "pending"]) await owner.assess(handle);
+    await test.mint("matching");
+    await test.mint("other_type");
+    await test.mint("pending", "pending");
+    const matching = (await test.service.artifact("matching"))!;
+    const other = (await test.service.artifact("other_type"))!;
+    const unminted = (await test.service.artifact("unminted"))!;
+    const pending = (await test.service.artifact("pending"))!;
+    const storedBefore = await test.store.entries("");
+    const request = vi.spyOn(test.service, "request");
+    const authorize = vi.spyOn(test.service, "authorize");
+    const sign = vi.spyOn(test.network, "sign");
+    const put = vi.spyOn(test.store, "put");
+    test.assess.mockClear();
+    const visitor = test.client();
+    for (const [mbti, artifact] of [["ISTJ", matching], ["ENFP", other]] as const) {
+      const page = await visitor.request(`/${mbti}/`);
+      expect(page.status).toBe(200);
+      expect(page.text.match(/class="gallery-item"/g)).toHaveLength(1);
+      expect([...page.text.matchAll(/class="gallery-card" href="([^"]+)"/g)].map(match => match[1])).toEqual([`/signatures/${artifact.assessment.handle}`]);
+      expect(page.text).toContain(`src="/artifacts/${artifact.pngSha256}.png"`);
+      expect(page.text).not.toContain("/dev/gallery/");
+      expect(page.text).not.toContain("/preview/");
+      expectProductionPresentation(page.text);
+      for (const excluded of [matching, other, unminted, pending].filter(candidate => candidate !== artifact)) {
+        expect(page.text).not.toContain(`href="/signatures/${excluded.assessment.handle}"`);
+        expect(page.text).not.toContain(`src="/artifacts/${excluded.pngSha256}.png"`);
+      }
+      const image = await visitor.request(`/artifacts/${artifact.pngSha256}.png`);
+      expect(image.status).toBe(200);
+      expect(sha256Hex(image.bytes)).toBe(artifact.pngSha256);
+    }
+    const empty = await visitor.request("/INTP/");
+    expect(empty.status).toBe(200);
+    expect(empty.text).not.toContain('class="gallery-item"');
+    expect(empty.text).not.toContain("/dev/gallery/");
+    expect(empty.text).not.toContain("/preview/");
+    for (const operation of [request, authorize, test.assess, sign, put]) expect(operation).not.toHaveBeenCalled();
+    expect(await test.store.entries("")).toEqual(storedBefore);
+  });
+
+  it.each([
+    { fixture: false, offline: true },
+    { fixture: false, offline: false },
+    { fixture: true, offline: false },
+  ])("disables gallery fixtures outside offline fixture mode ($fixture / offline $offline)", async options => {
+    const test = await fixture(options); const client = test.client();
+    const put = vi.spyOn(test.store, "put");
+    const home = await client.request("/");
+    expect(home.status).toBe(200);
+    expect(home.text).toContain("No signatures minted yet.");
+    expect(home.text).not.toContain('class="gallery-item"');
+    expect(home.text).not.toContain("/dev/gallery/");
+    expectProductionPresentation(home.text);
+    for (const mbti of MBTI_TYPES) {
+      const page = await client.request(`/${mbti}/`);
+      expect(page.status).toBe(200);
+      expect(page.text).not.toContain('class="gallery-item"');
+      expect(page.text).not.toContain("/dev/gallery/");
+      expectProductionPresentation(page.text);
+    }
+    for (const entry of OPEN_MINT_GALLERY_FIXTURES) {
+      for (const path of [entry.url, `/dev/gallery/${entry.handle}`]) {
+        const response = await client.request(path, { followRedirects: false });
+        expect(response.status).toBe(404);
+        expect(response.headers.get("location")).toBeNull();
+        expect(response.text).not.toContain('data-mint-state="minted"');
+        expectProductionPresentation(response.text);
+      }
+    }
+    expect(test.assess).not.toHaveBeenCalled();
+    expect(test.network.state).not.toHaveBeenCalled();
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it("keeps gallery fixtures out of wallet collections and stored mint state despite their product-style URLs", async () => {
+    const test = await fixture({ offline: true }); const client = test.client();
+    const put = vi.spyOn(test.store, "put");
+    const sign = vi.spyOn(test.network, "sign");
+    await client.init();
+    expect((await client.request("/")).text.match(/class="gallery-item"/g)).toHaveLength(80);
+    const signedOut = await client.request("/me");
+    expect(signedOut.text).toContain("Your collection follows your wallet.");
+    expect(signedOut.text).not.toContain('class="gallery-item"');
+    expect((await client.prove()).result.status).toBe(200);
+    const collection = await client.request("/me");
+    expect(collection.status).toBe(200);
+    expect(collection.text).toContain(wallet.address);
+    expect(collection.text).toContain("This wallet has no minted signatures yet.");
+    expect(collection.text).not.toContain('class="gallery-item"');
+    expect(collection.text).not.toContain("/dev/gallery/");
+    expectProductionPresentation(collection.text);
+    for (const entry of OPEN_MINT_GALLERY_FIXTURES) {
+      expect((await client.request(`/signatures/${entry.handle}`)).status).toBe(200);
+      expect(await test.service.artifact(entry.handle)).toBeUndefined();
+      expect(await test.service.state(entry.handle)).toEqual({ state: "unminted" });
+    }
+    expect(await test.service.gallery()).toEqual([]);
+    expect(await test.service.gallery(wallet.address)).toEqual([]);
+    expect(test.assess).not.toHaveBeenCalled();
+    expect(test.network.state).not.toHaveBeenCalled();
+    expect(sign).not.toHaveBeenCalled();
+    expect(put).not.toHaveBeenCalled();
+    expect(await test.store.entries("")).toEqual([]);
+  });
+
+  it("never shadows a chain-confirmed work with a catalog sample sharing its handle", async () => {
+    const test = await fixture(); const client = test.client(); await client.init();
+    const entry = OPEN_MINT_GALLERY_FIXTURES.find(candidate => candidate.handle === "tylerxhobbs")!;
+    await client.assess("TYLERXHOBBS");
+    expect((await client.request(entry.url)).status).toBe(404);
+    await test.mint(entry.handle);
+    const artifact = (await test.service.artifact(entry.handle))!;
+    test.assess.mockClear();
+    const put = vi.spyOn(test.store, "put");
+    const response = await client.request(entry.url);
+    expect(response.status).toBe(200);
+    expect(response.text).toContain("@TYLERXHOBBS");
+    expect(response.text).toContain(`src="/artifacts/${artifact.svgSha256}.svg"`);
+    expect(response.text).not.toContain(entry.imageUrl);
+    expect(response.text).toContain("<dt>Token</dt>");
+    expectProductionPresentation(response.text);
+    const legacy = await client.request(`/dev/gallery/${entry.handle}`, { followRedirects: false });
+    expect(legacy.status).toBe(404);
+    expect(legacy.headers.get("location")).toBeNull();
+    expect(test.assess).not.toHaveBeenCalled();
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it("enforces the JSON byte limit before endpoint processing and accepts a charset parameter", async () => {
+    const test = await fixture(); const client = test.client(); await client.init();
+    const request = vi.spyOn(test.service, "request");
+    const atLimit = JSON.stringify({ handle: "alice" }).padEnd(8192, " ");
+    const accepted = await client.request("/api/unknown", { method: "POST", rawBody: atLimit, headers: { "Content-Type": "application/json; charset=utf-8" } });
+    expect(accepted.status).toBe(404);
+    expect(accepted.json.code).toBe("NOT_FOUND");
+    for (const rawBody of [atLimit + " ", JSON.stringify({ handle: "é".repeat(4096) })]) {
+      const response = await client.request("/api/assessments", { method: "POST", rawBody });
+      expect(response.status).toBe(413);
+      expect(response.json).toEqual({ error: "Request is too large.", code: "REQUEST_TOO_LARGE" });
+    }
+    const empty = await client.request("/api/assessments", { method: "POST", rawBody: "" });
+    expect(empty.status).toBe(400);
+    expect(empty.json.code).toBe("INVALID_JSON");
+    expect(request).not.toHaveBeenCalled();
+    expect(test.assess).not.toHaveBeenCalled();
+  });
+
+  it("rate-limits authenticated mutations, not reads, and allows the next window", async () => {
+    const test = await fixture(); const client = test.client(); await client.init();
+    const initialTime = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(initialTime);
+    for (let i = 0; i < 60; i++) {
+      expect((await client.request("/api/unknown", { method: "POST", body: {} })).status).toBe(404);
+    }
+    const blocked = await client.request("/api/assessments", { method: "POST", body: { handle: "alice" } });
+    expect(blocked.status).toBe(429);
+    expect(blocked.json.code).toBe("RATE_LIMIT");
+    expect((await client.request("/api/session")).status).toBe(200);
+    expect((await client.request("/p/alice/ENFP")).status).toBe(200);
+    clock.mockReturnValue(initialTime + 60_001);
+    expect((await client.request("/api/unknown", { method: "POST", body: {} })).status).toBe(404);
+    expect(test.assess).not.toHaveBeenCalled();
+    expect(await test.store.entries("")).toEqual([]);
+  });
+
+  it("rejects extra fields consistently across wallet, mint, and logout mutations", async () => {
+    const test = await fixture(); const client = test.client(); await client.init();
+    const calls = [vi.spyOn(test.sessions, "challenge"), vi.spyOn(test.sessions, "verify"), vi.spyOn(test.sessions, "logout"),
+      vi.spyOn(test.service, "authorize"), vi.spyOn(test.service, "report")];
+    for (const [path, payload] of [
+      ["/api/wallet/challenge", { address: wallet.address }],
+      ["/api/wallet/verify", { challengeId: "challenge", signature: "0x1234" }],
+      ["/api/mints/authorize", { code: "a".repeat(43), consent: true }],
+      ["/api/mints/report", { code: "a".repeat(43), transactionHash: `0x${"a".repeat(64)}` }],
+      ["/api/session/logout", {}],
+    ] as const) {
+      const response = await client.request(path, { method: "POST", body: { ...payload, mbti: "INTJ" } });
+      expect(response.status, path).toBe(400);
+      expect(response.json.code, path).toBe("INVALID_FIELDS");
+    }
+    for (const call of calls) expect(call).not.toHaveBeenCalled();
+    expect(test.assess).not.toHaveBeenCalled();
+  });
+
+  it("guards explicitly enabled development hooks with CSRF, exact fields, and request ownership", async () => {
+    const devWallet = vi.fn<NonNullable<OpenMintServerOptions["devWallet"]>>(async () => wallet.address);
+    const devMint = vi.fn<NonNullable<OpenMintServerOptions["devMint"]>>(async () => ({ transactionHash: `0x${"d".repeat(64)}` }));
+    const test = await fixture({ devWallet, devMint });
+    const owner = test.client(); const visitor = test.client(); await owner.init(); await visitor.init();
+    const { code } = await owner.assess("alice");
+    expect((await owner.request("/api/dev/wallet", { method: "POST", body: {} })).json.wallet).toBe(wallet.address);
+    expect(devWallet.mock.calls[0]![1]).toBeUndefined();
+    expect((await owner.request("/api/dev/wallet", { method: "POST", body: { code } })).status).toBe(200);
+    expect(devWallet.mock.calls[1]![1]).toBe(code);
+    expect((await owner.request("/api/dev/mint", { method: "POST", body: { code, consent: true } })).json.transactionHash).toBe(`0x${"d".repeat(64)}`);
+    expect(devMint).toHaveBeenCalledWith(test.sessions.session(owner.cookie).session, code, true);
+    for (const [path, payload] of [["/api/dev/wallet", { code }], ["/api/dev/mint", { code, consent: true }]] as const) {
+      expect((await visitor.request(path, { method: "POST", body: payload })).status).toBe(403);
+      expect((await owner.request(path, { method: "POST", body: payload, skipCsrf: true })).status).toBe(403);
+      expect((await owner.request(path, { method: "POST", body: { ...payload, mbti: "INTJ" } })).status).toBe(400);
+    }
+    expect(devWallet).toHaveBeenCalledTimes(2);
+    expect(devMint).toHaveBeenCalledTimes(1);
+    expectProductionPresentation((await owner.request("/mint")).text);
+    expect(await test.store.entries("issuance:")).toEqual([]);
+  });
+
+  it("treats a reported transaction hash as a private hint, never as mint confirmation", async () => {
+    const test = await fixture(); const owner = test.client(); const visitor = test.client(); await owner.init(); await visitor.init();
+    const { code } = await owner.assess("alice");
+    const transactionHash = `0x${"AB".repeat(32)}`;
+    const report = (client: typeof owner, hash: string) => client.request("/api/mints/report", { method: "POST", body: { code, transactionHash: hash } });
+    expect((await report(visitor, transactionHash)).status).toBe(403);
+    const invalid = await report(owner, "0x1234");
+    expect(invalid.status).toBe(400);
+    expect(invalid.json.code).toBe("INVALID_TRANSACTION");
+    expect(await test.store.entries("hint:")).toEqual([]);
+    const result = await report(owner, transactionHash);
+    expect(result.status).toBe(200);
+    expect(result.json).toEqual({ ok: true });
+    expect(await test.store.get(`hint:${code}`)).toEqual({ transactionHash: transactionHash.toLowerCase() });
+    expect((await owner.request(`/api/mints/status/${code}`)).json).toEqual({ state: "unminted" });
+    expect((await owner.request(`/api/assessments/${code}`)).json).not.toHaveProperty("mbti");
+    expect((await owner.request("/signatures/alice")).status).toBe(404);
+    expect((await owner.request("/")).text).not.toContain("/signatures/alice");
+    expect(await test.store.entries("issuance:")).toEqual([]);
+  });
+
+  it("serves exact PNG, metadata, favicon, and font bytes with immutable but session-free responses", async () => {
+    const test = await fixture(); const owner = test.client(); await owner.init();
+    await owner.assess("alice"); await test.mint("alice");
+    const artifact = (await test.service.artifact("alice"))!;
+    const visitor = test.client();
+    for (const [hash, extension, type] of [[artifact.pngSha256, "png", "image/png"], [artifact.metadataSha256, "json", "application/json"]] as const) {
+      const response = await visitor.request(`/artifacts/${hash}.${extension}`);
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toBe(type);
+      expect(sha256Hex(response.bytes)).toBe(hash);
+      expect(response.headers.get("set-cookie")).toBeNull();
+      expect(response.headers.get("cache-control")).toContain("immutable");
+      expect(response.headers.get("content-security-policy")).toBe("default-src 'none'; sandbox");
+      if (extension === "png") expect(response.bytes.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+      else expect(response.json).toHaveProperty("image");
+    }
+    const home = await owner.request("/");
+    const icon = home.text.match(/<link rel="icon"[^>]*href="([^"]+)"/)![1]!;
+    const font = home.text.match(/<link rel="preload"[^>]*href="([^"]+)"/)![1]!;
+    for (const [path, type] of [[icon, "image/svg+xml"], [font, "font/woff2"]]) {
+      const response = await visitor.request(path!);
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toBe(type);
+      expect(response.headers.get("set-cookie")).toBeNull();
+      expect(response.headers.get("cache-control")).toContain("immutable");
+      expect(response.bytes.length).toBeGreaterThan(0);
+    }
+    for (const path of [`/artifacts/${"0".repeat(64)}.png`, `/artifacts/${artifact.pngSha256}.svg`, `/assets/fonts/private.woff2`]) {
+      const missing = await visitor.request(path);
+      expect(missing.status).toBe(404);
+      expect(missing.headers.get("cache-control")).toBe("no-store");
+    }
+  });
+
+  it("redacts unexpected provider, storage, and service errors in JSON and HTML responses", async () => {
+    const test = await fixture(); const client = test.client(); await client.init();
+    const secret = "private-api-key-and-provider-response";
+    vi.spyOn(test.service, "walletContext").mockRejectedValue(new Error(secret));
+    vi.spyOn(test.service, "gallery").mockRejectedValue(new Error(secret));
+    vi.spyOn(test.service, "asset").mockRejectedValue(new Error(secret));
+    for (const path of ["/api/wallet/context", "/", `/artifacts/${"a".repeat(64)}.png`]) {
+      const response = await client.request(path);
+      expect(response.status).toBe(503);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(response.text).toContain("This operation is temporarily unavailable. Please try again shortly.");
+      expect(response.text).not.toContain(secret);
+      expect(response.text).not.toContain("Error:");
+      if (path.startsWith("/api/")) expect(response.json.code).toBe("SERVICE_UNAVAILABLE");
+    }
+    expect(test.assess).not.toHaveBeenCalled();
+  });
+
+  it("permanently redirects valid old preview links to /p/ without chain reads or assessment work", async () => {
+    const test = await fixture(); const client = test.client();
+    const state = vi.spyOn(test.service, "state");
+    const stored = await test.store.entries("");
+    for (const suffix of ["variations", ...MBTI_TYPES]) {
+      const old = `/s/%40Alice_Bob_Key/${suffix === "variations" ? suffix : suffix.toLowerCase()}`;
+      const response = await client.request(old, { followRedirects: false });
+      expect(response.status).toBe(308);
+      expect(response.headers.get("location")).toBe(`/p/Alice_Bob_Key/${suffix}`);
+      expect(response.text).toBe("");
+    }
+    const bare = await client.request('/s/Alice_Bob_Key', { followRedirects: false });
+    expect(bare.status).toBe(308);
+    expect(bare.headers.get('location')).toBe('/p/Alice_Bob_Key');
+    expect(state).not.toHaveBeenCalled();
+    expect(test.assess).not.toHaveBeenCalled();
+    expect(await test.store.entries("")).toEqual(stored);
+    expect((await client.request('/s/Alice_Bob_Key')).text).toContain('data-mint-entry');
+    for (const suffix of ['variations', 'ENFP']) {
+      const legacy = await client.request(`/s/Alice_Bob_Key/${suffix}`);
+      const canonical = await client.request(`/p/Alice_Bob_Key/${suffix}`);
+      expect(legacy.status).toBe(200);
+      expect(legacy.text).toBe(canonical.text);
+      expect(legacy.text).not.toContain('href="/s/');
+    }
+  });
+
+  it("validates legacy aliases before redirecting and never turns malformed previews into mint requests", async () => {
+    const test = await fixture(); const client = test.client();
+    const state = vi.spyOn(test.service, 'state');
+    for (const namespace of ['s', 'p']) {
+      for (const tail of ['invalid%2Fhandle/ENFP', '%3Cscript%3E/variations', '%/ENFP', 'alice/INXX', 'alice/37', 'alice/variations/ENFP', `${'a'.repeat(16)}/INTJ`]) {
+        const result = await client.request(`/${namespace}/${tail}`, { followRedirects: false });
+        expect(result.status).toBe(404);
+        expect(result.headers.get('location')).toBeNull();
+      }
+    }
+    expect(state).not.toHaveBeenCalled();
+    expect(test.assess).not.toHaveBeenCalled();
+  });
+
+  it("preserves saved mint spelling, assets and status after following a legacy preview redirect", async () => {
+    const test = await fixture(); const owner = test.client(); await owner.init();
+    await owner.assess('Alice_Bob_Key'); await test.mint('alice_bob_key');
+    const stored = await test.store.entries('');
+    const visitor = test.client();
+    for (const suffix of ['variations', ...MBTI_TYPES]) {
+      const response = await visitor.request(`/s/ALICE_BOB_KEY/${suffix}`);
+      const current = await visitor.request(`/p/Alice_Bob_Key/${suffix}`);
+      expect(response.status).toBe(200);
+      expect(response.text).toBe(current.text);
+      expect(response.text).toContain('data-preview-mint-state="minted"');
+      expectHandleNavigation(response.text, 'Alice_Bob_Key');
+      expect(response.text).not.toContain('href="/s/');
+    }
+    expect(await test.store.entries('')).toEqual(stored);
+    expect(test.assess).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns canonical redirects without converting case-preserved preview handles into new identities", async () => {
+    const test = await fixture(); const client = test.client();
+    for (const [path, target] of [
+      ["/p/%40Alice_Bob", "/mint?handle=Alice_Bob"],
+      ["/p/%41lice_Bob/variations", "/p/Alice_Bob/variations"],
+      ["/p/%40Alice_Bob/enfp", "/p/Alice_Bob/ENFP"],
+    ]) {
+      const response = await client.request(path!, { followRedirects: false });
+      expect(response.status).toBe(303);
+      expect(response.headers.get("location")).toBe(target);
+      expect(response.text).toBe("");
+    }
+    await client.init();
+    const { url } = await client.assess("Alice_Bob"); await test.mint("alice_bob");
+    const minted = await client.request(url, { followRedirects: false });
+    expect(minted.status).toBe(303);
+    expect(minted.headers.get("location")).toBe("/signatures/alice_bob");
+    expect(minted.text).toBe("");
+    for (const path of ["/mint?handle=%3Cscript%3E", "/mint?handle=", "/mint?handle=invalid%2Fhandle"]) {
+      expect((await client.request(path)).status).toBe(400);
+    }
+    for (const path of ["/signatures/nobody", `/mint/${"z".repeat(43)}`, `/api/assessments/${"z".repeat(43)}`]) {
+      expect((await client.request(path)).status).toBe(404);
+    }
+  });
+
+  it("keeps expired progress readable but requires a fresh window for minting", async () => {
+    const test = await fixture(); const client = test.client(); await client.init();
+    const { code, url } = await client.assess("alice");
+    await client.prove(code);
+    expect((await client.request("/api/session")).json).toMatchObject({ wallet: wallet.address, walletVerified: false });
+    const request = (await test.store.get<SignatureRequest>(`request:${code}`))!;
+    await test.store.put(`request:${code}`, { ...request, createdAt: request.createdAt - 900_001, expiresAt: request.expiresAt - 900_001 });
+    const progress = await client.request(`/api/assessments/${code}`);
+    expect(progress.status).toBe(200);
+    expect(progress.json).toMatchObject({ requestExpired: true, canMint: false });
+    expect(progress.json).not.toHaveProperty("mbti");
+    expect((await client.request(url)).status).toBe(200);
+    const authorize = await client.request("/api/mints/authorize", { method: "POST", body: { code, consent: true } });
+    expect(authorize.status).toBe(410);
+    expect(authorize.json.code).toBe("REQUEST_EXPIRED");
+    expect(await test.store.entries("issuance:")).toEqual([]);
+    await client.prove();
+    expect((await client.request("/api/session")).json.walletVerified).toBe(true);
+    expect(test.assess).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a newly created request readable when the clock advances during preparation", async () => {
+    let time = Date.now();
+    const test = await fixture({ now: () => time++ }); const client = test.client(); await client.init();
+    const { code, url } = await client.assess("Alice_Bob");
+    const progress = await client.request(`/api/assessments/${code}`);
+    expect(progress.status).toBe(200);
+    expect(progress.json).toMatchObject({ handle: "alice_bob", renderHandle: "Alice_Bob", status: "ready", requestExpired: false, canMint: true });
+    const request = (await test.store.get<SignatureRequest>(`request:${code}`))!;
+    expect(request.expiresAt - request.createdAt).toBe(900_000);
+    expect((await client.request(url)).status).toBe(200);
+    expect(test.assess).toHaveBeenCalledTimes(1);
+  });
+
   it("exposes a read-only exact-chain fingerprint and optional wallet nonce without signing or assessing", async () => {
     const test = await fixture(); const client = test.client();
     const context = await client.request("/api/wallet/context");
@@ -239,7 +1080,7 @@ describe("open mint HTTP boundary", () => {
 
   it("preserves mixed-case request URLs and labels without introducing another assessment or permalink identity", async () => {
     const test = await fixture(); const client = test.client(); await client.init();
-    const entry = await client.request("/s/Alice_Bob_Key");
+    const entry = await client.request("/p/Alice_Bob_Key");
     expect(entry.status).toBe(200);
     expect(entry.text).toContain('value="Alice_Bob_Key"');
     const { url, code } = await client.assess("@Alice_Bob_Key");
@@ -292,8 +1133,7 @@ describe("open mint HTTP boundary", () => {
     const permalink = await client.request("/signatures/alice");
     expect(permalink.status).toBe(200);
     expect(permalink.text).toContain(status.json.mbti);
-    expect(permalink.text).toContain("Simulated assessment");
-    expect(permalink.text.match(/<main>([\s\S]*?)<\/main>/)![1]).not.toMatch(/development fixture|simulated assessment/i);
+    expectProductionPresentation(permalink.text);
     expect(permalink.text).not.toContain("data-mint-form");
     const svg = await client.request(status.json.svgUrl);
     expect(svg.status).toBe(200);
@@ -312,13 +1152,13 @@ describe("open mint HTTP boundary", () => {
     expect(script).toMatch(/^\/assets\/open-mint-[a-f0-9]+\.js$/);
     expect((await client.request(style)).text).toContain("Instrument Sans");
     expect((await client.request(script)).text).toContain("eth_sendTransaction");
-    for (const path of ["/", "/me", "/about", "/s/alice", "/signatures/alice"]) expect((await client.request(path)).text).not.toMatch(/(?:xai|sk)-[A-Za-z0-9]{16,}|authorizerPrivateKey|providerResponse|walletProof|client_secret/);
+    for (const path of ["/", "/me", "/about", "/p/alice", "/signatures/alice"]) expect((await client.request(path)).text).not.toMatch(/(?:xai|sk)-[A-Za-z0-9]{16,}|authorizerPrivateKey|providerResponse|walletProof|client_secret/);
   });
 
   it("renders all editable preview types without assessments, storage, mint authority or wallet access", async () => {
     const test = await fixture(); const client = test.client(); await client.init();
     for (const mbti of MBTI_TYPES) {
-      const preview = await client.request(`/s/Alice_Bob_Key/${mbti}`);
+      const preview = await client.request(`/p/Alice_Bob_Key/${mbti}`);
       expect(preview.status).toBe(200);
       expect(preview.text).toContain(`/preview/Alice_Bob_Key/${mbti}.svg`);
       expect(preview.text).toContain('/mint?handle=Alice_Bob_Key');
@@ -327,8 +1167,8 @@ describe("open mint HTTP boundary", () => {
       expect(svg.status).toBe(200);
       expect(svg.text).toBe(renderSignatureSvg("Alice_Bob_Key", mbti));
     }
-    expect((await client.request('/s/Alice_Bob_Key/enfp')).text).toContain('/preview/Alice_Bob_Key/ENFP.svg');
-    for (const path of ['/s/alice/17', '/s/alice/INXX', '/s/alice/1.000000', '/preview/alice/INXX.svg', '/s/invalid%2Fhandle/ENFP']) expect((await client.request(path)).status).toBe(404);
+    expect((await client.request('/p/Alice_Bob_Key/enfp')).text).toContain('/preview/Alice_Bob_Key/ENFP.svg');
+    for (const path of ['/p/alice/17', '/p/alice/INXX', '/p/alice/1.000000', '/preview/alice/INXX.svg', '/p/invalid%2Fhandle/ENFP']) expect((await client.request(path)).status).toBe(404);
     expect((await client.request('/mint?handle=Alice_Bob_Key&mbti=INTJ')).text).toContain('value="Alice_Bob_Key"');
     expect((await client.request('/mint')).status).toBe(200);
     await client.prove();
@@ -338,20 +1178,80 @@ describe("open mint HTTP boundary", () => {
     expect(await test.store.entries('artifact:')).toHaveLength(0);
   });
 
+  it("opens 16 case-preserved variations from each gallery caption without changing minted work", async () => {
+    const test = await fixture(); const client = test.client(); await client.init();
+    const { url } = await client.assess("Alice_Bob_Key");
+    const prepared = await client.request(url);
+    expect(prepared.status).toBe(200);
+    expectHandleNavigation(prepared.text, "Alice_Bob_Key", 1);
+    expect(prepared.text).not.toContain("/artifacts/");
+    await test.mint("alice_bob_key", "pending");
+    const submitted = await client.request(url);
+    expect(submitted.status).toBe(200);
+    expectHandleNavigation(submitted.text, "Alice_Bob_Key", 1);
+    expect(submitted.text).not.toContain("/artifacts/");
+    await test.mint("alice_bob_key");
+    const artifact = (await test.service.artifact("alice_bob_key"))!;
+    const mbti = artifact.assessment.mbti;
+    const storedBefore = await test.store.entries("");
+    const request = vi.spyOn(test.service, "request");
+    const authorize = vi.spyOn(test.service, "authorize");
+    const sign = vi.spyOn(test.network, "sign");
+    const put = vi.spyOn(test.store, "put");
+    test.assess.mockClear();
+    for (const path of ["/", `/${mbti}/`, "/me"]) {
+      const gallery = await client.request(path);
+      expect(gallery.status, path).toBe(200);
+      const card = gallery.text.match(/<article class="gallery-item">[\s\S]*?<\/article>/)![0];
+      const handleHref = card.match(/<a class="gallery-handle" href="([^"]+)">@Alice_Bob_Key<\/a>/)?.[1];
+      expect(handleHref, path).toBe("/p/Alice_Bob_Key/variations");
+      expect(card).toContain('<span class="artwork-personality-separator" aria-hidden="true">×</span>');
+      expect(card).toContain('class="artwork-caption gallery-card-copy"');
+      expect(card).toContain('class="signature-tag artwork-status" href="/">Minted</a>');
+      expectArtworkCaptionPolicy(card, 1, 1);
+      expect(card).toContain(`<a class="mbti-link" href="/${mbti}/">${mbti}</a>`);
+      expect(card).toContain('class="gallery-card" href="/signatures/alice_bob_key"');
+      expect(card).toContain(`src="/artifacts/${artifact.pngSha256}.png"`);
+      expect(card).not.toContain("https://x.com/");
+      const variations = await client.request(handleHref!);
+      expect(variations.status).toBe(200);
+      expect(variations.text).toContain("data-preview-variations");
+      expect(variations.text.match(/class="open-preview-card"/g)).toHaveLength(16);
+      expectArtworkCaptionPolicy(variations.text, 16, 1, 15);
+      const links = [...variations.text.matchAll(/href="(\/p\/Alice_Bob_Key\/[A-Z]{4})"/g)].map(match => match[1]);
+      expect(new Set(links)).toEqual(new Set(MBTI_TYPES.filter(type => type !== mbti).map(type => `/p/Alice_Bob_Key/${type}`)));
+      expect(variations.text).toContain(`data-preview-minted="${mbti}"`);
+      expect(variations.text).toContain(`src="/artifacts/${artifact.svgSha256}.svg"`);
+      expect(variations.text).not.toContain("/p/alice_bob_key/");
+      expectHandleNavigation(variations.text, "Alice_Bob_Key", 17);
+    }
+    const detail = await client.request("/signatures/alice_bob_key");
+    expect(detail.status).toBe(200);
+    expectArtworkCaptionPolicy(detail.text, 1, 1);
+    expectHandleNavigation(detail.text, "Alice_Bob_Key", 2);
+    expect(detail.text).toContain(`src="/artifacts/${artifact.svgSha256}.svg"`);
+    for (const operation of [request, authorize, test.assess, sign, put]) expect(operation).not.toHaveBeenCalled();
+    expect(await test.store.entries("")).toEqual(storedBefore);
+  });
+
   it("serves all 16 variation links and their SVGs without wallet proof or paid and durable operations", async () => {
     const test = await fixture(); const client = test.client();
     const put = vi.spyOn(test.store, "put");
-    const grid = await client.request('/s/Alice_Bob_Key/variations');
+    const grid = await client.request('/p/Alice_Bob_Key/variations');
     expect(grid.status).toBe(200);
+    expectHandleNavigation(grid.text, "Alice_Bob_Key", 17);
     expect(grid.headers.get('content-type')).toContain('text/html');
     expect(grid.text).toContain('data-preview-variations');
-    const links = [...grid.text.matchAll(/href="(\/s\/Alice_Bob_Key\/[A-Z]{4})"/g)].map(match => match[1]!);
+    expectArtworkCaptionPolicy(grid.text, 16, 0, 16);
+    expectPreviewNoticePolicy(grid.text, "unminted");
+    const links = [...grid.text.matchAll(/href="(\/p\/Alice_Bob_Key\/[A-Z]{4})"/g)].map(match => match[1]!);
     expect(links).toHaveLength(16);
-    expect(new Set(links)).toEqual(new Set(MBTI_TYPES.map(mbti => `/s/Alice_Bob_Key/${mbti}`)));
+    expect(new Set(links)).toEqual(new Set(MBTI_TYPES.map(mbti => `/p/Alice_Bob_Key/${mbti}`)));
     for (const mbti of MBTI_TYPES) {
-      const detail = await client.request(`/s/Alice_Bob_Key/${mbti}`);
+      const detail = await client.request(`/p/Alice_Bob_Key/${mbti}`);
       expect(detail.status).toBe(200);
-      expect(detail.text).toContain('href="/s/Alice_Bob_Key/variations">View all 16 variations</a>');
+      expectHandleNavigation(detail.text, "Alice_Bob_Key", 1);
+      expect(detail.text).toContain('href="/p/Alice_Bob_Key/variations">View all 16 variations</a>');
       const svg = await client.request(`/preview/Alice_Bob_Key/${mbti}.svg`);
       expect(svg.status).toBe(200);
       expect(svg.headers.get('content-type')).toContain('image/svg+xml');
@@ -360,30 +1260,333 @@ describe("open mint HTTP boundary", () => {
     expect(grid.text).not.toMatch(/data-assessment-request|data-assessment-code|data-mint-form|data-connect-wallet|data-dev-wallet|data-dev-mint|\/artifacts\//);
     expect((await client.request('/api/session')).json).toMatchObject({ wallet: null, walletVerified: false });
     expect(test.assess).not.toHaveBeenCalled();
-    expect(test.network.state).not.toHaveBeenCalled();
+    expect(test.network.state).toHaveBeenCalledTimes(17);
+    expect(vi.mocked(test.network.state).mock.calls.every(([handle]) => handle === 'alice_bob_key')).toBe(true);
     expect(put).not.toHaveBeenCalled();
     expect(await test.store.entries('')).toHaveLength(0);
   });
 
   it("normalizes only variations URL syntax, preserves handle case, and rejects hostile or unknown paths", async () => {
     const test = await fixture(); const client = test.client();
-    for (const path of ['/s/@Alice_Bob_Key/variations', '/s/%40Alice_Bob_Key/variations', '/s/%41lice_Bob_Key/variations']) {
+    for (const path of ['/p/@Alice_Bob_Key/variations', '/p/%40Alice_Bob_Key/variations', '/p/%41lice_Bob_Key/variations']) {
       const result = await client.request(path);
       expect(result.status).toBe(200);
       expect(result.text).toContain('data-preview-variations');
-      expect(result.text).toContain('/s/Alice_Bob_Key/ENFP');
-      expect(result.text).not.toContain('/s/alice_bob_key/');
+      expect(result.text).toContain('/p/Alice_Bob_Key/ENFP');
+      expect(result.text).not.toContain('/p/alice_bob_key/');
     }
-    for (const path of ['/s/invalid%2Fhandle/variations', '/s/%3Cscript%3E/variations', '/s/a%00b/variations', '/s/%/variations', `/s/${'a'.repeat(16)}/variations`, '/s/alice/variation', '/s/alice/INXX', '/s/alice/variations/ENFP']) {
+    for (const path of ['/p/invalid%2Fhandle/variations', '/p/%3Cscript%3E/variations', '/p/a%00b/variations', '/p/%/variations', `/p/${'a'.repeat(16)}/variations`, '/p/alice/variation', '/p/alice/INXX', '/p/alice/variations/ENFP']) {
       expect((await client.request(path)).status, path).toBe(404);
     }
-    const bareHandle = await client.request('/s/Alice_Bob_Key');
+    const bareHandle = await client.request('/p/Alice_Bob_Key');
     expect(bareHandle.status).toBe(200);
     expect(bareHandle.text).toContain('data-mint-entry');
     expect(bareHandle.text).toContain('value="Alice_Bob_Key"');
     expect(bareHandle.text).not.toContain('data-preview-variations');
     expect(test.assess).not.toHaveBeenCalled();
+    expect(test.network.state).toHaveBeenCalled();
+    expect(vi.mocked(test.network.state).mock.calls.every(([handle]) => handle === 'alice_bob_key')).toBe(true);
+    expect(await test.store.entries('')).toHaveLength(0);
+  });
+
+  it("uses canonical mint identity, frozen spelling, saved SVG, and the same variation order for confirmed mints", async () => {
+    const test = await fixture(); const owner = test.client(); await owner.init();
+    const beforeMint = await owner.request('/p/Alice_Bob_Key/variations');
+    const originalOrder = [...beforeMint.text.matchAll(/<img[^>]+alt="Signature preview for @Alice_Bob_Key × ([A-Z]{4})"/g)].map(match => match[1]);
+    expect(originalOrder).toHaveLength(16);
+    await owner.assess('Alice_Bob_Key');
+    await test.mint('alice_bob_key');
+    const artifact = (await test.service.artifact('alice_bob_key'))!;
+    const storedBefore = await test.store.entries('');
+    const put = vi.spyOn(test.store, 'put');
+    const request = vi.spyOn(test.service, 'request');
+    const authorize = vi.spyOn(test.service, 'authorize');
+    const sign = vi.spyOn(test.network, 'sign');
+    const fetch = vi.spyOn(globalThis, 'fetch');
+    test.assess.mockClear(); vi.mocked(test.network.state).mockClear();
+    const visitor = test.client();
+    for (const spelling of ['alice_bob_key', 'ALICE_BOB_KEY', 'aLiCe_BoB_kEy']) {
+      for (const suffix of ['variations', ...MBTI_TYPES]) {
+        const response = await visitor.request(`/p/${spelling}/${suffix}`, { followRedirects: false });
+        expect(response.status).toBe(303);
+        expect(response.headers.get('location')).toBe(`/p/Alice_Bob_Key/${suffix}`);
+        expect(response.text).toBe('');
+      }
+    }
+    const grid = await visitor.request('/p/Alice_Bob_Key/variations', { followRedirects: false });
+    expect(grid.status).toBe(200);
+    expect(grid.text).toContain('data-preview-mint-state="minted"');
+    expectPreviewNoticePolicy(grid.text, "minted");
+    expect(grid.text.match(/data-preview-minted=/g)).toHaveLength(1);
+    expectArtworkCaptionPolicy(grid.text, 16, 1, 15);
+    const cards = [...grid.text.matchAll(/<li\b[^>]*><a class="open-preview-card"[\s\S]*?<\/li>/g)].map(match => match[0]);
+    expect(cards).toHaveLength(16);
+    expect(cards.map(card => card.match(/<img[^>]+alt="[^"]* × ([A-Z]{4})"/)![1])).toEqual(originalOrder);
+    for (const card of cards) {
+      const mbti = card.match(/<img[^>]+alt="[^"]* × ([A-Z]{4})"/)![1]!;
+      if (mbti === artifact.assessment.mbti) {
+        expect(card).toContain(`data-preview-minted="${mbti}"`);
+        expect(card).toContain('href="/signatures/alice_bob_key"');
+        expect(card).toContain(`src="/artifacts/${artifact.svgSha256}.svg"`);
+        expect(card).toContain('>Minted</a>');
+        expect(card).not.toContain('/preview/');
+      } else {
+        expect(card).toContain(`href="/p/Alice_Bob_Key/${mbti}"`);
+        expect(card).toContain(`src="/preview/Alice_Bob_Key/${mbti}.svg?renderer=${artifact.assessment.rendererVersion}"`);
+        expect(card).not.toContain('data-preview-minted');
+      }
+    }
+    for (const mbti of MBTI_TYPES) {
+      const detail = await visitor.request(`/p/Alice_Bob_Key/${mbti}`, { followRedirects: false });
+      expect(detail.status).toBe(200);
+      expect(detail.text).toContain('data-preview-mint-state="minted"');
+      expectArtworkCaptionPolicy(detail.text, 1, mbti === artifact.assessment.mbti ? 1 : 0, mbti === artifact.assessment.mbti ? 0 : 1);
+      expect(detail.text).toContain('href="/signatures/alice_bob_key"');
+      expect(detail.text).toContain('href="/p/Alice_Bob_Key/variations"');
+      expect(detail.text).not.toMatch(/href="\/mint(?:\?|"|\/)|data-mint-form|data-assessment-request/);
+      expect(detail.text).toContain(mbti === artifact.assessment.mbti
+        ? `src="/artifacts/${artifact.svgSha256}.svg"`
+        : `src="/preview/Alice_Bob_Key/${mbti}.svg?renderer=${artifact.assessment.rendererVersion}"`);
+      if (mbti !== artifact.assessment.mbti) expect(detail.text).toContain('>Preview</span>');
+    }
+    const archived = await visitor.request(`/artifacts/${artifact.svgSha256}.svg`);
+    expect(archived.status).toBe(200);
+    expect(sha256Hex(archived.bytes)).toBe(artifact.svgSha256);
+    expect(grid.text).not.toMatch(/href="\/mint(?:\?|"|\/)|data-mint-form|data-assessment-request/);
+    expect(vi.mocked(test.network.state).mock.calls.length).toBeGreaterThan(0);
+    expect(vi.mocked(test.network.state).mock.calls.every(([handle]) => handle === 'alice_bob_key')).toBe(true);
+    for (const operation of [request, authorize, sign, fetch, test.assess, put]) expect(operation).not.toHaveBeenCalled();
+    expect(await test.store.entries('')).toEqual(storedBefore);
+  });
+
+  it("compares older minted artwork using the recorded v1 renderer and MBTI seed mapping without rewriting it", async () => {
+    const test = await fixture(); const owner = test.client(); await owner.init();
+    const unsigned: Omit<LegacyAssessment, 'digest'> = {
+      id: '11111111-1111-4111-8111-111111111111', handle: 'legacy_case', mbti: 'INTJ',
+      seed: seedForMbti('INTJ'), rendererVersion: LEGACY_RENDERER_VERSION, mappingVersion: LEGACY_MAPPING_VERSION,
+      policyVersion: 'grok-x-search-v1', model: 'development-fixture-v1', providerResponseId: 'development-fixture:legacy',
+      sourceUrls: [], createdAt: '2026-09-01T00:00:00.000Z', provenance: 'development-fixture',
+    };
+    await test.repository.putIfAbsent({ ...unsigned, digest: assessmentDigest(unsigned) });
+    await owner.assess('Legacy_Case');
+    await test.mint('legacy_case');
+    const artifact = (await test.service.artifact('legacy_case'))!;
+    expect(artifact.assessment.rendererVersion).toBe(LEGACY_RENDERER_VERSION);
+    const storedBefore = await test.store.entries('');
+    const put = vi.spyOn(test.store, 'put');
+    const grid = await test.client().request('/p/LEGACY_CASE/variations');
+    expect(grid.status).toBe(200);
+    expectHandleNavigation(grid.text, "Legacy_Case", 17);
+    expect(grid.text).toContain(`src="/artifacts/${artifact.svgSha256}.svg"`);
+    expect(grid.text).toContain('href="/signatures/legacy_case"');
+    expect(grid.text).toContain('data-preview-renderer-notice');
+    expect(grid.text).not.toContain(`renderer=${RENDERER_VERSION}`);
+    for (const mbti of MBTI_TYPES) {
+      const detail = await test.client().request(`/p/legacy_case/${mbti}`);
+      expect(detail.status).toBe(200);
+      expectHandleNavigation(detail.text, "Legacy_Case", 1);
+      const image = mbti === artifact.assessment.mbti
+        ? `/artifacts/${artifact.svgSha256}.svg`
+        : `/preview/Legacy_Case/${mbti}.svg?renderer=${LEGACY_RENDERER_VERSION}`;
+      expect(grid.text).toContain(`src="${image}"`);
+      expect(detail.text).toContain(`src="${image}"`);
+      expect(detail.text).not.toContain('/mint?handle=');
+      const svg = await test.client().request(image);
+      expect(svg.status).toBe(200);
+      expect(svg.text).toBe(Buffer.from(formalSignatureRenderer.render({
+        handle: 'Legacy_Case', gr0kRaw: seedForMbti(mbti), gr0kScale: 1, rendererVersion: LEGACY_RENDERER_VERSION,
+      }).svgUtf8).toString('utf8'));
+    }
+    expect(test.assess).not.toHaveBeenCalled();
+    expect(put).not.toHaveBeenCalled();
+    expect(await test.store.entries('')).toEqual(storedBefore);
+  });
+
+  it("serves versioned preview assets without state lookup and rejects unsupported or ambiguous renderers", async () => {
+    const test = await fixture(); const client = test.client();
+    const put = vi.spyOn(test.store, 'put');
+    for (const mbti of MBTI_TYPES) {
+      for (const query of ['', `?renderer=${RENDERER_VERSION}`]) {
+        const response = await client.request(`/preview/Case_Check/${mbti}.svg${query}`);
+        expect(response.status).toBe(200);
+        expect(response.text).toBe(renderSignatureSvg('Case_Check', mbti));
+      }
+      const legacy = await client.request(`/preview/Case_Check/${mbti}.svg?renderer=${LEGACY_RENDERER_VERSION}`);
+      expect(legacy.status).toBe(200);
+      expect(legacy.text).toBe(Buffer.from(formalSignatureRenderer.render({
+        handle: 'Case_Check', gr0kRaw: seedForMbti(mbti), gr0kScale: 1, rendererVersion: LEGACY_RENDERER_VERSION,
+      }).svgUtf8).toString('utf8'));
+      expect(legacy.headers.get('content-type')).toBe('image/svg+xml');
+      expect(legacy.headers.get('content-security-policy')).toBe("default-src 'none'; sandbox");
+      expect(legacy.headers.get('set-cookie')).toBeNull();
+    }
+    for (const query of ['renderer=unsupported', 'renderer=', `renderer=${RENDERER_VERSION}&renderer=${LEGACY_RENDERER_VERSION}`, `renderer=${RENDERER_VERSION}&renderer=${RENDERER_VERSION}`]) {
+      const response = await client.request(`/preview/Case_Check/ENFP.svg?${query}`);
+      expect([400, 404]).toContain(response.status);
+      expect(response.headers.get('content-type')).toContain('text/html');
+      expect(response.text).toContain('role="alert"');
+    }
     expect(test.network.state).not.toHaveBeenCalled();
+    expect(test.assess).not.toHaveBeenCalled();
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it("keeps pending mints browsable without revealing the prepared assessment or offering another mint", async () => {
+    const test = await fixture(); const owner = test.client(); await owner.init();
+    await owner.assess('Pending_Case'); await test.mint('pending_case', 'pending');
+    const artifact = (await test.service.artifact('pending_case'))!;
+    const storedBefore = await test.store.entries('');
+    const put = vi.spyOn(test.store, 'put');
+    const request = vi.spyOn(test.service, 'request');
+    const authorize = vi.spyOn(test.service, 'authorize');
+    test.assess.mockClear(); vi.mocked(test.network.state).mockClear();
+    for (const suffix of ['variations', ...MBTI_TYPES]) {
+      const page = await test.client().request(`/p/PENDING_CASE/${suffix}`, { followRedirects: false });
+      expect(page.status).toBe(200);
+      expect(page.headers.get('location')).toBeNull();
+      expect(page.text).toContain('data-preview-mint-state="pending"');
+      expectPreviewNoticePolicy(page.text, "pending", suffix === 'variations');
+      expect(page.text).toContain('Waiting for confirmation');
+      expect(page.text).toContain('/preview/PENDING_CASE/');
+      expectArtworkCaptionPolicy(page.text, suffix === 'variations' ? 16 : 1, 0, suffix === 'variations' ? 16 : 1);
+      expect(page.text).not.toMatch(/href="\/mint(?:\?|"|\/)|data-preview-minted=|data-mint-form|data-assessment-request|\/artifacts\/|\/signatures\/pending_case/);
+      for (const secret of [artifact.assessment.digest, artifact.digest, artifact.svgSha256, artifact.assessment.id, artifact.assessment.providerResponseId]) expect(page.text).not.toContain(secret);
+    }
+    expect(vi.mocked(test.network.state).mock.calls).toHaveLength(17);
+    expect(vi.mocked(test.network.state).mock.calls.every(([handle]) => handle === 'pending_case')).toBe(true);
+    for (const operation of [request, authorize, test.assess, put]) expect(operation).not.toHaveBeenCalled();
+    expect(await test.store.entries('')).toEqual(storedBefore);
+  });
+
+  it.each(['rpc-failure', 'no-network'] as const)("keeps %s previews usable with unknown mint status and no mint CTA", async failure => {
+    const test = await fixture({ offline: failure === 'no-network', fixture: false });
+    if (failure === 'rpc-failure') vi.mocked(test.network.state).mockRejectedValue(new Error('private RPC diagnostics'));
+    const put = vi.spyOn(test.store, 'put');
+    const request = vi.spyOn(test.service, 'request');
+    const authorize = vi.spyOn(test.service, 'authorize');
+    const client = test.client();
+    for (const suffix of ['variations', ...MBTI_TYPES]) {
+      const response = await client.request(`/p/Unknown_Case/${suffix}`, { followRedirects: false });
+      expect(response.status).toBe(200);
+      expect(response.headers.get('location')).toBeNull();
+      expect(response.text).toContain('data-preview-mint-state="unavailable"');
+      expect(response.text).toContain('Mint status cannot be verified');
+      expectPreviewNoticePolicy(response.text, "unavailable", suffix === 'variations');
+      expectArtworkCaptionPolicy(response.text, suffix === 'variations' ? 16 : 1, 0, suffix === 'variations' ? 16 : 1);
+      expect(response.text).toContain('/preview/Unknown_Case/');
+      expect(response.text).not.toMatch(/href="\/mint(?:\?|"|\/)|data-preview-minted=|data-mint-form|data-assessment-request|data-preview-mint-state="unminted"|private RPC diagnostics/);
+    }
+    expect((await client.request('/preview/Unknown_Case/ENFP.svg')).status).toBe(200);
+    for (const operation of [request, authorize, test.assess, put]) expect(operation).not.toHaveBeenCalled();
+    if (failure === 'no-network') expect(test.network.state).not.toHaveBeenCalled();
+    else expect(vi.mocked(test.network.state).mock.calls.every(([handle]) => handle === 'unknown_case')).toBe(true);
+    expect(await test.store.entries('')).toHaveLength(0);
+  });
+
+  it.each(['rpc-failure', 'commitment-mismatch'] as const)("does not expose a saved assessment when confirmed mint verification has a %s", async failure => {
+    const test = await fixture(); const owner = test.client(); await owner.init();
+    await owner.assess('Saved_Case'); await test.mint('saved_case');
+    const artifact = (await test.service.artifact('saved_case'))!;
+    if (failure === 'rpc-failure') vi.mocked(test.network.state).mockRejectedValue(new Error('RPC unavailable'));
+    else vi.mocked(test.network.state).mockResolvedValue({
+      state: 'minted', assessmentDigest: artifact.assessment.digest,
+      artifactDigest: `0x${'0'.repeat(64)}`, tokenURIHash: openMintTokenURIHash(artifact.tokenURI),
+    });
+    const storedBefore = await test.store.entries('');
+    const put = vi.spyOn(test.store, 'put');
+    test.assess.mockClear();
+    for (const suffix of ['variations', artifact.assessment.mbti]) {
+      const response = await test.client().request(`/p/SAVED_CASE/${suffix}`, { followRedirects: false });
+      expect(response.status).toBe(200);
+      expect(response.headers.get('location')).toBeNull();
+      expect(response.text).toContain('data-preview-mint-state="unavailable"');
+      expect(response.text).toContain('/preview/SAVED_CASE/');
+      expect(response.text).not.toMatch(/\/artifacts\/|data-preview-minted=|href="\/mint(?:\?|"|\/)|\/signatures\/saved_case/);
+      for (const secret of [artifact.assessment.digest, artifact.digest, artifact.svgSha256, artifact.assessment.id]) expect(response.text).not.toContain(secret);
+    }
+    expect(test.assess).not.toHaveBeenCalled();
+    expect(put).not.toHaveBeenCalled();
+    expect(await test.store.entries('')).toEqual(storedBefore);
+  });
+
+  it("renders production copy for exact preset previews without developer notices or durable minted records", async () => {
+    const test = await fixture({ offline: true, fixture: true }); const client = test.client();
+    const put = vi.spyOn(test.store, 'put');
+    const state = vi.spyOn(test.service, 'state');
+    const entry = OPEN_MINT_GALLERY_FIXTURES.find(candidate => candidate.renderHandle !== candidate.handle)!;
+    const detail = await client.request(entry.url);
+    expect(detail.status).toBe(200);
+    expectHandleNavigation(detail.text, entry.renderHandle, 2);
+    for (const suffix of ['variations', entry.mbti]) {
+      const response = await client.request(`/p/${entry.renderHandle}/${suffix}`, { followRedirects: false });
+      expect(response.status).toBe(200);
+      expectHandleNavigation(response.text, entry.renderHandle, suffix === 'variations' ? 17 : 1);
+      expect(response.headers.get('location')).toBeNull();
+      expect(response.text).toContain('data-preview-mint-state="fixture"');
+      expectPreviewNoticePolicy(response.text, "fixture", suffix === 'variations');
+      expect(response.text).toContain('>Minted</a>');
+      expectArtworkCaptionPolicy(response.text, suffix === 'variations' ? 16 : 1, 1, suffix === 'variations' ? 15 : 0);
+      expectProductionPresentation(response.text);
+      expect(response.text).toContain(suffix === 'variations'
+        ? 'One minted signature. Fifteen alternative interpretations, for exploration only.'
+        : 'The minted signature, shown from its saved artwork.');
+      expect(response.text).toContain(`href="${entry.url}"`);
+      expect(response.text).toContain(`src="${entry.imageUrl}"`);
+      expect(response.text).not.toMatch(/href="\/mint(?:\?|"|\/)|\/artifacts\//);
+    }
+    for (const spelling of [entry.handle, entry.renderHandle.toUpperCase(), 'Not_A_Fixture']) {
+      for (const suffix of ['variations', entry.mbti]) {
+        const response = await client.request(`/p/${spelling}/${suffix}`, { followRedirects: false });
+        expect(response.status).toBe(200);
+        expect(response.headers.get('location')).toBeNull();
+        expect(response.text).toContain('data-preview-mint-state="unavailable"');
+        expect(response.text).toContain(`/preview/${spelling}/`);
+        expect(response.text).not.toMatch(/>Minted<\/(?:span|a)>/);
+        expect(response.text).not.toContain('data-preview-minted=');
+        expect(response.text).not.toContain('/mint?handle=');
+      }
+    }
+    expect(state).not.toHaveBeenCalled();
+    expect(test.network.state).not.toHaveBeenCalled();
+    expect(test.assess).not.toHaveBeenCalled();
+    expect(put).not.toHaveBeenCalled();
+    expect(await test.store.entries('')).toHaveLength(0);
+  });
+
+  it.each([{ fixture: false, offline: true }, { fixture: false, offline: false }, { fixture: true, offline: false }])("does not project fixture mint state outside explicit offline fixture mode ($fixture / offline $offline)", async options => {
+    const test = await fixture(options); const client = test.client();
+    const entry = OPEN_MINT_GALLERY_FIXTURES.find(candidate => candidate.renderHandle !== candidate.handle)!;
+    for (const suffix of ['variations', entry.mbti]) {
+      const response = await client.request(`/p/${entry.renderHandle}/${suffix}`, { followRedirects: false });
+      expect(response.status).toBe(200);
+      expect(response.text).toContain(`data-preview-mint-state="${options.offline ? 'unavailable' : 'unminted'}"`);
+      expect(response.text).not.toContain('data-preview-mint-state="fixture"');
+      expect(response.text).not.toContain('data-preview-minted=');
+      expect(response.text).not.toContain('href="/dev/gallery/');
+    }
+    expect(test.assess).not.toHaveBeenCalled();
+    expect(await test.store.entries('')).toHaveLength(0);
+  });
+
+  it("preserves direct URL case edits while unminted and checks only canonical chain identity", async () => {
+    const test = await fixture(); const client = test.client();
+    const put = vi.spyOn(test.store, 'put');
+    const request = vi.spyOn(test.service, 'request');
+    const authorize = vi.spyOn(test.service, 'authorize');
+    const fetch = vi.spyOn(globalThis, 'fetch');
+    for (const spelling of ['Case_Edits', 'case_edits', 'CASE_EDITS', 'cAsE_eDiTs']) {
+      for (const suffix of ['variations', 'ENFP']) {
+        const response = await client.request(`/p/${spelling}/${suffix}`, { followRedirects: false });
+        expect(response.status).toBe(200);
+        expect(response.headers.get('location')).toBeNull();
+        expect(response.text).toContain('data-preview-mint-state="unminted"');
+        expect(response.text).toContain(`/preview/${spelling}/ENFP.svg?renderer=${RENDERER_VERSION}`);
+        expect(response.text).toContain(`href="/mint?handle=${spelling}"`);
+      }
+    }
+    expect(vi.mocked(test.network.state).mock.calls).toHaveLength(8);
+    expect(vi.mocked(test.network.state).mock.calls.every(([handle]) => handle === 'case_edits')).toBe(true);
+    for (const operation of [request, authorize, fetch, test.assess, put]) expect(operation).not.toHaveBeenCalled();
     expect(await test.store.entries('')).toHaveLength(0);
   });
 

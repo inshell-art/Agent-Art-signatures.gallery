@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 export const SLOGAN_TOOLTIP_DELAY_MS = 120;
 export const SLOGAN_TOOLTIP_HIT_PADDING_PX = 8;
 
@@ -127,3 +129,5 @@ export const SLOGAN_TOOLTIP_SCRIPT = `(() => {
   figure.removeAttribute("title");
   figure.dataset.tooltipReady = "true";
 })();`;
+
+export const SLOGAN_TOOLTIP_SCRIPT_URL = `/assets/slogan-tooltip-${createHash("sha256").update(SLOGAN_TOOLTIP_SCRIPT).digest("hex").slice(0, 16)}.js`;

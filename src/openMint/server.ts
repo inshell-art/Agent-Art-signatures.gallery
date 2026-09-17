@@ -2,13 +2,18 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { SITE_CSS } from "../v1/siteCss.js";
 import { SITE_FONT_CSS, siteFontAsset } from "../v1/fonts.js";
 import { FAVICON_SVG, FAVICON_URL } from "../brand/favicon.js";
-import { sha256Hex } from "../v1/renderer.js";
+import { SLOGAN_TOOLTIP_SCRIPT, SLOGAN_TOOLTIP_SCRIPT_URL } from "../brand/sloganTooltipScript.js";
+import { SLOGAN_MBTI_HERO_SCRIPT, SLOGAN_MBTI_HERO_SCRIPT_URL } from "../brand/sloganMbtiHero.js";
+import { QUESTION_MARK_STUDY_PATH, QUESTION_MARK_STUDY_CSS_PATH, QUESTION_MARK_STUDY_CSS, questionMarkStudyPage } from "../brand/sloganQuestionMarkStudy.js";
+import { formalSignatureRenderer, sha256Hex } from "../v1/renderer.js";
 import { renderSignatureSvg } from "../algorithmV2/index.js";
-import { canonicalHandle, handleDigest, isMbti, preservedHandle } from "./identity.js";
+import { canonicalHandle, handleDigest, isMbti, LEGACY_RENDERER_VERSION, preservedHandle, RENDERER_VERSION, seedForMbti } from "./identity.js";
 import { OPEN_MINT_CLIENT_SCRIPT } from "./clientScript.js";
-import { OPEN_MINT_CSS, aboutPage, assessmentPage, collectionPage, errorPage, homePage, mintPage, previewPage, previewVariationsPage, type AssessmentPageModel, type GalleryEntry, type OpenMintPageOptions } from "./pages.js";
+import { OPEN_MINT_CSS, aboutPage, assessmentPage, collectionPage, errorPage, homePage, mbtiGalleryPage, mintPage, previewPage, previewVariationsPage, type AssessmentPageModel, type GalleryEntry, type OpenMintPageOptions } from "./pages.js";
 import { fields, PublicError, WalletSessions, type SiteSession } from "./security.js";
 import { OpenMintService, type SignatureArtifact, type SignatureRequest } from "./service.js";
+import { OPEN_MINT_GALLERY_FIXTURES, galleryFixtureModel } from "./galleryFixtures.js";
+import { publicPreviewState } from "./previewState.js";
 
 export interface OpenMintServerOptions {
   origin: string; fixture: boolean; service: OpenMintService; sessions: WalletSessions;
@@ -39,6 +44,9 @@ function json(res: ServerResponse, content: unknown, status = 200): void { send(
 
 export function createOpenMintServer(options: OpenMintServerOptions) {
   const { service, sessions } = options;
+  // Read-only gallery samples are isolated from real assessments, wallet collections,
+  // durable records, and local-chain projections. Never fill a live gallery with mocks.
+  const galleryFixtures = options.fixture && !service.network;
   const origin = new URL(options.origin);
   const rates = new Map<string, { start: number; count: number }>();
   const preparationWalletVerified = (session: SiteSession): boolean => service.walletVerified(session) && session.walletProof?.code === undefined;
@@ -46,17 +54,19 @@ export function createOpenMintServer(options: OpenMintServerOptions) {
     csrfToken: session.csrf, wallet: session.wallet, walletVerified: preparationWalletVerified(session), chainId: String(service.network?.chainId ?? 31337),
     chainName: "Local Anvil", contract: service.network?.address, rpcUrl: options.rpcUrl,
     publicOrigin: options.origin, stylesheetUrl: cssUrl, clientScriptUrl: scriptUrl,
-    development: { fixture: options.fixture, localChain: !!options.devWallet,
+    development: { fixture: options.fixture, localChain: !!options.devWallet, galleryFixtures,
       notes: ["Open-mint development build. The earlier X-claim application and its data are separate.",
         "Previews and new assessments use the native MBTI v2.0.0 renderer. Existing prepared and minted artwork keeps its original renderer and bytes.",
         ...(!service.options.assessments ? ["Set XAI_API_KEY to enable real assessments, or explicitly use dev:fixture for simulated results."] : []),
+        ...(!options.fixture && service.options.assessments?.identityProvenance !== "x-api" ? ["Set OPEN_MINT_X_BEARER_TOKEN for authoritative X username verification before preparing new real artwork. Browsing never calls X or Grok."] : []),
         ...(!service.network ? ["Minting is disabled until the isolated local chain is started."] : ["Artifacts are stored locally, not pinned to a public storage network. These tokens are for local testing only."])],
     },
   });
   const artifactFields = (artifact: SignatureArtifact) => ({ renderHandle: artifact.renderHandle ?? artifact.assessment.handle, mbti: artifact.assessment.mbti,
     imageUrl: `/artifacts/${artifact.pngSha256}.png`, svgUrl: `/artifacts/${artifact.svgSha256}.svg`,
     rendererVersion: artifact.assessment.rendererVersion, svgSha256: artifact.svgSha256, pngSha256: artifact.pngSha256,
-    assessedAt: artifact.assessment.createdAt, sourceLabel: artifact.assessment.provenance === "development-fixture" ? "Development fixture" : "Grok · independent X Search assessment" });
+    assessedAt: artifact.assessment.createdAt, sourceLabel: artifact.assessment.provenance === "development-fixture" ? "Development fixture" : "Grok · independent X Search assessment",
+    ...(artifact.assessment.xIdentity?.provenance === "x-api" ? { identityVerifiedAt: artifact.assessment.xIdentity.verifiedAt } : {}) });
   const model = async (request: SignatureRequest, session: SiteSession): Promise<AssessmentPageModel> => {
     const mint = await service.state(request.handle);
     // This is a UI reveal, not cryptographic secrecy: mint calldata already binds the artifact.
@@ -69,6 +79,7 @@ export function createOpenMintServer(options: OpenMintServerOptions) {
   const entries = async (session?: SiteSession): Promise<GalleryEntry[]> => (await service.gallery(session?.wallet)).map(({ artifact, mint }) => ({
     handle: artifact.assessment.handle, renderHandle: artifact.renderHandle ?? artifact.assessment.handle, code: "", mbti: artifact.assessment.mbti, imageUrl: `/artifacts/${artifact.pngSha256}.png`, url: `/signatures/${artifact.assessment.handle}`, mint,
   }));
+  const publicEntries = async (): Promise<GalleryEntry[]> => galleryFixtures ? [...OPEN_MINT_GALLERY_FIXTURES] : entries();
 
   const server = createServer(async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
@@ -84,19 +95,34 @@ export function createOpenMintServer(options: OpenMintServerOptions) {
       if (!["GET", "POST"].includes(req.method ?? "")) throw new PublicError(405, "METHOD_NOT_ALLOWED", "Method not allowed.");
       const path = url.pathname;
       if (req.method === "GET") {
+        if (options.fixture && path === QUESTION_MARK_STUDY_CSS_PATH) return send(res, 200, QUESTION_MARK_STUDY_CSS, "text/css; charset=utf-8");
+        if (options.fixture && path === QUESTION_MARK_STUDY_PATH) {
+          let html: string;
+          try { html = questionMarkStudyPage(cssUrl, url.searchParams.get("mark") ?? "ink-hook", url.searchParams.get("shape") ?? "INFP"); }
+          catch { throw new PublicError(400, "INVALID_STUDY_OPTION", "Choose a listed question mark and slogan shape."); }
+          return send(res, 200, html);
+        }
         const previewAsset = /^\/preview\/([A-Za-z0-9_]{1,15})\/([A-Z]{4})\.svg$/.exec(path);
         if (previewAsset) {
           const mbti = previewAsset[2]!;
           if (!isMbti(mbti)) throw new PublicError(404, "NOT_FOUND", "Unknown MBTI type.");
-          const svg = renderSignatureSvg(previewAsset[1]!, mbti);
+          const versions = url.searchParams.getAll("renderer");
+          if (versions.length > 1) throw new PublicError(400, "INVALID_RENDERER", "Choose one renderer version.");
+          const version = versions[0] ?? RENDERER_VERSION;
+          if (version !== RENDERER_VERSION && version !== LEGACY_RENDERER_VERSION) throw new PublicError(404, "UNKNOWN_RENDERER", "This renderer version is not available.");
+          const svg = version === LEGACY_RENDERER_VERSION
+            ? formalSignatureRenderer.render({ handle: previewAsset[1]!, gr0kRaw: seedForMbti(mbti), gr0kScale: 1, rendererVersion: LEGACY_RENDERER_VERSION }).svgUtf8
+            : renderSignatureSvg(previewAsset[1]!, mbti);
           res.setHeader("Cache-Control", "public, max-age=300");
           res.setHeader("Content-Security-Policy", "default-src 'none'; sandbox");
           return send(res, 200, svg, "image/svg+xml");
         }
         const font = siteFontAsset(path);
-        if (path === cssUrl || path === scriptUrl || path === faviconPath || font) {
+        if (path === cssUrl || path === scriptUrl || path === faviconPath || path === SLOGAN_TOOLTIP_SCRIPT_URL || path === SLOGAN_MBTI_HERO_SCRIPT_URL || font) {
           res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
           if (font) return send(res, 200, font.bytes, font.contentType);
+          if (path === SLOGAN_TOOLTIP_SCRIPT_URL) return send(res, 200, SLOGAN_TOOLTIP_SCRIPT, "text/javascript; charset=utf-8");
+          if (path === SLOGAN_MBTI_HERO_SCRIPT_URL) return send(res, 200, SLOGAN_MBTI_HERO_SCRIPT, "text/javascript; charset=utf-8");
           if (path === faviconPath) return send(res, 200, FAVICON_SVG, "image/svg+xml");
           return send(res, 200, path === cssUrl ? css : OPEN_MINT_CLIENT_SCRIPT, path === cssUrl ? "text/css; charset=utf-8" : "text/javascript; charset=utf-8");
         }
@@ -152,7 +178,21 @@ export function createOpenMintServer(options: OpenMintServerOptions) {
       if (status) return json(res, await model(await service.sessionRequest(status[1], session), session));
       const mintStatus = /^\/api\/mints\/status\/([A-Za-z0-9_-]{43})$/.exec(path);
       if (mintStatus) return json(res, await service.state((await service.sessionRequest(mintStatus[1], session)).handle));
-      if (path === "/") return send(res, 200, homePage(pageOptions(session), await entries()));
+      if (path === "/") return send(res, 200, homePage(pageOptions(session), await publicEntries()));
+      const mbtiPath = /^\/([A-Za-z]{4})\/?$/.exec(path);
+      const mbti = mbtiPath?.[1]?.toUpperCase();
+      if (isMbti(mbti)) {
+        const canonicalPath = `/${mbti}/`;
+        if (path !== canonicalPath) { res.setHeader("Location", canonicalPath); return send(res, 303, ""); }
+        return send(res, 200, mbtiGalleryPage(mbti, await publicEntries(), pageOptions(session)));
+      }
+      const galleryFixture = /^\/dev\/gallery\/([A-Za-z0-9_]{1,15})$/.exec(path);
+      if (galleryFixture && galleryFixtures) {
+        const sample = galleryFixtureModel(galleryFixture[1]!);
+        if (!sample) throw new PublicError(404, "NOT_FOUND", "Signature not found.");
+        res.setHeader("Location", `/signatures/${sample.handle}`);
+        return send(res, 303, "");
+      }
       if (path === "/me") return send(res, 200, collectionPage(session.wallet ? await entries(session) : [], pageOptions(session)));
       if (path === "/about") return send(res, 200, aboutPage(pageOptions(session)));
       if (path === "/mint") {
@@ -168,22 +208,43 @@ export function createOpenMintServer(options: OpenMintServerOptions) {
         if (view.mint?.state === "minted") { res.setHeader("Location", `/signatures/${request.handle}`); return send(res, 303, ""); }
         return send(res, 200, assessmentPage(view, pageOptions(session)));
       }
-      const preview = /^\/s\/([^/]+)(?:\/([^/]+))?$/.exec(path);
+      const preview = /^\/(?:p|s)\/([^/]+)(?:\/([^/]+))?$/.exec(path);
       if (preview) {
         let spelling: string;
         try { spelling = preservedHandle(decodeURIComponent(preview[1]!)); } catch { throw new PublicError(404, "NOT_FOUND", "Invalid signature handle."); }
+        // Compatibility only: old shared preview URLs never render or check chain
+        // state here. Validate first, then move to the canonical preview namespace.
+        if (path.startsWith("/s/")) {
+          const suffix = preview[2] === "variations" ? "variations" : preview[2]?.toUpperCase();
+          if (suffix && suffix !== "variations" && !isMbti(suffix)) throw new PublicError(404, "NOT_FOUND", "Use a four-letter MBTI type, such as ENFP.");
+          res.setHeader("Location", `/p/${spelling}${suffix ? `/${suffix}` : ""}`);
+          return send(res, 308, "");
+        }
         if (!preview[2]) { res.setHeader("Location", `/mint?handle=${spelling}`); return send(res, 303, ""); }
         if (preview[2] === "variations") {
-          if (preview[1] !== spelling) { res.setHeader("Location", `/s/${spelling}/variations`); return send(res, 303, ""); }
-          return send(res, 200, previewVariationsPage(spelling, pageOptions(session)));
+          const state = await publicPreviewState(service, spelling, galleryFixtures);
+          if (state.state === "minted") spelling = state.renderHandle;
+          if (preview[1] !== spelling) { res.setHeader("Location", `/p/${spelling}/variations`); return send(res, 303, ""); }
+          return send(res, 200, previewVariationsPage(spelling, pageOptions(session), state));
         }
         const mbti = preview[2].toUpperCase();
         if (!isMbti(mbti)) throw new PublicError(404, "NOT_FOUND", "Use a four-letter MBTI type, such as ENFP.");
-        if (preview[2] !== mbti || preview[1] !== spelling) { res.setHeader("Location", `/s/${spelling}/${mbti}`); return send(res, 303, ""); }
-        return send(res, 200, previewPage(spelling, mbti, pageOptions(session)));
+        const state = await publicPreviewState(service, spelling, galleryFixtures);
+        if (state.state === "minted") spelling = state.renderHandle;
+        if (preview[2] !== mbti || preview[1] !== spelling) { res.setHeader("Location", `/p/${spelling}/${mbti}`); return send(res, 303, ""); }
+        return send(res, 200, previewPage(spelling, mbti, pageOptions(session), state));
       }
       const permalink = /^\/signatures\/([A-Za-z0-9_]{1,15})$/.exec(path);
       if (permalink) {
+        // Samples use the same presentation URLs as real works, but only in the
+        // explicitly enabled, offline fixture environment. They never fall back
+        // into a live gallery or establish a durable/on-chain mint record.
+        const sample = galleryFixtures ? galleryFixtureModel(permalink[1]!) : undefined;
+        if (sample) {
+          const canonicalPath = `/signatures/${sample.handle}`;
+          if (path !== canonicalPath) { res.setHeader("Location", canonicalPath); return send(res, 303, ""); }
+          return send(res, 200, assessmentPage(sample, pageOptions(session)));
+        }
         const artifact = await service.artifact(permalink[1]!);
         if (!artifact) throw new PublicError(404, "NOT_FOUND", "Signature not found.");
         const mint = await service.state(artifact.assessment.handle);

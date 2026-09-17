@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { encodeAbiParameters, keccak256, type Hex } from "viem";
 import { canonicalHandle, isMbti, LEGACY_MAPPING_VERSION, LEGACY_RENDERER_VERSION, POLICY_VERSION, RENDERER_VERSION, seedForMbti, type MBTI } from "./identity.js";
+import { validateXIdentity, type XIdentityResolver, type XIdentitySnapshot } from "./xIdentity.js";
 
 export type AssessmentProvenance = "grok" | "development-fixture";
 interface AssessmentBase {
@@ -14,6 +15,8 @@ interface AssessmentBase {
   readonly createdAt: string;
   readonly provenance: AssessmentProvenance;
   readonly digest: Hex;
+  /** Absent on historical assessments. Never inferred from client spelling or upgraded. */
+  readonly xIdentity?: XIdentitySnapshot;
 }
 /** Original immutable records retain their exact seed adapter and digest. */
 export interface LegacyAssessment extends AssessmentBase {
@@ -32,7 +35,7 @@ export type UnsignedAssessment = Omit<LegacyAssessment, "digest"> | Omit<NativeM
 export interface AssessmentProvider {
   readonly provenance: AssessmentProvenance;
   readonly model: string;
-  assess(handle: string): Promise<ProviderAssessment>;
+  assess(handle: string, identity?: XIdentitySnapshot): Promise<ProviderAssessment>;
 }
 export interface ProviderAssessment {
   readonly handle: string;
@@ -40,6 +43,7 @@ export interface ProviderAssessment {
   readonly model: string;
   readonly providerResponseId: string;
   readonly sourceUrls: readonly string[];
+  readonly xUserId?: string;
 }
 export interface AssessmentRepository {
   get(handle: string): Promise<Assessment | undefined>;
@@ -81,6 +85,15 @@ export function validateSourceUrls(value: unknown, provenance: AssessmentProvena
 }
 
 export function assessmentDigest(value: UnsignedAssessment): Hex {
+  if (value.xIdentity) {
+    if (value.rendererVersion !== RENDERER_VERSION) throw new Error("X identity snapshots require the native renderer.");
+    const { xIdentity, ...unbound } = value;
+    return keccak256(encodeAbiParameters(
+      [{ type: "string" }, { type: "bytes32" }, ...Array.from({ length: 6 }, () => ({ type: "string" as const }))],
+      ["signatures.gallery/open-assessment/v3", assessmentDigest(unbound), xIdentity.canonicalHandle,
+        xIdentity.username, xIdentity.userId, xIdentity.verifiedAt, xIdentity.provenance, xIdentity.freshness],
+    ));
+  }
   if (value.rendererVersion === LEGACY_RENDERER_VERSION) return keccak256(encodeAbiParameters(
     [{ type: "string" }, { type: "string" }, { type: "string" }, { type: "string" }, { type: "uint16" },
       { type: "string" }, { type: "string" }, { type: "string" }, { type: "string" }, { type: "string" },
@@ -105,7 +118,10 @@ export function validateAssessment(value: unknown): Assessment {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid assessment.");
   const version = (value as Record<string, unknown>).rendererVersion;
   if (version !== RENDERER_VERSION && version !== LEGACY_RENDERER_VERSION) throw new Error("Unsupported assessment version.");
-  const record = exactObject(value, version === LEGACY_RENDERER_VERSION ? LEGACY_FIELDS : NATIVE_FIELDS, "assessment");
+  const fields = version === LEGACY_RENDERER_VERSION ? LEGACY_FIELDS : NATIVE_FIELDS;
+  const hasIdentity = Object.hasOwn(value, "xIdentity");
+  if (hasIdentity && version === LEGACY_RENDERER_VERSION) throw new Error("Legacy assessments cannot be relabeled with X verification.");
+  const record = exactObject(value, hasIdentity ? [...fields, "xIdentity"] : fields, "assessment");
   if (canonicalHandle(record.handle) !== record.handle || !isMbti(record.mbti)) throw new Error("Invalid assessment identity or artwork mapping.");
   if (version === LEGACY_RENDERER_VERSION && (record.seed !== seedForMbti(record.mbti) || record.mappingVersion !== LEGACY_MAPPING_VERSION)) throw new Error("Invalid legacy artwork mapping.");
   if (record.policyVersion !== POLICY_VERSION) throw new Error("Unsupported assessment policy.");
@@ -115,7 +131,9 @@ export function validateAssessment(value: unknown): Assessment {
   if (typeof record.createdAt !== "string" || !Number.isFinite(Date.parse(record.createdAt)) || new Date(record.createdAt).toISOString() !== record.createdAt) throw new Error("Invalid assessment timestamp.");
   const sourceUrls = validateSourceUrls(record.sourceUrls, record.provenance);
   if (JSON.stringify(sourceUrls) !== JSON.stringify(record.sourceUrls)) throw new Error("Assessment sources are not canonical.");
-  const assessment = { ...record, sourceUrls } as unknown as Assessment;
+  const xIdentity = hasIdentity ? validateXIdentity(record.xIdentity, record.handle as string) : undefined;
+  if (xIdentity && (xIdentity.provenance === "development-fixture") !== (record.provenance === "development-fixture")) throw new Error("Assessment X identity provenance mismatch.");
+  const assessment = { ...record, sourceUrls, ...(xIdentity ? { xIdentity } : {}) } as unknown as Assessment;
   if (typeof record.digest !== "string" || !/^0x[0-9a-f]{64}$/.test(record.digest) || assessmentDigest(assessment) !== record.digest) throw new Error("Invalid assessment digest.");
   return Object.freeze(assessment);
 }
@@ -136,15 +154,20 @@ export class AssessmentCoordinator {
   readonly #success = new Map<string, Assessment>();
   readonly #provenance: AssessmentProvenance;
   readonly #model: string;
+  readonly #identityResolver?: XIdentityResolver;
+  readonly #identities = new Map<string, XIdentitySnapshot>();
 
-  constructor(options: { provider: AssessmentProvider; repository: AssessmentRepository; now?: () => Date }) {
+  constructor(options: { provider: AssessmentProvider; repository: AssessmentRepository; identityResolver?: XIdentityResolver; now?: () => Date }) {
     this.#provider = options.provider;
     this.#repository = options.repository;
     this.#now = options.now ?? (() => new Date());
     this.#provenance = options.provider.provenance;
     this.#model = options.provider.model;
+    this.#identityResolver = options.identityResolver;
     if (!["grok", "development-fixture"].includes(this.#provenance)) throw new Error("Unsupported assessment provider.");
+    if (this.#identityResolver && (this.#identityResolver.provenance === "development-fixture") !== (this.#provenance === "development-fixture")) throw new Error("Assessment resolver provenance mismatch.");
   }
+  get identityProvenance(): XIdentitySnapshot["provenance"] | undefined { return this.#identityResolver?.provenance; }
 
   async get(value: unknown): Promise<Assessment | undefined> {
     const handle = canonicalHandle(value);
@@ -183,8 +206,15 @@ export class AssessmentCoordinator {
   }
 
   async #invoke(handle: string): Promise<Assessment> {
-    const result = exactObject(await this.#provider.assess(handle), PROVIDER_FIELDS, "provider assessment");
+    let xIdentity = this.#identities.get(handle);
+    if (!xIdentity && this.#identityResolver) {
+      xIdentity = validateXIdentity(await this.#identityResolver.resolve(handle), handle);
+      if (xIdentity.provenance !== this.#identityResolver.provenance) throw new Error("X resolver provenance mismatch.");
+      this.#identities.set(handle, xIdentity);
+    }
+    const result = exactObject(await (xIdentity ? this.#provider.assess(handle, xIdentity) : this.#provider.assess(handle)), xIdentity ? [...PROVIDER_FIELDS, "xUserId"] : PROVIDER_FIELDS, "provider assessment");
     if (result.handle !== handle || !isMbti(result.mbti) || result.model !== this.#model) throw new Error("Provider assessment identity, type, or model mismatch.");
+    if (xIdentity && result.xUserId !== xIdentity.userId) throw new Error("Provider assessment X account mismatch.");
     validateProviderMetadata(result.model, result.providerResponseId, this.#provenance);
     const sourceUrls = validateSourceUrls(result.sourceUrls, this.#provenance);
     const unsigned: Omit<NativeMbtiAssessment, "digest"> = {
@@ -192,6 +222,7 @@ export class AssessmentCoordinator {
       rendererVersion: RENDERER_VERSION, policyVersion: POLICY_VERSION,
       model: this.#model, providerResponseId: result.providerResponseId as string, sourceUrls,
       createdAt: this.#now().toISOString(), provenance: this.#provenance,
+      ...(xIdentity ? { xIdentity } : {}),
     };
     return validateAssessment({ ...unsigned, digest: assessmentDigest(unsigned) });
   }

@@ -17,7 +17,7 @@ export const MBTI_SEEDS: Readonly<Record<MBTI, number>> = Object.freeze({
   ISTJ: 53, ISFJ: 60, ESTJ: 67, ESFJ: 73, ISTP: 80, ISFP: 86, ESTP: 93, ESFP: 100,
 });
 
-/** Artwork spelling is user input: remove only the optional @, never its capitalization. */
+/** Validate spelling without changing case: preview input or a verified mint snapshot. */
 export function preservedHandle(value: unknown): string {
   if (typeof value !== "string" || !/^@?[A-Za-z0-9_]{1,15}$/.test(value)) {
     throw new Error("Handle must contain 1–15 ASCII letters, numbers, or underscores, with an optional @.");
@@ -25,7 +25,7 @@ export function preservedHandle(value: unknown): string {
   return value.replace(/^@/, "");
 }
 
-/** Case-insensitive account/mint identity, deliberately separate from artwork spelling. */
+/** Case-insensitive literal handle identity, not X account ID; separate from artwork spelling. */
 export function canonicalHandle(value: unknown): string { return preservedHandle(value).toLowerCase(); }
 
 /** Identity depends only on the canonical handle, never the artwork's MBTI attribute. */

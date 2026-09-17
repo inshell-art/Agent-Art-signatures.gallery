@@ -22,6 +22,34 @@ describe("native MBTI v2.0.0 renderer pin", () => {
     expect(() => verifyRendererV2Lock({ read: (path: string) => path === LOCK_PATH ? Buffer.from(JSON.stringify(lock)) : read(path) })).toThrow("Incomplete v2 protected source list");
   });
 
+  it.each([
+    ["schema", "signatures-gallery-renderer-lock/1"],
+    ["status", "candidate"],
+    ["upstream.tag", "v2.0.1"],
+    ["upstream.commit", "0".repeat(40)],
+    ["upstream.tagObject", "0".repeat(40)],
+    ["algorithmVersion", "1.0.0"],
+    ["rendererVersion", "sg-renderer-1.0.0"],
+    ["goldenSvgs", 383],
+  ])("rejects altered release identity: %s", (field, value) => {
+    const lock = JSON.parse(read(LOCK_PATH).toString());
+    const parts = String(field).split(".");
+    const parent = parts.length === 2 ? lock[parts[0]] : lock;
+    parent[parts.at(-1)!] = value;
+    expect(() => verifyRendererV2Lock({ read: (path: string) => path === LOCK_PATH ? Buffer.from(JSON.stringify(lock)) : read(path) })).toThrow();
+  });
+
+  it.each([
+    "reference/algorithm-v2.0.0/signature_renderer_v2.0.0.py",
+    "reference/algorithm-v2.0.0/signature_renderer_v2.0.0.json",
+  ])("rejects rehashed upstream drift in %s", path => {
+    // Updating the lock's file hash cannot silently bless a replacement release.
+    const bytes = Buffer.concat([read(path), Buffer.from("\n")]);
+    const lock = JSON.parse(read(LOCK_PATH).toString());
+    lock.files[path] = hash(bytes);
+    expect(() => verifyRendererV2Lock({ read: (name: string) => name === path ? bytes : name === LOCK_PATH ? Buffer.from(JSON.stringify(lock)) : read(name) })).toThrow();
+  });
+
   it("rejects an oracle mismatch even if its file hash is changed", () => {
     const path = "reference/algorithm-v2.0.0/golden-svgs.json";
     const goldens = JSON.parse(read(path).toString());

@@ -5,6 +5,7 @@ import { SITE_FONT_PRELOAD } from "./fonts.js";
 import { SITE_CSS_URL } from "./siteCss.js";
 import { HOME_LINK, HOME_ICON } from "./navigation.js";
 import { FAVICON_LINK } from "../brand/favicon.js";
+import { siteFooter } from "../brand/footer.js";
 import { LOCAL_TEST_RECIPIENT, LOCAL_TEST_WALLET } from "../local/wallet.js";
 import { accountPanelShell, walletLinkControls, developmentWalletControls, developmentAuthenticationNotice, type AccountPanelView } from "./accountPanel.js";
 import { MINT_SCRIPT_URL, ACCOUNT_PANEL_SCRIPT_URL, REHEARSAL_SCRIPT_URL, ACTION_TOOLTIP_SCRIPT_URL, CLAIM_NOTICE_SCRIPT_URL, WITHDRAW_CLAIM_DIALOG_SCRIPT_URL, X_ACTION_PROGRESS_SCRIPT_URL } from "./scriptAssets.js";
@@ -59,8 +60,6 @@ interface LayoutOptions {
   developmentOpen?: boolean;
 }
 
-// X mark: https://github.com/simple-icons/simple-icons/blob/develop/icons/x.svg
-const FOOTER_X_ICON = '<svg class="footer-x-icon" viewBox="0 0 24 24" width="12" height="12" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path d="M14.234 10.162 22.977 0h-2.072l-7.591 8.824L7.251 0H.258l9.168 13.343L.258 24H2.33l8.016-9.318L16.749 24h6.993zm-2.837 3.299-.929-1.329L3.076 1.56h3.182l5.965 8.532.929 1.329 7.754 11.09h-3.182z"/></svg>';
 
 export function layout(options: LayoutOptions): string {
   const title = escapeHtml(options.title);
@@ -88,7 +87,7 @@ export function layout(options: LayoutOptions): string {
   const watermark = rehearsal
     ? `<aside class="rehearsal-watermark" aria-label="Developer overlay"><details class="rehearsal-disclosure"${options.developmentOpen ? " open" : ""}><summary aria-controls="rehearsal-context" aria-label="${options.preview ? "UI fixture" : "Local rehearsal"} · developer notes"><span class="rehearsal-dev-badge">DEV</span><span>${options.preview ? "UI fixture" : "Local rehearsal"}</span></summary><div class="rehearsal-context" id="rehearsal-context"><p class="rehearsal-context-heading">Developer overlay · not part of the gallery</p>${options.developmentTools ?? ""}<div data-dev-account-tools>${developmentAuthenticationNotice(options.accountPanel ?? (options.localOAuthMode === undefined ? undefined : { fixtureMode: Boolean(options.fixtureMode), localChainRehearsal: options.localChainRehearsal, localOAuthMode: options.localOAuthMode, mintEnabled: false, mintChainId: "" }))}${developmentWalletControls(options.accountPanel)}</div>${developmentNotes}${fixtureNotes}<section><h2>Local rehearsal</h2><p>${rehearsalDescription}</p></section>${fixtureLinks}</div></details></aside>`
     : "";
-  const footer = `<footer><div class="footer-credit">by <a class="footer-agent" href="https://x.com/AgentArt_AA" target="_blank" rel="noopener noreferrer" aria-label="Agent Art on X (opens in a new tab)">${FOOTER_X_ICON}<span>Agent Art</span><span aria-hidden="true">↗</span></a></div><a class="footer-about" href="/about"${options.footerAboutCurrent ? ' aria-current="page"' : ""}>About the work</a></footer>`;
+  const footer = siteFooter(options.footerAboutCurrent);
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="${robots}"><title>${title}</title><meta name="description" content="${description}"><meta property="og:title" content="${title}"><meta property="og:description" content="${description}">${og}${FAVICON_LINK}${mintScript}<script src="${ACCOUNT_PANEL_SCRIPT_URL}" defer></script>${sloganScript}${options.claimNoticeSignatureId ? `<script src="${CLAIM_NOTICE_SCRIPT_URL}" defer></script><script src="${WITHDRAW_CLAIM_DIALOG_SCRIPT_URL}" defer></script>` : ""}${options.body.includes("data-action-tooltip=") ? `<script src="${ACTION_TOOLTIP_SCRIPT_URL}" defer></script>` : ""}${promptScript}${rehearsalScript}${SITE_FONT_PRELOAD}<link rel="stylesheet" href="${SITE_CSS_URL}"></head><body${bodyClass}><main>${accountPanelShell(options.accountPanel)}${options.body}</main>${footer}${watermark}${options.claimNoticeSignatureId ? claimNoticeShell(options.claimNoticeSignatureId) : ""}</body></html>`;
 }
 

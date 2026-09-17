@@ -2,28 +2,56 @@
 
 The default app separates **playful previews** from **wallet → independent Grok assessment → mint & reveal**. Anyone may mint any available handle. There is no X login, ownership claim, or claim withdrawal in this flow.
 
-- `/s/<handle>/<MBTI>` renders one freely editable preview, such as `/s/Alice_Bob_Key/ENFP`. Consumer Grok can choose the preview MBTI in the user's chat; this does not call the paid API or create an authoritative assessment.
-- `/mint` accepts **only a handle**, optionally prefilled by a preview. A fresh signed wallet proof and explicit **Mint & reveal** action are required before the backend starts its independent xAI/X Search run. Neither visiting nor connecting a wallet starts research.
+The latest [next-agent handoff](MEMO.md) records the unfinished slogan refinement and current development state. The older root `HANDOFF.md` contains historical, superseded workflows; use this README and [open-mint architecture](docs/open-mint.md) for the active app.
+
+- `/p/<handle>/<MBTI>` renders one freely editable preview, such as `/p/Alice_Bob_Key/ENFP`. Consumer Grok can choose the preview MBTI in the user's chat; previews make zero paid X or Grok calls and do not create an authoritative assessment.
+- `/p/<handle>/variations` keeps the 16-type comparison grid. Once a mint is confirmed, both preview routes redirect case variants to the saved artwork spelling; the selected type displays its archived artifact, and the other 15 stay clickable alternatives using the recorded renderer. The CTA becomes **View minted signature**. Pending and unavailable states never expose a prepared choice or suggest the handle is available to mint.
+- `/<MBTI>/` groups gallery works by their existing personality, such as `/ISTJ/`. MBTI tags on works link here. These read-only pages show matching confirmed mints (or chainless gallery samples in explicit fixture mode), never regenerate a work or change its MBTI. Preview images remain editable only in the separate preview flow.
+- Artwork captions share one layout across details, previews, variations, galleries, and collections: `@handle × MBTI` on the left and the applicable status on the right edge beneath the image. Only confirmed/explicit sample mints carry `Minted`; alternative variations remain previews. Unconfirmed mint screens do not expose the prepared MBTI, and the locked artwork bytes are unchanged by caption styling.
+- `/mint` accepts **only a handle**, optionally prefilled by a preview. A fresh signed wallet proof and explicit **Mint & reveal** action are required before the backend verifies the username with X and starts its independent xAI/X Search run. Neither visiting nor connecting a wallet starts research.
 - The first successful assessment is saved and reused. New previews and assessments use the native handle + MBTI [Signature renderer v2.0.0](reference/algorithm-v2.0.0/README.md), pinned to the prototype release. Existing v1 assessments and minted artwork retain their original renderer, bytes and commitments.
-- The new contract allows **one token per lowercase handle**, regardless of MBTI or renderer. This does not confer ownership of the X account. Handle renames/reassignment remain a known identity limitation.
-- Requested artwork spelling is preserved: `@Alice_Bob_Key` becomes `Alice_Bob_Key`, not `alice_bob_key`. Lowercase is used only for research lookup and uniqueness. The first saved artwork freezes its rendering spelling; later case variants reuse that artwork, and existing artifacts are not rewritten.
+- The homepage slogan separately adopts [v2.0.1's long-text layout policy](reference/algorithm-v2.0.1/README.md). Its eight captured shapes use an expanded horizontal canvas, not compressed handle spacing. This brand-only update does not change signature input limits, renderer versions or saved artwork.
+- The new contract allows **one token per lowercase literal handle**, regardless of MBTI or renderer. This does not confer ownership of the X account. `OldName` and `NewName` are distinct identities even if one account used both; case-only edits are the same identity. Account reassignment does not release a previously minted name.
+- Preview spelling stays editable. New real mint preparation uses the exact `username` returned by X's authenticated lookup, never a client-selected spelling; its lowercase form must match the submitted canonical handle. The X account ID binds research evidence to that subject, but never changes the token's handle-based uniqueness.
+- Verification freshness is **at the first successful preparation only**. The saved timestamp, X username/account ID, assessment, renderer and artifact are frozen together. Later retries and reopened mint windows reuse that snapshot without lookup, re-assessment or rerendering. This is not a claim that the username or account is still current at confirmation; renames and reassignment do not free or transfer a minted handle key.
+- Historical unverified assessments and artifacts remain readable and retain their exact bytes/digests. Real mode blocks new preparation and authorization for those records (`X_VERIFICATION_REQUIRED`); it never silently upgrades or replaces them. Previously signed on-chain vouchers cannot be revoked by this server policy. Explicit development fixtures remain internally separate and do not claim X verification.
 - Private `/mint/<code>` requests last 15 minutes and are paired to the requesting browser session and wallet. The voucher binds the recipient, artwork, chain, contract, nonce and deadline. Price is zero; the wallet pays gas. Final artwork is revealed in the UI only after confirmed minting; home and `/me` show minted tokens only.
 - The final result can differ from the consumer-chat preview. This is a UI reveal, not cryptographic secrecy: the transaction binds an already prepared artifact. Cancelling or refreshing never asks Grok for a different result. Uncertain provider attempts are held for operator reconciliation, not automatically retried.
 
 ## Run the new app
 
 ```bash
-# Put XAI_API_KEY in ignored .env.local. Missing key fails closed.
+# Put XAI_API_KEY and OPEN_MINT_X_BEARER_TOKEN in ignored .env.local.
+# A missing X token blocks new real preparation before paid Grok work.
 npm run dev           # Preview browsing; minting disabled without the chain
-npm run dev:open      # Real Grok + isolated local Anvil
+npm run dev -- --fixture # Preview-only UI with a simulated minted gallery; no Anvil needed
+npm run dev:open      # Real X username lookup + Grok + isolated local Anvil
 npm run dev:fixture   # Explicit simulated assessment + isolated local Anvil
 ```
 
-Open `http://127.0.0.1:3000`. Use `PORT=3002` if the earlier app still owns port 3000. Foundry is required for the Anvil commands. Fixture and real-assessment data are separate under `.local/open-mint/`; old `.local/rehearsal/`, PostgreSQL, contracts, and `.env.local` are untouched. The DEV overlay offers a public local test wallet; choose it first, then explicitly choose **Mint & reveal** to run the isolated test mint. Test keys/funds are not for public networks.
+Open `http://127.0.0.1:3000`. Use `PORT=3002` if the earlier app still owns port 3000. Foundry is required for the Anvil commands. Fixture and real-assessment data are separate under `.local/open-mint/`; old `.local/rehearsal/`, PostgreSQL, contracts, and `.env.local` are untouched. Product pages intentionally omit developer overlays and fixture notices. Use a wallet connected to the local chain, then explicitly choose **Mint & reveal** to run the isolated test mint. Test keys/funds are not for public networks; the local test-wallet endpoints remain gated to their development configuration.
+
+`OPEN_MINT_X_BEARER_TOKEN` is a server-only X API app-only Bearer Token with username-lookup access. The transport uses the fixed official [`GET /2/users/by/username/{username}` endpoint](https://docs.x.com/x-api/users/get-user-by-username) and [app-only authentication](https://docs.x.com/x-api/users/lookup/integrate). It makes one bounded request per admitted first preparation; missing users, mismatched handles, API/auth/rate-limit failures and uncertain attempts fail closed without a paid retry or fixture fallback. Never put this token in frontend configuration. The `.env.local.example` contains only an empty placeholder. Integration tests mock both transports; they do not establish live account access or spend credits.
+
+In fixture mode **without a chain**, home displays 80 read-only gallery samples,
+five per MBTI type, rendered with v2.0.0. The original 16 samples remain unchanged;
+the catalog includes all 77 valid exact-case prototype preset handles plus
+`beeple`, `xcopyart`, and `refikanadol` from the earlier gallery inputs.
+Cards open `/signatures/<handle>` detail pages with matching original SVGs;
+old `/dev/gallery/<handle>` links redirect there in this mode.
+The page URLs and copy match the production design, with no floating DEV panel
+or simulation notices. These remain sample data: no token was minted, no Grok
+assessment ran, and no account-owner participation or endorsement is implied.
+The internal fixture state remains separate from real minted records.
+Samples are not written to the store, do not appear in `/me`,
+and do not occupy handles. The sample gallery and detail resolution are disabled
+outside fixture mode or when a chain is configured; those galleries continue to
+show only confirmed mints. Saved artwork and chain snapshots are never seeded or
+rewritten by this presentation fixture.
 
 Local artifacts are content-addressed and checked but **not publicly pinned**. Production startup remains disabled pending deployment/security review and production storage, sessions, rate limits and indexing. See [architecture and handoff](docs/open-mint.md).
 
-Private Grok chat asks for a handle, assesses its MBTI, and returns `/s/<handle>/<MBTI>`, preserving exact capitalization and removing only the leading `@`. **Mint for this handle** carries only the handle into `/mint?handle=…`; no preview MBTI crosses that boundary. The consumer chat is not sealed or trusted. Research content can still influence an LLM: the backend attestation records our workflow, not objective MBTI truth or prompt-injection immunity.
+Private Grok chat asks for a handle, resolves its current X username capitalization, assesses its MBTI, and returns `/p/<handle>/<MBTI>` without the leading `@`. This lookup happens in the user's chat, not on the preview server, and is a convenience rather than trusted mint evidence. Visitors may still edit unminted preview spelling and MBTI directly. **Mint for this handle** carries only the handle into `/mint?handle=…`; no preview MBTI crosses that boundary. The consumer chat is not sealed or trusted. Research content can still influence an LLM: the backend attestation records our workflow, not objective MBTI truth or prompt-injection immunity.
 
 Validate with `npm run test:open`, `npm run typecheck`, `npm run test:coverage`, `npm run test:contract`, `npm run build`, and `npm run renderer:verify`.
 

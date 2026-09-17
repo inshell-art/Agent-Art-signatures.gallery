@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import sharp from "sharp";
 import { verifyRendererV2Lock } from "./verify-renderer-v2-lock.mjs";
+import { verifySloganV201Lock } from "./verify-slogan-v201-lock.mjs";
 import {
   DEFAULT_GR0K_RAW, DEFAULT_OUTPUT_SIZE, FORMAL_ALGORITHM_VERSION,
   FORMAL_BACKGROUND, FORMAL_INK, renderSignatureSvg,
@@ -79,6 +80,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     console.log(`Renderer lock verified: ${result.rendererVersion}; ${result.sourceFiles} source files; ${result.goldenSvgs} complete SVG goldens.`);
     const v2 = verifyRendererV2Lock();
     console.log(`Renderer lock verified: ${v2.rendererVersion}; ${v2.sourceFiles} source files; ${v2.goldenSvgs} Python-oracle SVG goldens.`);
+    const slogan = verifySloganV201Lock();
+    console.log(`Slogan lock verified: ${slogan.rendererVersion}; ${slogan.scope}; ${slogan.sourceFiles} source files; ${slogan.frames} captured frames.`);
   } catch (error) {
     console.error(`Renderer lock FAILED: ${error.message}`);
     process.exitCode = 1;
