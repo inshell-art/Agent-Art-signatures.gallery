@@ -71,8 +71,9 @@ export function createOpenMintServer(options: OpenMintServerOptions) {
   const artifactFields = (artifact: SignatureArtifact) => ({ renderHandle: artifact.renderHandle ?? artifact.assessment.handle, mbti: artifact.assessment.mbti,
     imageUrl: `/artifacts/${artifact.pngSha256}.png`, svgUrl: `/artifacts/${artifact.svgSha256}.svg`,
     rendererVersion: artifact.assessment.rendererVersion, svgSha256: artifact.svgSha256, pngSha256: artifact.pngSha256,
-    assessedAt: artifact.assessment.createdAt, sourceLabel: artifact.assessment.provenance === "development-fixture" ? "Development fixture" : "Grok · independent X Search assessment",
-    ...(artifact.assessment.xIdentity?.provenance === "x-api" ? { identityVerifiedAt: artifact.assessment.xIdentity.verifiedAt } : {}) });
+    assessedAt: artifact.assessment.createdAt, assessmentProvenance: artifact.assessment.provenance,
+    assessmentModel: artifact.assessment.model, assessmentSourceUrls: artifact.assessment.sourceUrls,
+    ...(artifact.assessment.xIdentity?.provenance === "x-api" ? { verifiedXUserId: artifact.assessment.xIdentity.userId, identityVerifiedAt: artifact.assessment.xIdentity.verifiedAt } : {}) });
   const model = async (request: SignatureRequest, session: SiteSession): Promise<AssessmentPageModel> => {
     const mint = await service.state(request.handle);
     // This is a UI reveal, not cryptographic secrecy: mint calldata already binds the artifact.

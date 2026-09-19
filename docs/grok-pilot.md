@@ -2,7 +2,7 @@
 
 Prepared and documentation checked: **2026-09-19**. This is the E09 operator handoff for E10. The implementation and mocked checks exist; no live X lookup, xAI inference, account entitlement check, credit purchase or billing change has been performed. No paid call or wallet transaction is authorized by this document.
 
-The local read-only preflight on this date reported `xaiConfigured:false`, `xConfigured:false`, generation disabled, no selected handle and no record files in the default real namespace. Both server credentials and the user's approval remain outstanding. An absent credential is a configuration finding; it says nothing about whether the user's accounts have access.
+The local read-only preflight on this date reported `xaiConfigured:false`, `xConfigured:false`, generation disabled and no record files in the default real namespace. The user delegated target selection; **`@karpathy` (canonical `karpathy`)** was selected, and the user replied “nice, pls keep going.” Both server credentials remain absent, so no paid dispatch can proceed. The target is recorded here, not enabled in runtime configuration. An absent credential is a configuration finding; it says nothing about whether the user's accounts have access. Apply the exact spending envelope below at the launch gate; target approval is not a guarantee of a $1 bill cap.
 
 ## Approval envelope
 

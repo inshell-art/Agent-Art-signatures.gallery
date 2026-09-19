@@ -7,7 +7,7 @@ import { createOpenMintServer, type OpenMintServerOptions } from "./server.js";
 import { OpenMintService } from "./service.js";
 import { PublicError, WalletSessions } from "./security.js";
 import { MemoryKeyValueStore } from "./storage.js";
-import { assessmentDigest, AssessmentCoordinator, type LegacyAssessment } from "./assessment.js";
+import { assessmentDigest, AssessmentCoordinator, type AssessmentProvider, type LegacyAssessment, type UnsignedAssessment } from "./assessment.js";
 import { MemoryAssessmentRepository } from "./assessmentStore.js";
 import { DevelopmentAssessmentProvider } from "./grok.js";
 import { handleDigest, LEGACY_MAPPING_VERSION, LEGACY_RENDERER_VERSION, MBTI_TYPES, RENDERER_VERSION, seedForMbti } from "./identity.js";
@@ -31,7 +31,9 @@ interface RequestOptions { method?: string; body?: unknown; rawBody?: string; he
 
 function expectProductionPresentation(html: string): void {
   expect(html).not.toMatch(/data-gallery-fixture-notice|Developer overlay|Fixture tools|Developer tools|rehearsal-overlay/);
-  expect(html.replace(/<[^>]*>/g, " ")).not.toMatch(/\bfixtures?\b|\bsimulat(?:ed|ions?)\b|No tokens were minted/i);
+  // Fixture provenance belongs in the collapsed evidence record, never a page-wide overlay.
+  const chrome = html.replace(/<details class="signature-provenance">[\s\S]*?<\/details>/g, "");
+  expect(chrome.replace(/<[^>]*>/g, " ")).not.toMatch(/\bfixtures?\b|\bsimulat(?:ed|ions?)\b|No tokens were minted/i);
   expect(html).not.toContain('href="/dev/gallery/');
 }
 
@@ -101,7 +103,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-async function fixture(options: Pick<OpenMintServerOptions, "rpcUrl" | "supportUrl" | "devWallet" | "devMint"> & { offline?: boolean; now?: () => number; fixture?: boolean } = {}) {
+async function fixture(options: Pick<OpenMintServerOptions, "rpcUrl" | "supportUrl" | "devWallet" | "devMint"> & { offline?: boolean; now?: () => number; fixture?: boolean; provider?: AssessmentProvider } = {}) {
   // By default exercise the actual asynchronous HTTP request listener through streams,
   // without opening a socket. Opt in to transport-level loopback coverage when permitted.
   const httpTransport = process.env.OPEN_MINT_TEST_HTTP === "1";
@@ -113,7 +115,7 @@ async function fixture(options: Pick<OpenMintServerOptions, "rpcUrl" | "supportU
     await new Promise<void>((resolve, reject) => probe.close(error => error ? reject(error) : resolve()));
   }
   const origin = `http://127.0.0.1:${port}`;
-  const provider = new DevelopmentAssessmentProvider();
+  const provider = options.provider ?? new DevelopmentAssessmentProvider();
   const assess = vi.spyOn(provider, "assess");
   const repository = new MemoryAssessmentRepository();
   const assessments = new AssessmentCoordinator({ provider, repository });
@@ -228,6 +230,26 @@ async function fixture(options: Pick<OpenMintServerOptions, "rpcUrl" | "supportU
       tokenURIHash: openMintTokenURIHash(artifact.tokenURI) });
   };
   return { origin, client, service, store, sessions, assess, network, mint, repository };
+}
+
+async function recordedGrokFixture() {
+  const test = await fixture({ fixture: false, provider: {
+    provenance: "grok", model: "grok-runtime-must-not-replace-recorded-model",
+    assess: async () => { throw new Error("Browsing saved provenance must not invoke a provider."); },
+  } });
+  const unsigned: UnsignedAssessment = {
+    id: "e3b780ec-29ab-41a5-a157-176d43b1d7ed", handle: "alice_bob", mbti: "INTJ",
+    rendererVersion: RENDERER_VERSION, policyVersion: "grok-x-search-v1", model: "grok-4.3",
+    providerResponseId: "private-provider-response-never-project",
+    sourceUrls: ["https://x.com/Alice_Bob/status/123456789", "https://x.com/i/status/987654321"],
+    createdAt: "2026-09-18T08:16:31.583Z", provenance: "grok",
+    xIdentity: { canonicalHandle: "alice_bob", username: "Alice_Bob", userId: "135791357913579",
+      verifiedAt: "2026-09-18T08:16:25.000Z", provenance: "x-api", freshness: "verified-at-preparation" },
+  };
+  const assessment = await test.repository.putIfAbsent({ ...unsigned, digest: assessmentDigest(unsigned) });
+  const owner = test.client(); await owner.init();
+  const request = await owner.assess("ALICE_BOB");
+  return { ...test, owner, assessment, ...request };
 }
 
 describe("open mint HTTP boundary", () => {
@@ -1249,6 +1271,116 @@ describe("open mint HTTP boundary", () => {
     expect((await owner.request(url)).text).toContain(revealed.json.svgUrl);
     expect((await owner.request("/")).text).toContain('/signatures/agent_art');
     expect((await owner.request("/me")).text).toContain('/signatures/agent_art');
+  });
+
+  it("projects recorded Grok evidence only after confirmation without changing immutable artwork or calling providers", async () => {
+    const test = await recordedGrokFixture();
+    await test.mint(test.assessment.handle);
+    const artifact = (await test.service.artifact(test.assessment.handle))!;
+    const storedBefore = JSON.stringify(await test.store.entries(""));
+    const assessmentBefore = JSON.stringify(await test.repository.get(test.assessment.handle));
+    const assets = await Promise.all(([ [artifact.svgSha256, "svg"], [artifact.pngSha256, "png"], [artifact.metadataSha256, "json"] ] as const)
+      .map(async ([hash, extension]) => ({ hash, extension, bytes: await test.service.asset(hash, extension) })));
+    const put = vi.spyOn(test.store, "put");
+    const persist = vi.spyOn(test.repository, "putIfAbsent");
+    const sign = vi.spyOn(test.network, "sign");
+    const status = await test.owner.request(`/api/assessments/${test.code}`);
+    expect(status.status).toBe(200);
+    expect(status.json).toMatchObject({
+      assessmentProvenance: "grok", assessmentModel: test.assessment.model,
+      assessmentSourceUrls: test.assessment.sourceUrls, assessedAt: test.assessment.createdAt,
+      verifiedXUserId: test.assessment.xIdentity!.userId, identityVerifiedAt: test.assessment.xIdentity!.verifiedAt,
+      mbti: test.assessment.mbti, renderHandle: "Alice_Bob", rendererVersion: artifact.assessment.rendererVersion,
+      svgSha256: artifact.svgSha256, pngSha256: artifact.pngSha256,
+    });
+    for (const field of ["sourceLabel", "providerResponseId", "receipt", "usage", "xIdentity"]) expect(status.json).not.toHaveProperty(field);
+    expect(status.text).not.toContain(test.assessment.providerResponseId);
+    for (const path of [test.url, "/signatures/alice_bob"]) {
+      const page = await test.owner.request(path);
+      expect(page.status).toBe(200);
+      const provenance = page.text.match(/<details class="signature-provenance">([\s\S]*?)<\/details>/)?.[1];
+      expect(provenance).toBeDefined();
+      expect(provenance).toContain("Grok selected this MBTI from public X research.");
+      expect(provenance).toContain("<dt>Assessor</dt><dd>Grok</dd>");
+      expect(provenance).toContain(`<dt>Model</dt><dd>${test.assessment.model}</dd>`);
+      expect(provenance).toContain(test.assessment.createdAt);
+      expect(provenance).toContain("Spelling verified at preparation");
+      expect(provenance).toContain(test.assessment.xIdentity!.verifiedAt);
+      expect(provenance).toContain(`href="https://x.com/i/user/${test.assessment.xIdentity!.userId}"`);
+      expect(provenance).toContain("data-assessment-sources");
+      for (const source of test.assessment.sourceUrls) expect(provenance).toContain(`href="${source}"`);
+      expect(page.text).not.toContain(test.assessment.providerResponseId);
+      expect(page.text).not.toContain("grok-runtime-must-not-replace-recorded-model");
+    }
+    for (const { hash, extension, bytes } of assets) {
+      const response = await test.owner.request(`/artifacts/${hash}.${extension}`);
+      expect(response.status).toBe(200);
+      expect(response.bytes).toEqual(bytes);
+      expect(sha256Hex(response.bytes)).toBe(hash);
+      // Historical metadata already embeds the immutable assessment, including its
+      // response ID. E11 adds no ID to page/JSON projections and must not rewrite it.
+      if (extension === "json") expect(response.json.assessment.providerResponseId).toBe(test.assessment.providerResponseId);
+    }
+    expect(JSON.stringify(await test.store.entries(""))).toBe(storedBefore);
+    expect(JSON.stringify(await test.repository.get(test.assessment.handle))).toBe(assessmentBefore);
+    for (const operation of [put, persist, sign, test.assess]) expect(operation).not.toHaveBeenCalled();
+  });
+
+  it.each(["ready", "preparing", "pending-mint", "failed"] as const)("does not reveal saved assessment evidence in %s JSON or HTML", async state => {
+    const test = await recordedGrokFixture();
+    const request = (await test.store.get<SignatureRequest>(`request:${test.code}`))!;
+    if (state === "preparing" || state === "failed") await test.store.put(`request:${test.code}`, { ...request, status: state === "preparing" ? "pending" : "failed" });
+    if (state === "pending-mint") await test.mint(test.assessment.handle, "pending");
+    const status = await test.owner.request(`/api/assessments/${test.code}`);
+    expect(status.status).toBe(200);
+    for (const field of ["assessmentProvenance", "assessmentModel", "assessmentSourceUrls", "verifiedXUserId", "assessedAt", "identityVerifiedAt", "providerResponseId", "sourceLabel", "mbti", "imageUrl", "svgUrl"])
+      expect(status.json).not.toHaveProperty(field);
+    const page = await test.owner.request(test.url);
+    expect(page.status).toBe(200);
+    expect(page.text).not.toContain('class="signature-provenance"');
+    expect(page.text).not.toContain("data-assessment-sources");
+    expect((await test.owner.request("/signatures/alice_bob")).status).toBe(404);
+    for (const secret of [test.assessment.model, test.assessment.createdAt, test.assessment.providerResponseId,
+      test.assessment.xIdentity!.userId, test.assessment.xIdentity!.verifiedAt, ...test.assessment.sourceUrls]) {
+      expect(page.text).not.toContain(secret);
+      expect(status.text).not.toContain(secret);
+    }
+    expect(test.assess).not.toHaveBeenCalled();
+  });
+
+  it("labels fixture evidence truthfully without inventing a Grok model or verified X identity", async () => {
+    const test = await fixture(); const owner = test.client(); await owner.init();
+    const sampleAssessment: UnsignedAssessment = {
+      id: "5283a713-18c6-472c-bb52-d7e4d38f242a", handle: "alice", mbti: "ENFP",
+      rendererVersion: RENDERER_VERSION, policyVersion: "grok-x-search-v1", model: "development-fixture-v1",
+      providerResponseId: "development-fixture:alice", sourceUrls: [], createdAt: "2026-09-18T08:16:31.583Z", provenance: "development-fixture",
+      xIdentity: { canonicalHandle: "alice", username: "Alice", userId: "864208642086420",
+        verifiedAt: "2026-09-18T08:16:25.000Z", provenance: "development-fixture", freshness: "verified-at-preparation" },
+    };
+    await test.repository.putIfAbsent({ ...sampleAssessment, digest: assessmentDigest(sampleAssessment) });
+    const { code } = await owner.assess("alice"); await test.mint("alice");
+    const status = await owner.request(`/api/assessments/${code}`);
+    expect(status.json).toMatchObject({ assessmentProvenance: "development-fixture", assessmentModel: "development-fixture-v1", assessmentSourceUrls: [] });
+    expect(status.json).not.toHaveProperty("verifiedXUserId");
+    expect(status.json).not.toHaveProperty("identityVerifiedAt");
+    const page = await owner.request("/signatures/alice");
+    expect(page.text).toContain("<dt>Assessor</dt><dd>Development fixture</dd>");
+    expect(page.text).toContain("<dt>Model</dt><dd>development-fixture-v1</dd>");
+    expect(page.text).toContain("Sample MBTI input; Grok was not called.");
+    expect(page.text).not.toContain("data-assessment-sources");
+    expect(page.text).not.toContain("Verified X account");
+    expect(page.text).not.toContain(sampleAssessment.xIdentity!.userId);
+    expect(page.text).not.toContain(sampleAssessment.xIdentity!.verifiedAt);
+    expectProductionPresentation(page.text);
+    const gallery = await fixture({ offline: true });
+    const sample = await gallery.client().request(OPEN_MINT_GALLERY_FIXTURES[0]!.url);
+    expect(sample.status).toBe(200);
+    expect(sample.text).toContain("<dt>Assessor</dt><dd>Development fixture</dd>");
+    expect(sample.text).toContain("Sample MBTI input; Grok was not called.");
+    expect(sample.text).not.toContain("<dt>Model</dt>");
+    expect(sample.text).not.toContain("data-assessment-sources");
+    expectProductionPresentation(sample.text);
+    expect(gallery.assess).not.toHaveBeenCalled();
   });
 
   it("preserves mixed-case request URLs and labels without introducing another assessment or permalink identity", async () => {

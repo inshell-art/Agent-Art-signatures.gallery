@@ -68,7 +68,8 @@ function expectArtworkIdentity(caption: string, handle: string, mbti: string, st
 }
 
 function expectCleanProductCopy(html: string): void {
-  const product = [...html.matchAll(/<(?:main|footer)\b[^>]*>([\s\S]*?)<\/(?:main|footer)>/g)].map(match => match[1]).join(" ");
+  const chrome = html.replace(/<details class="signature-provenance">[\s\S]*?<\/details>/g, "");
+  const product = [...chrome.matchAll(/<(?:main|footer)\b[^>]*>([\s\S]*?)<\/(?:main|footer)>/g)].map(match => match[1]).join(" ");
   expect(product).not.toContain("data-gallery-fixture-notice");
   expect(product.replace(/<[^>]*>/g, " ")).not.toMatch(/\bfixtures?\b|\bsimulat(?:ed|ions?)\b|No tokens were minted/i);
 }
@@ -76,7 +77,8 @@ function expectCleanProductCopy(html: string): void {
 function expectNoDevelopmentChrome(html: string): void {
   expectCleanProductCopy(html);
   expect(html).not.toMatch(/rehearsal-watermark|Developer overlay|open-dev-context|data-gallery-fixture-notice|data-dev-wallet|data-dev-mint/);
-  expect(html.replace(/<[^>]*>/g, " ")).not.toMatch(/\bfixtures?\b|\bsimulat(?:ed|ions?)\b|\bDEV\b|No tokens were minted|Grok was not called|Grok did not research/i);
+  const chrome = html.replace(/<details class="signature-provenance">[\s\S]*?<\/details>/g, "");
+  expect(chrome.replace(/<[^>]*>/g, " ")).not.toMatch(/\bfixtures?\b|\bsimulat(?:ed|ions?)\b|\bDEV\b|No tokens were minted|Grok was not called|Grok did not research/i);
 }
 
 describe("open mint pages", () => {
@@ -958,12 +960,12 @@ describe("open mint pages", () => {
   });
 
   it("reveals frozen rendering spelling and provenance only after confirmed mint", () => {
-    const html = assessmentPage({ ...minted, sourceLabel: 'Grok · independent X Search assessment' });
+    const html = assessmentPage({ ...minted, assessmentProvenance: 'grok' });
     expect(html).toContain('alt="Signature for @Agent_Art × INTJ"');
     expectHandleNavigation(html, "Agent_Art", 2);
     expect(html).toContain('<dt>Handle</dt><dd><a class="gallery-handle" href="/p/Agent_Art/variations">@Agent_Art</a></dd>');
     expect(html).toContain('<a class="mbti-link" href="/INTJ/">INTJ</a>');
-    expect(html).toContain('<dt>Assessment</dt><dd>Grok · independent X Search assessment</dd>');
+    expect(html).toContain('<dt>Assessor</dt><dd>Grok</dd>');
     expect(html).toContain('<div class="provenance-caveats"><p><strong class="open-preview-notice-label">Caveat</strong> MBTI is an artistic input, not a psychological diagnosis. Owning this token does not imply ownership or control of the X account.</p></div>');
     expect(html).not.toContain('The backend asked Grok to research public X posts');
     expect(html).toContain('class="signature-provenance"');
@@ -974,7 +976,7 @@ describe("open mint pages", () => {
   });
 
   it("escapes external data and does not turn unsafe URL schemes into links", () => {
-    const html = assessmentPage({ ...minted, mbti: '<img src=x onerror="boom">', imageUrl: "javascript:boom()", svgUrl: "javascript:boom()", sourceLabel: '<script>boom()</script>' });
+    const html = assessmentPage({ ...minted, mbti: '<img src=x onerror="boom">', imageUrl: "javascript:boom()", svgUrl: "javascript:boom()", assessmentModel: '<script>boom()</script>' });
     expect(html).not.toContain('<img src=x onerror');
     expect(html).not.toContain('<script>boom()');
     expect(html).not.toContain('javascript:');
@@ -986,10 +988,10 @@ describe("open mint pages", () => {
 
   it("dates verified mint spelling as a preparation snapshot without claiming live verification", () => {
     const identityVerifiedAt = "2026-09-16T08:30:00.000Z";
-    const html = assessmentPage({ ...minted, identityVerifiedAt });
+    const html = assessmentPage({ ...minted, assessmentProvenance: "grok", identityVerifiedAt });
     expect(html).toContain(`<dt>Spelling verified at preparation</dt><dd>${identityVerifiedAt}</dd>`);
     expect(html).toContain("This is the spelling verified during preparation, not a live X profile lookup.");
-    for (const unverified of [assessmentPage(minted), assessmentPage({ ...minted, identityVerifiedAt }, { development: { fixture: true } })]) {
+    for (const unverified of [assessmentPage(minted), assessmentPage({ ...minted, assessmentProvenance: "development-fixture", identityVerifiedAt }, { development: { fixture: true } })]) {
       expect(unverified).not.toContain("Spelling verified at preparation");
       expect(unverified).not.toContain("This is the spelling verified during preparation");
       expect(unverified).not.toContain(identityVerifiedAt);
@@ -1016,7 +1018,7 @@ describe("open mint pages", () => {
     const revealed = assessmentPage(minted, options);
     expect(revealed).toContain('<div class="provenance-caveats"><p><strong class="open-preview-notice-label">Caveat</strong> MBTI is an artistic input, not a psychological diagnosis. Owning this token');
     expect(revealed).toContain('Owning this token does not imply ownership or control of the X account.');
-    expect(revealed).not.toContain('<dt>Assessment</dt>');
+    expect(revealed).toContain('<dt>Assessor</dt><dd>Not recorded</dd>');
   });
 
   it("shows only the minted tag and an optional actual explorer below minted artwork", () => {

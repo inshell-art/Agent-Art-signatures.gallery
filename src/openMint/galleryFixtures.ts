@@ -64,5 +64,6 @@ export function galleryFixtureModel(handle: string): AssessmentPageModel | undef
     canMint: false,
     galleryFixture: true,
     rendererVersion: RENDERER_VERSION,
+    assessmentProvenance: "development-fixture",
   };
 }

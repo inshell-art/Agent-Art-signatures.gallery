@@ -67,7 +67,7 @@ describe("open mint presentation gallery fixtures", () => {
       expect(galleryFixtureModel(handle)).toEqual({
         handle: "megadefi", renderHandle: "MegaDeFi", code: "", mbti: expected.mbti,
         imageUrl: expected.imageUrl, svgUrl: expected.imageUrl, mint: { state: "minted" },
-        status: "ready", canMint: false, galleryFixture: true, rendererVersion: RENDERER_VERSION,
+        status: "ready", canMint: false, galleryFixture: true, assessmentProvenance: "development-fixture", rendererVersion: RENDERER_VERSION,
       });
     }
   });
@@ -85,7 +85,8 @@ describe("open mint presentation gallery fixtures", () => {
       const model = galleryFixtureModel(fixture.handle)!;
       expect(model.canMint).toBe(false);
       expect(model.galleryFixture).toBe(true);
-      for (const field of ["tokenId", "transactionHash", "wallet", "explorerUrl", "assessment", "assessedAt", "sourceLabel", "svgSha256", "pngSha256"]) {
+      expect(model.assessmentProvenance).toBe("development-fixture");
+      for (const field of ["tokenId", "transactionHash", "wallet", "explorerUrl", "assessment", "assessedAt", "assessmentModel", "assessmentSourceUrls", "verifiedXUserId", "identityVerifiedAt", "sourceLabel", "svgSha256", "pngSha256"]) {
         expect(fixture).not.toHaveProperty(field);
         expect(model).not.toHaveProperty(field);
         expect(model.mint).not.toHaveProperty(field);

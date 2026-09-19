@@ -11,6 +11,7 @@ import { SLOGAN_TOOLTIP_SCRIPT_URL } from "../brand/sloganTooltipScript.js";
 import { isMbti, MBTI_TYPES, preservedHandle, RENDERER_VERSION, type MBTI } from "./identity.js";
 import type { PublicPreviewState } from "./previewState.js";
 import { openMintSupportUrl } from "./supportUrl.js";
+import { provenanceBody } from "./provenance.js";
 
 export interface OpenMintPageOptions {
   csrfToken?: string;
@@ -60,7 +61,10 @@ export interface AssessmentPageModel {
   pngSha256?: string;
   assessedAt?: string;
   identityVerifiedAt?: string;
-  sourceLabel?: string;
+  assessmentProvenance?: "grok" | "development-fixture";
+  assessmentModel?: string;
+  assessmentSourceUrls?: readonly string[];
+  verifiedXUserId?: string;
   error?: string;
   diagnosticReference?: string;
   errorCategory?: "assessment-abstained" | "assessment-blocked" | "preparation-interrupted";
@@ -147,6 +151,11 @@ ${SLOGAN_MBTI_HERO_CSS}
 .open-mint .mint-entry-action [data-request-submit]>span:first-child{transform:translateY(1px)}
 .open-mint .provenance-caveats p{margin:0;color:inherit;font-size:inherit;line-height:inherit}
 .open-mint .provenance-caveats p+p{margin-top:.25rem}
+.open-mint .provenance-mbti-meaning{display:block;margin-top:.35rem;color:var(--muted);line-height:1.6}
+.open-mint .provenance-mbti-meaning>span{display:inline-block}
+.open-mint .provenance-sources h3{font-size:inherit;margin:1rem 0 .5rem;font-weight:500}
+.open-mint .provenance-sources ul{padding-inline-start:1.25rem;line-height:1.6;overflow-wrap:anywhere}
+.open-mint .provenance-sources li+li{margin-top:.35rem}
 .open-mint [data-mint-transaction],.open-mint [data-mint-network]{overflow-wrap:anywhere}
 .open-mint:has(.home-grid){--home-nav-inset:clamp(-22px,calc((1024px - 100vw)/2 + 20px),12px)}
 .open-mint:has(.home-grid) .home-return{inset-inline-start:max(var(--home-nav-inset),calc(env(safe-area-inset-left) - 22px))}
@@ -284,11 +293,8 @@ export function assessmentPage(model: AssessmentPageModel, options: OpenMintPage
     return layout(`Mint & reveal · @${handle}`, `<section class="auth-page" ${attributes}><div class="auth-sheet open-mint-progress"><h1>Mint &amp; reveal</h1><p>${handleLink(handle)}</p><div class="mint-progress-status"><p data-assessment-status role="status" aria-live="polite">${view.status}</p></div>${mintControls(model, options)}${support}<p class="open-feedback" data-mint-transaction${/^0x[a-f0-9]{64}$/i.test(model.mint?.transactionHash ?? "") ? "" : " hidden"}>${/^0x[a-f0-9]{64}$/i.test(model.mint?.transactionHash ?? "") ? `Transaction: ${e(model.mint?.transactionHash)}` : ""}</p><p class="open-feedback" data-mint-network hidden></p>${recovery}<p class="open-feedback" data-poll-feedback role="status" aria-live="polite"></p><div class="auth-actions"><button class="auth-action" type="button" data-check-progress hidden><span>Check progress</span></button></div></div></section>`, options);
   }
   const image = safeUrl(model.svgUrl ?? model.imageUrl);
-  const fixture = Boolean(options.development?.fixture);
   const art = image !== "#" ? `<img src="${e(image)}" alt="Signature for ${e(artworkLabel(handle, model.mbti))}">` : `<div class="open-art-waiting"><p role="status">The minted artwork is temporarily unavailable.</p></div>`;
-  const identityVerifiedAt = fixture ? undefined : model.identityVerifiedAt;
-  const facts: Array<[string, unknown]> = [["Handle", `@${handle}`], ["Spelling verified at preparation", identityVerifiedAt], ["Assessment", fixture ? undefined : model.sourceLabel ?? "Grok · public X research"], ["MBTI", model.mbti], ["Renderer", model.rendererVersion], ["SVG SHA-256", model.svgSha256], ["PNG SHA-256", model.pngSha256], [fixture ? "Created" : "Assessed", model.assessedAt], ["Token", model.mint?.tokenId ?? model.tokenId], ["Transaction", model.mint?.transactionHash]];
-  const provenance = `<div class="signature-tools"><details class="signature-provenance"><summary>Provenance</summary><div class="signature-provenance-body"><div class="provenance-caveats"><p><strong class="open-preview-notice-label">Caveat</strong> MBTI is an artistic input, not a psychological diagnosis. Owning this token does not imply ownership or control of the X account.</p></div>${identityVerifiedAt ? "<p>This is the spelling verified during preparation, not a live X profile lookup.</p>" : ""}<dl class="signature-facts">${facts.filter(([, value]) => value !== undefined && value !== "").map(([label, value]) => `<div><dt>${e(label)}</dt><dd>${label === "Handle" ? handleLink(handle) : e(value)}</dd></div>`).join("")}</dl></div></details>${model.status === "ready" && model.svgUrl ? `<a class="signature-svg" href="${e(safeUrl(model.svgUrl))}" target="_blank" rel="noopener noreferrer" aria-label="Open original SVG">SVG ↗</a>` : ""}</div>`;
+  const provenance = `<div class="signature-tools"><details class="signature-provenance"><summary>Provenance</summary><div class="signature-provenance-body">${provenanceBody(model, handle)}</div></details>${model.status === "ready" && model.svgUrl ? `<a class="signature-svg" href="${e(safeUrl(model.svgUrl))}" target="_blank" rel="noopener noreferrer" aria-label="Open original SVG">SVG ↗</a>` : ""}</div>`;
   return layout(artworkLabel(handle, model.mbti), `<article class="signature-page" data-mint-state="minted"><div class="signature-sheet"><figure class="signature-art">${art}</figure><div class="signature-record">${artworkCaption(handle, model.mbti, { context: "detail", status: "Minted", mintStateLabel: true })}${mintControls(model, options)}${provenance}</div></div></article>`, options);
 }
 
