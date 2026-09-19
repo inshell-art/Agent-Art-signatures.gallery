@@ -5,9 +5,12 @@ import { FAVICON_LINK } from "../brand/favicon.js";
 import { siteFooter } from "../brand/footer.js";
 import { handleLink, handleVariationsPath } from "./handleLink.js";
 import { SLOGAN_MBTI_HERO_MANIFEST, SLOGAN_MBTI_HERO_SVG, SLOGAN_MBTI_HERO_CSS, SLOGAN_MBTI_HERO_SCRIPT_URL } from "../brand/sloganMbtiHero.js";
+import { mintUiState } from "./mintUiState.js";
+import { assessmentFailureText } from "./clientScript.js";
 import { SLOGAN_TOOLTIP_SCRIPT_URL } from "../brand/sloganTooltipScript.js";
 import { isMbti, MBTI_TYPES, preservedHandle, RENDERER_VERSION, type MBTI } from "./identity.js";
 import type { PublicPreviewState } from "./previewState.js";
+import { openMintSupportUrl } from "./supportUrl.js";
 
 export interface OpenMintPageOptions {
   csrfToken?: string;
@@ -17,6 +20,7 @@ export interface OpenMintPageOptions {
   chainName?: string;
   contract?: string;
   rpcUrl?: string;
+  supportUrl?: string;
   publicOrigin?: string;
   clientScriptUrl?: string;
   stylesheetUrl?: string;
@@ -41,10 +45,13 @@ export interface AssessmentPageModel {
   handle: string;
   renderHandle?: string;
   code: string;
-  status: "pending" | "ready" | "failed";
+  status: "pending" | "ready" | "failed" | "abstained";
   canMint: boolean;
   walletProvedForCode?: boolean;
   requestExpired?: boolean;
+  requestExpiresAt?: number;
+  walletProofExpiresAt?: number;
+  serverNow?: number;
   mbti?: string;
   imageUrl?: string;
   svgUrl?: string;
@@ -55,6 +62,8 @@ export interface AssessmentPageModel {
   identityVerifiedAt?: string;
   sourceLabel?: string;
   error?: string;
+  diagnosticReference?: string;
+  errorCategory?: "assessment-abstained" | "assessment-blocked" | "preparation-interrupted";
   tokenId?: string;
   mint?: MintPageState;
   /** Presentation-only sample; never a chain-backed mint record. */
@@ -138,6 +147,7 @@ ${SLOGAN_MBTI_HERO_CSS}
 .open-mint .mint-entry-action [data-request-submit]>span:first-child{transform:translateY(1px)}
 .open-mint .provenance-caveats p{margin:0;color:inherit;font-size:inherit;line-height:inherit}
 .open-mint .provenance-caveats p+p{margin-top:.25rem}
+.open-mint [data-mint-transaction],.open-mint [data-mint-network]{overflow-wrap:anywhere}
 .open-mint:has(.home-grid){--home-nav-inset:clamp(-22px,calc((1024px - 100vw)/2 + 20px),12px)}
 .open-mint:has(.home-grid) .home-return{inset-inline-start:max(var(--home-nav-inset),calc(env(safe-area-inset-left) - 22px))}
 .open-mint:has(.home-grid) .collection-shortcut{inset-inline-end:max(var(--home-nav-inset),calc(env(safe-area-inset-right) - 22px))}
@@ -255,9 +265,9 @@ function mintControls(model: AssessmentPageModel, options: OpenMintPageOptions):
   const explorerUrl = safeUrl(model.mint?.explorerUrl, "");
   if (mint === "minted") return explorerUrl ? `<div class="auth-actions open-mint-entry"><a class="auth-action" href="${e(explorerUrl)}" target="_blank" rel="noopener noreferrer"><span>View token ↗</span></a></div>` : "";
   if (mint === "pending") return `<p class="open-feedback" data-mint-feedback role="status" aria-live="polite">Waiting for the transaction to be confirmed.</p>`;
-  if (model.requestExpired) return `<p class="auth-note">This mint request has expired.</p><div class="auth-actions"><a class="auth-action" href="${e(mintPath(renderedPageHandle(model.handle, model.renderHandle)))}"><span>Return to mint</span></a></div>`;
-  if (model.status === "failed") return `<p class="open-feedback" data-mint-feedback role="status" aria-live="polite">${e(model.error ?? "The assessment could not be completed. No mint transaction was submitted.")}</p>`;
-  if (model.status === "ready" && !model.canMint) return `<p class="auth-note">This mint request is not available in this browser.</p><div class="auth-actions"><a class="auth-action" href="${e(mintPath(renderedPageHandle(model.handle, model.renderHandle)))}"><span>Return to mint</span></a></div>`;
+  const view = mintUiState({ assessmentStatus: model.status, mintState: mint, requestExpired: model.requestExpired, canMint: model.canMint, walletVerified: model.walletProvedForCode });
+  if (view.showReturn) return "";
+  if (view.phase === "failed" || view.phase === "abstained") return `<p class="open-feedback" data-mint-feedback role="status" aria-live="polite">${e(assessmentFailureText(model))}</p>`;
   return `${walletControls(options, model.walletProvedForCode)}<form data-mint-form${model.status === "pending" ? " hidden" : ""}><button class="auth-action" type="submit" data-submit-mint disabled><span>Continue mint</span></button></form>`;
 }
 
@@ -265,10 +275,13 @@ export function assessmentPage(model: AssessmentPageModel, options: OpenMintPage
   if (model.galleryFixture && !options.development?.fixture) throw new Error("Gallery samples require fixture mode.");
   const canonical = canonicalPageHandle(model.handle);
   const handle = renderedPageHandle(model.handle, model.renderHandle);
-  const attributes = `data-assessment-code="${e(model.code)}" data-assessment-handle="${e(canonical)}" data-assessment-state="${e(model.status)}" data-can-mint="${model.canMint ? "true" : "false"}" data-wallet-proved="${model.walletProvedForCode ? "true" : "false"}" data-mint-state="${e(model.mint?.state ?? "unminted")}" data-token-id="${e(model.tokenId ?? model.mint?.tokenId)}"`;
+  const attributes = `data-assessment-code="${e(model.code)}" data-assessment-handle="${e(canonical)}" data-assessment-state="${e(model.status)}" data-can-mint="${model.canMint ? "true" : "false"}" data-wallet-proved="${model.walletProvedForCode ? "true" : "false"}" data-mint-state="${e(model.mint?.state ?? "unminted")}" data-token-id="${e(model.tokenId ?? model.mint?.tokenId)}" data-mint-transaction-hash="${e(/^0x[a-f0-9]{64}$/i.test(model.mint?.transactionHash ?? "") ? model.mint?.transactionHash : "")}" data-request-expired="${model.requestExpired ? "true" : "false"}" data-request-expires-at="${e(model.requestExpiresAt)}" data-wallet-proof-expires-at="${e(model.walletProofExpiresAt)}" data-server-now="${e(model.serverNow)}"`;
   if (model.mint?.state !== "minted") {
-    const progress = model.mint?.state === "pending" ? "Mint submitted. Waiting to reveal your signature…" : model.status === "failed" ? "The assessment could not be completed." : model.status === "pending" ? "Preparing your signature…" : "Preparing your mint…";
-    return layout(`Mint & reveal · @${handle}`, `<section class="auth-page" ${attributes}><div class="auth-sheet open-mint-progress"><h1>Mint &amp; reveal</h1><p>${handleLink(handle)}</p><div class="mint-progress-status"><p data-assessment-status role="status" aria-live="polite">${progress}</p></div>${mintControls(model, options)}<p class="open-feedback" data-poll-feedback role="status" aria-live="polite"></p></div></section>`, options);
+    const view = mintUiState({ assessmentStatus: model.status, mintState: model.mint?.state ?? "unminted", requestExpired: model.requestExpired, canMint: model.canMint, walletVerified: model.walletProvedForCode, booting: model.canMint });
+    const supportUrl = openMintSupportUrl(options.supportUrl);
+    const support = supportUrl ? `<div class="auth-actions" data-assessment-support${view.phase === "failed" || view.phase === "abstained" ? "" : " hidden"}><a class="auth-action" href="${e(supportUrl)}" rel="noopener noreferrer" referrerpolicy="no-referrer"><span>Request help</span></a></div>` : "";
+    const recovery = `<div data-request-recovery${view.showReturn ? "" : " hidden"}><p class="auth-note" data-request-recovery-message>Return to mint to continue. Any saved assessment and artwork will be reused.</p><div class="auth-actions"><a class="auth-action" href="${e(mintPath(handle))}"><span>Return to mint</span></a></div></div>`;
+    return layout(`Mint & reveal · @${handle}`, `<section class="auth-page" ${attributes}><div class="auth-sheet open-mint-progress"><h1>Mint &amp; reveal</h1><p>${handleLink(handle)}</p><div class="mint-progress-status"><p data-assessment-status role="status" aria-live="polite">${view.status}</p></div>${mintControls(model, options)}${support}<p class="open-feedback" data-mint-transaction${/^0x[a-f0-9]{64}$/i.test(model.mint?.transactionHash ?? "") ? "" : " hidden"}>${/^0x[a-f0-9]{64}$/i.test(model.mint?.transactionHash ?? "") ? `Transaction: ${e(model.mint?.transactionHash)}` : ""}</p><p class="open-feedback" data-mint-network hidden></p>${recovery}<p class="open-feedback" data-poll-feedback role="status" aria-live="polite"></p><div class="auth-actions"><button class="auth-action" type="button" data-check-progress hidden><span>Check progress</span></button></div></div></section>`, options);
   }
   const image = safeUrl(model.svgUrl ?? model.imageUrl);
   const fixture = Boolean(options.development?.fixture);

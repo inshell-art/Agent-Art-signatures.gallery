@@ -12,14 +12,16 @@ import { renderSignatureSvg } from "../algorithmV2/index.js";
 import { canonicalHandle, handleDigest, isMbti, LEGACY_RENDERER_VERSION, preservedHandle, RENDERER_VERSION, seedForMbti } from "./identity.js";
 import { OPEN_MINT_CLIENT_SCRIPT } from "./clientScript.js";
 import { OPEN_MINT_CSS, aboutPage, assessmentPage, collectionPage, errorPage, homePage, mbtiGalleryPage, mintPage, previewPage, previewVariationsPage, type AssessmentPageModel, type GalleryEntry, type OpenMintPageOptions } from "./pages.js";
-import { fields, PublicError, WalletSessions, type SiteSession } from "./security.js";
+import { fields, PublicError, publicErrorDetails, WalletSessions, type SiteSession } from "./security.js";
 import { OpenMintService, type SignatureArtifact, type SignatureRequest } from "./service.js";
 import { OPEN_MINT_GALLERY_FIXTURES, galleryFixtureModel } from "./galleryFixtures.js";
 import { publicPreviewState } from "./previewState.js";
+import { openMintSupportUrl } from "./supportUrl.js";
 
 export interface OpenMintServerOptions {
   origin: string; fixture: boolean; service: OpenMintService; sessions: WalletSessions;
   rpcUrl?: string;
+  supportUrl?: string;
   devWallet?: (session: SiteSession, code?: string) => Promise<string>;
   devMint?: (session: SiteSession, code: string, consent: unknown) => Promise<unknown>;
 }
@@ -46,16 +48,18 @@ function json(res: ServerResponse, content: unknown, status = 200): void { send(
 
 export function createOpenMintServer(options: OpenMintServerOptions) {
   const { service, sessions } = options;
+  const supportUrl = openMintSupportUrl(options.supportUrl);
   // Read-only gallery samples are isolated from real assessments, wallet collections,
   // durable records, and local-chain projections. Never fill a live gallery with mocks.
   const galleryFixtures = options.fixture && !service.network;
   const origin = new URL(options.origin);
   const rates = new Map<string, { start: number; count: number }>();
   const preparationWalletVerified = (session: SiteSession): boolean => service.walletVerified(session) && session.walletProof?.code === undefined;
+  const walletTiming = (session: SiteSession) => ({ serverNow: service.now(), walletProofExpiresAt: session.walletProof?.expiresAt });
   const pageOptions = (session: SiteSession): OpenMintPageOptions => ({
     csrfToken: session.csrf, wallet: session.wallet, walletVerified: preparationWalletVerified(session), chainId: String(service.network?.chainId ?? 31337),
     chainName: "Local Anvil", contract: service.network?.address, rpcUrl: options.rpcUrl,
-    publicOrigin: options.origin, stylesheetUrl: cssUrl, clientScriptUrl: scriptUrl,
+    publicOrigin: options.origin, stylesheetUrl: cssUrl, clientScriptUrl: scriptUrl, supportUrl,
     development: { fixture: options.fixture, localChain: !!options.devWallet, galleryFixtures,
       notes: ["Open-mint development build. The earlier X-claim application and its data are separate.",
         "Previews and new assessments use the native MBTI v2.0.0 renderer. Existing prepared and minted artwork keeps its original renderer and bytes.",
@@ -74,8 +78,9 @@ export function createOpenMintServer(options: OpenMintServerOptions) {
     // This is a UI reveal, not cryptographic secrecy: mint calldata already binds the artifact.
     // Never send an unminted result to the progress UI or its polling endpoint.
     const artifact = mint.state === "minted" ? await service.artifact(request.handle) : undefined;
-    return { handle: request.handle, renderHandle: request.requestedHandle ?? request.handle, code: request.code, status: request.status, tokenId: BigInt(handleDigest(request.handle)).toString(), canMint: service.canMint(request, session),
-      walletProvedForCode: await service.walletProved(request.code, session), requestExpired: request.expiresAt <= service.now(), error: request.error,
+    return { handle: request.handle, renderHandle: request.requestedHandle ?? request.handle, code: request.code, status: request.errorCategory === "assessment-abstained" ? "abstained" : request.status, tokenId: BigInt(handleDigest(request.handle)).toString(), canMint: service.canMint(request, session),
+      diagnosticReference: request.attemptId, errorCategory: request.errorCategory,
+      walletProvedForCode: await service.walletProved(request.code, session), requestExpired: request.expiresAt <= service.now(), requestExpiresAt: request.expiresAt, ...walletTiming(session), error: request.error,
       ...(artifact ? artifactFields(artifact) : {}), mint };
   };
   const entries = async (session?: SiteSession): Promise<GalleryEntry[]> => (await service.gallery(session?.wallet)).map(({ artifact, mint }) => ({
@@ -172,15 +177,15 @@ export function createOpenMintServer(options: OpenMintServerOptions) {
           if (payload.code !== undefined) await service.ownedRequest(payload.code, session);
           return json(res, sessions.challenge(session, payload.address, payload.code as string | undefined));
         }
-        if (path === "/api/wallet/verify") { const payload = fields(input, ["challengeId", "signature"]); return json(res, { wallet: await sessions.verify(session, payload.challengeId, payload.signature) }); }
+        if (path === "/api/wallet/verify") { const payload = fields(input, ["challengeId", "signature"]); return json(res, { wallet: await sessions.verify(session, payload.challengeId, payload.signature), ...walletTiming(session) }); }
         if (path === "/api/mints/authorize") { const payload = fields(input, ["code", "consent"]); return json(res, await service.authorize(payload.code, payload.consent, session)); }
         if (path === "/api/mints/report") { const payload = fields(input, ["code", "transactionHash"]); await service.report(payload.code, payload.transactionHash, session); return json(res, { ok: true }); }
         if (path === "/api/session/logout") { fields(input, []); sessions.logout(session); res.setHeader("Set-Cookie", "sg_open_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0"); return json(res, { ok: true }); }
-        if (path === "/api/dev/wallet" && options.devWallet) { const payload = fields(input, [], ["code"]); if (payload.code !== undefined) await service.ownedRequest(payload.code, session); return json(res, { wallet: await options.devWallet(session, payload.code as string | undefined) }); }
+        if (path === "/api/dev/wallet" && options.devWallet) { const payload = fields(input, [], ["code"]); if (payload.code !== undefined) await service.ownedRequest(payload.code, session); return json(res, { wallet: await options.devWallet(session, payload.code as string | undefined), ...walletTiming(session) }); }
         if (path === "/api/dev/mint" && options.devMint) { const payload = fields(input, ["code", "consent"]); await service.ownedRequest(payload.code, session); return json(res, await options.devMint(session, String(payload.code), payload.consent)); }
         throw new PublicError(404, "NOT_FOUND", "Endpoint not found.");
       }
-      if (path === "/api/session") return json(res, { csrfToken: session.csrf, wallet: session.wallet ?? null, walletVerified: preparationWalletVerified(session), chainId: String(service.network?.chainId ?? 31337), chainName: "Local Anvil", rpcUrl: options.rpcUrl });
+      if (path === "/api/session") return json(res, { csrfToken: session.csrf, wallet: session.wallet ?? null, walletVerified: preparationWalletVerified(session), chainId: String(service.network?.chainId ?? 31337), chainName: "Local Anvil", rpcUrl: options.rpcUrl, ...walletTiming(session) });
       if (path === "/api/wallet/context") {
         if ([...url.searchParams.keys()].some(key => key !== "address") || url.searchParams.getAll("address").length > 1) throw new PublicError(400, "INVALID_REQUEST", "Only one optional wallet address is accepted.");
         return json(res, await service.walletContext(url.searchParams.has("address") ? url.searchParams.get("address") : undefined));
@@ -267,7 +272,7 @@ export function createOpenMintServer(options: OpenMintServerOptions) {
       const known = error instanceof PublicError;
       const status = known ? error.status : 503;
       const message = known ? error.message : "This operation is temporarily unavailable. Please try again shortly.";
-      if ((req.url ?? "").startsWith("/api/")) json(res, { error: message, code: known ? error.code : "SERVICE_UNAVAILABLE" }, status);
+      if ((req.url ?? "").startsWith("/api/")) json(res, { error: message, code: known ? error.code : "SERVICE_UNAVAILABLE", ...(known ? publicErrorDetails(error.details) : {}) }, status);
       else send(res, status, errorPage(message, session ? pageOptions(session) : { stylesheetUrl: cssUrl, clientScriptUrl: scriptUrl }));
     }
   });

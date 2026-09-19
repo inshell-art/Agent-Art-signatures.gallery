@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { privateKeyToAccount } from "viem/accounts";
 import { createOpenMintServer, type OpenMintServerOptions } from "./server.js";
 import { OpenMintService } from "./service.js";
-import { WalletSessions } from "./security.js";
+import { PublicError, WalletSessions } from "./security.js";
 import { MemoryKeyValueStore } from "./storage.js";
 import { assessmentDigest, AssessmentCoordinator, type LegacyAssessment } from "./assessment.js";
 import { MemoryAssessmentRepository } from "./assessmentStore.js";
@@ -101,7 +101,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-async function fixture(options: Pick<OpenMintServerOptions, "rpcUrl" | "devWallet" | "devMint"> & { offline?: boolean; now?: () => number; fixture?: boolean } = {}) {
+async function fixture(options: Pick<OpenMintServerOptions, "rpcUrl" | "supportUrl" | "devWallet" | "devMint"> & { offline?: boolean; now?: () => number; fixture?: boolean } = {}) {
   // By default exercise the actual asynchronous HTTP request listener through streams,
   // without opening a socket. Opt in to transport-level loopback coverage when permitted.
   const httpTransport = process.env.OPEN_MINT_TEST_HTTP === "1";
@@ -128,8 +128,8 @@ async function fixture(options: Pick<OpenMintServerOptions, "rpcUrl" | "devWalle
     transaction: async (_handle, authorization) => ({ from: authorization.recipient, to: wallet.address, data: "0x1234", value: "0x0", chainId: "0x7a69" }),
   };
   const service = new OpenMintService({ assessments: options.offline ? undefined : assessments, store, origin, fixture: options.fixture ?? true, network: options.offline ? undefined : network, now: options.now });
-  const sessions = new WalletSessions(origin, 31337);
-  const server = createOpenMintServer({ origin, fixture: options.fixture ?? true, service, sessions, rpcUrl: options.rpcUrl, devWallet: options.devWallet, devMint: options.devMint });
+  const sessions = new WalletSessions(origin, 31337, options.now);
+  const server = createOpenMintServer({ origin, fixture: options.fixture ?? true, service, sessions, rpcUrl: options.rpcUrl, supportUrl: options.supportUrl, devWallet: options.devWallet, devMint: options.devMint });
   if (httpTransport) { server.listen(port, "127.0.0.1"); await once(server, "listening"); servers.push(server); }
   const dispatch = async (path: string, method: string, headers: Record<string, string>, body?: string): Promise<Response> => {
     if (httpTransport) return new Promise((resolve, reject) => {
@@ -942,6 +942,56 @@ describe("open mint HTTP boundary", () => {
     expect(test.assess).not.toHaveBeenCalled();
   });
 
+  it("returns only safe reservation metadata and diagnostic references on API errors", async () => {
+    const test = await fixture(); const client = test.client(); await client.init();
+    const details = { reference: "d63d39b6-fb45-45aa-bc27-914d4801cfd3", reservedUntil: "2026-09-19T10:00:00.000Z", category: "reservation" as const };
+    const context = vi.spyOn(test.service, "walletContext").mockRejectedValue(new PublicError(409, "MINT_RESERVED", "Reserved until the current authorization expires.", { ...details, privateCode: "never-reflect-this" } as never));
+    const response = await client.request("/api/wallet/context");
+    expect(response.status).toBe(409);
+    expect(response.json).toEqual({ code: "MINT_RESERVED", error: "Reserved until the current authorization expires.", ...details });
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    context.mockRejectedValue(new PublicError(503, "ASSESSMENT_BLOCKED", "Operator review required.", { reference: "private-capability-code", reservedUntil: "tomorrow", category: "private-body" } as never));
+    expect((await client.request("/api/wallet/context")).json).toEqual({ code: "ASSESSMENT_BLOCKED", error: "Operator review required." });
+  });
+
+  it("projects an abstention with an owner-only diagnostic reference, without revealing a prepared result", async () => {
+    const test = await fixture(); const owner = test.client(); await owner.init();
+    const { code } = await owner.assess("alice");
+    const request = (await test.store.get<SignatureRequest>(`request:${code}`))!;
+    const reference = "d63d39b6-fb45-45aa-bc27-914d4801cfd3";
+    await test.store.put(`request:${code}`, { ...request, status: "failed", attemptId: reference, errorCategory: "assessment-abstained", error: "Not enough public evidence." });
+    const result = await owner.request(`/api/assessments/${code}`);
+    expect(result.status).toBe(200);
+    expect(result.json).toMatchObject({ status: "abstained", errorCategory: "assessment-abstained", diagnosticReference: reference, canMint: false });
+    for (const field of ["mbti", "imageUrl", "svgUrl", "assessedAt", "providerResponseId"]) expect(result.json).not.toHaveProperty(field);
+    const stranger = await test.client().request(`/api/assessments/${code}`);
+    expect(stranger.status).toBe(403);
+    expect(stranger.text).not.toContain(reference);
+    expect((await owner.request(`/mint/${code}`)).text).not.toContain("Request help");
+  });
+
+  it("passes a configured HTTPS support destination unchanged to private failure pages", async () => {
+    const supportUrl = "https://help.example.test/request?source=mint";
+    const test = await fixture({ supportUrl }); const owner = test.client(); await owner.init();
+    const { code } = await owner.assess("alice");
+    const request = (await test.store.get<SignatureRequest>(`request:${code}`))!;
+    const reference = "d63d39b6-fb45-45aa-bc27-914d4801cfd3";
+    await test.store.put(`request:${code}`, { ...request, status: "failed", attemptId: reference, errorCategory: "assessment-blocked" });
+    const page = await owner.request(`/mint/${code}`);
+    expect(page.status).toBe(200);
+    expect(page.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(page.text).toContain(`href="${supportUrl}"`);
+    expect(page.text).toContain(`Reference: ${reference}.`);
+    const link = /<a[^>]+href="https:\/\/help\.example\.test[^>]+>.*?<\/a>/.exec(page.text)?.[0];
+    expect(link).toContain("Request help");
+    expect(link).not.toContain(code);
+    expect(link).not.toContain(reference);
+  });
+
+  it.each(["javascript:alert(1)", "http://help.example.test", "https://user:secret@example.test"])("refuses unsafe server support configuration: %s", async supportUrl => {
+    await expect(fixture({ supportUrl })).rejects.toThrow("HTTPS URL without credentials");
+  });
+
   it("permanently redirects valid old preview links to /p/ without chain reads or assessment work", async () => {
     const test = await fixture(); const client = test.client();
     const state = vi.spyOn(test.service, "state");
@@ -1037,14 +1087,55 @@ describe("open mint HTTP boundary", () => {
     const progress = await client.request(`/api/assessments/${code}`);
     expect(progress.status).toBe(200);
     expect(progress.json).toMatchObject({ requestExpired: true, canMint: false });
+    expect(progress.json.requestExpiresAt).toBe(request.expiresAt - 900_001);
+    expect(progress.json.serverNow).toBeGreaterThan(progress.json.requestExpiresAt);
     expect(progress.json).not.toHaveProperty("mbti");
-    expect((await client.request(url)).status).toBe(200);
+    const expiredPage = await client.request(url);
+    expect(expiredPage.status).toBe(200);
+    expect(expiredPage.text).toContain('data-request-expired="true"');
+    expect(expiredPage.text).toContain('href="/mint?handle=alice"><span>Return to mint');
     const authorize = await client.request("/api/mints/authorize", { method: "POST", body: { code, consent: true } });
     expect(authorize.status).toBe(410);
     expect(authorize.json.code).toBe("REQUEST_EXPIRED");
     expect(await test.store.entries("issuance:")).toEqual([]);
     await client.prove();
     expect((await client.request("/api/session")).json.walletVerified).toBe(true);
+    expect(test.assess).toHaveBeenCalledTimes(1);
+  });
+
+  it("publishes request and proof deadlines without exposing an unminted result", async () => {
+    const time = Date.now();
+    const test = await fixture({ now: () => time }); const client = test.client(); await client.init();
+    const { code, url } = await client.assess("Alice_Bob");
+    const request = (await test.store.get<SignatureRequest>(`request:${code}`))!;
+    const session = await client.request('/api/session');
+    expect(session.json).toMatchObject({ serverNow: time, walletProofExpiresAt: time + 600_000 });
+    const status = await client.request(`/api/assessments/${code}`);
+    expect(status.json).toMatchObject({ serverNow: time, requestExpiresAt: request.expiresAt, walletProofExpiresAt: time + 600_000, requestExpired: false });
+    expect(status.json).not.toHaveProperty('mbti');
+    expect(status.json).not.toHaveProperty('svgUrl');
+    expect(status.json).not.toHaveProperty('walletProof');
+    const page = await client.request(url);
+    expect(page.text).toContain(`data-request-expires-at="${request.expiresAt}"`);
+    expect(page.text).toContain(`data-server-now="${time}"`);
+    expect(page.text).toContain('href="/mint?handle=Alice_Bob"><span>Return to mint');
+    expect(test.assess).toHaveBeenCalledTimes(1);
+  });
+
+  it("continues canonical confirmation after request expiry without issuing fresh authority", async () => {
+    let time = Date.now();
+    const test = await fixture({ now: () => time }); const client = test.client(); await client.init();
+    const { code, url } = await client.assess("Alice_Bob");
+    await test.mint('Alice_Bob', 'pending');
+    time += 900_001;
+    const status = await client.request(`/api/assessments/${code}`);
+    expect(status.status).toBe(200);
+    expect(status.json).toMatchObject({ requestExpired: true, canMint: false, mint: { state: 'pending' } });
+    expect((await client.request(url)).text).toContain('Mint submitted. Waiting to reveal your signature…');
+    expect((await client.request(`/api/mints/status/${code}`)).json.state).toBe('pending');
+    await test.mint('Alice_Bob');
+    expect((await client.request(`/api/mints/status/${code}`)).json.state).toBe('minted');
+    expect(await test.store.entries('issuance:')).toEqual([]);
     expect(test.assess).toHaveBeenCalledTimes(1);
   });
 

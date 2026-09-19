@@ -4,8 +4,23 @@ import { requireCanonicalSignatureFrom } from "../v2/core/ethereumSignature.js";
 
 export const opaqueCode = (): string => randomBytes(32).toString("base64url");
 export const isCode = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{43}$/.test(value);
+export interface PublicErrorDetails {
+  reference?: string;
+  reservedUntil?: string;
+  category?: "reservation" | "assessment" | "wallet" | "network" | "temporary";
+}
+export const isDiagnosticReference = (value: unknown): value is string => typeof value === "string"
+  && (/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value) || /^legacy-[a-f0-9]{24}$/.test(value));
+/** API error metadata has an independent allowlist; never serialize an arbitrary Error object. */
+export function publicErrorDetails(details: PublicErrorDetails | undefined): PublicErrorDetails {
+  const result: PublicErrorDetails = {};
+  if (isDiagnosticReference(details?.reference)) result.reference = details.reference;
+  if (typeof details?.reservedUntil === "string" && Number.isFinite(Date.parse(details.reservedUntil)) && new Date(details.reservedUntil).toISOString() === details.reservedUntil) result.reservedUntil = details.reservedUntil;
+  if (details?.category && ["reservation", "assessment", "wallet", "network", "temporary"].includes(details.category)) result.category = details.category;
+  return result;
+}
 export class PublicError extends Error {
-  constructor(readonly status: number, readonly code: string, message: string) { super(message); }
+  constructor(readonly status: number, readonly code: string, message: string, readonly details?: PublicErrorDetails) { super(message); }
 }
 export function fields(value: unknown, required: readonly string[], optional: readonly string[] = []): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new PublicError(400, "INVALID_INPUT", "Invalid request.");

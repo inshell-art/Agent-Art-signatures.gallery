@@ -2,10 +2,13 @@ import { randomBytes } from "node:crypto";
 import { getAddress, keccak256, stringToHex, type Address, type Hex } from "viem";
 import { formalSignatureRenderer, renderCardPng, sha256Hex } from "../v1/renderer.js";
 import { renderSignatureSvg } from "../algorithmV2/index.js";
-import { AssessmentCoordinator, validateAssessment, type Assessment } from "./assessment.js";
+import { AssessmentAbstainedError, AssessmentCoordinator, validateAssessment, type Assessment } from "./assessment.js";
+import { AssessmentOperations, AssessmentOperationsError, AssessmentPersistenceError } from "./assessmentOperations.js";
+import { FIXTURE_PROFILE_VERSION, GROK_PILOT_PROFILE } from "./providerProfile.js";
+import { ProviderResponseInvalidError } from "./grok.js";
 import { canonicalHandle, handleDigest, LEGACY_RENDERER_VERSION, preservedHandle } from "./identity.js";
 import { normalizeOpenMintAuthorization, openMintTokenURIHash, type OpenMintAuthorizationInput } from "./authorization.js";
-import { isCode, opaqueCode, PublicError, type SiteSession } from "./security.js";
+import { isCode, isDiagnosticReference, opaqueCode, PublicError, type SiteSession } from "./security.js";
 import { SerialKeys, type KeyValueStore } from "./storage.js";
 import type { OpenMintNetwork } from "./network.js";
 
@@ -25,6 +28,9 @@ export interface SignatureRequest {
   /** Missing only on requests saved before case-preserving rendering. */
   requestedHandle?: string;
   createdAt: number; expiresAt: number; assessmentId?: string; error?: string;
+  /** Safe operational reference, never the private request code or provider payload. */
+  attemptId?: string;
+  errorCategory?: "assessment-abstained" | "assessment-blocked" | "preparation-interrupted";
 }
 export interface SignatureArtifact {
   assessment: Assessment; svgSha256: string; pngSha256: string; metadataSha256: string;
@@ -36,10 +42,6 @@ interface Issuance {
   code: string; owner: string; handle: string; tokenURI: string;
   authorization: OpenMintAuthorizationInput; signature?: Hex;
 }
-interface AssessmentAttempt {
-  handle: string; createdAt: number; status: "started" | "succeeded" | "failed";
-  assessmentId?: string;
-}
 const ASSESSMENT_FAILED = "The assessment could not be completed. No mint was submitted. It will not be retried automatically; please contact support.";
 const ownerKey = (session: SiteSession): string => sha256Hex(Buffer.from(session.id));
 const nowSeconds = (now: () => number): number => Math.floor(now() / 1000);
@@ -50,6 +52,7 @@ export class OpenMintService {
   readonly #jobs = new Set<Promise<void>>();
   readonly #assessing = new Map<string, Promise<Assessment>>();
   readonly now: () => number;
+  readonly operations: AssessmentOperations;
   constructor(readonly options: {
     assessments?: AssessmentCoordinator;
     store: KeyValueStore;
@@ -58,7 +61,15 @@ export class OpenMintService {
     fixture: boolean;
     now?: () => number;
     dailyAssessmentLimit?: number;
-  }) { this.now = options.now ?? Date.now; }
+    operations?: AssessmentOperations;
+    assessmentProfileVersion?: string;
+  }) {
+    this.now = options.now ?? Date.now;
+    this.operations = options.operations ?? new AssessmentOperations({ store: options.store, now: this.now,
+      generationEnabled: options.fixture, accountingRequired: !options.fixture,
+      dailyLimit: options.dailyAssessmentLimit ?? (options.fixture ? 25 : 1),
+      maxTotalAttempts: options.fixture ? 10_000 : 1, maxActiveAttempts: options.fixture ? 4 : 1 });
+  }
   get network(): OpenMintNetwork | undefined { return this.options.network; }
   async idle(): Promise<void> { await Promise.all([...this.#jobs]); }
 
@@ -99,6 +110,7 @@ export class OpenMintService {
       const existing = active.find(request => request.handle === handle && request.wallet === wallet && request.status !== "failed");
       const cached = await this.options.assessments.get(handle);
       if (!this.options.fixture && cached && cached.xIdentity?.provenance !== "x-api") throw new PublicError(409, "X_VERIFICATION_REQUIRED", "This saved assessment predates X username verification. It is preserved, but cannot receive a new mint authorization. Contact support.");
+      if (!cached && !this.options.assessments.generationConfigured) throw new PublicError(503, "GROK_NOT_CONFIGURED", "New signature generation is disabled. Saved assessments remain available.");
       if (!this.options.fixture && !cached && this.options.assessments.identityProvenance !== "x-api") throw new PublicError(503, "X_LOOKUP_NOT_CONFIGURED", "X username verification is not configured. No assessment was requested.");
       const joining = this.#assessing.get(handle);
       if (existing && (existing.status === "ready" || joining)) {
@@ -108,25 +120,29 @@ export class OpenMintService {
       }
       const recovering = cached && existing;
       if (!recovering && active.length >= 10) throw new PublicError(429, "REQUEST_LIMIT", "Please finish an existing request first.");
-      const day = new Date(this.now()).toISOString().slice(0, 10);
-      const budgetKey = `budget:${day}`;
-      const used = await this.options.store.get<number>(budgetKey) ?? 0;
+      let attemptId = (await this.operations.get(handle))?.id;
       if (!cached && !joining) {
         // A durable pending record is not evidence of live work. In particular, a failed
         // terminal write or a restarted process must never create a free paid retry.
-        const attempted = await this.options.store.get<AssessmentAttempt>(`attempt:${handle}`);
-        if (attempted || requests.some(([, request]) => request.handle === handle)) {
-          throw new PublicError(409, "ASSESSMENT_RETRY_BLOCKED", ASSESSMENT_FAILED);
+        if (attemptId || requests.some(([, request]) => request.handle === handle)) {
+          throw new PublicError(409, "ASSESSMENT_RETRY_BLOCKED", ASSESSMENT_FAILED, { reference: attemptId, category: "assessment" });
         }
-        if (used >= (this.options.dailyAssessmentLimit ?? 25)) throw new PublicError(429, "ASSESSMENT_LIMIT", "Today's signature generation limit has been reached.");
-        await this.options.store.put(budgetKey, used + 1);
-        // Both cost admission and the one-attempt guard are durable before transport.
-        // A crash between writes may over-count a budget slot, never under-count a call.
-        await this.options.store.put<AssessmentAttempt>(`attempt:${handle}`, { handle, createdAt: this.now(), status: "started" });
+        try {
+          const attempt = await this.operations.admit(handle, this.options.assessmentProfileVersion ?? (this.options.fixture ? FIXTURE_PROFILE_VERSION : GROK_PILOT_PROFILE.id));
+          attemptId = attempt.id;
+        } catch (error) {
+          if (!(error instanceof AssessmentOperationsError)) throw error;
+          const message = error.code === "GENERATION_DISABLED" ? "New signature generation is paused. Saved assessments can still be reused."
+            : error.code === "HANDLE_NOT_ALLOWED" ? "This local pilot is limited to its approved handle. No assessment was requested."
+              : error.code === "ASSESSMENT_ACTIVE_LIMIT" ? "Another assessment is running. Wait for it to finish; no new assessment was requested."
+                : ["ASSESSMENT_LIMIT", "ASSESSMENT_EXPOSURE_LIMIT"].includes(error.code) ? "The signature generation allowance has been reached. Saved assessments remain available."
+                  : "Assessment accounting needs operator review. No new assessment was requested; automatic retries are disabled.";
+          throw new PublicError(error.code.endsWith("LIMIT") ? 429 : 503, error.code, message, { category: "assessment" });
+        }
       }
       // Keep the persisted lifetime exact even if the clock ticks while creating the record.
       const createdAt = recovering?.createdAt ?? this.now();
-      const request: SignatureRequest = recovering || { code: opaqueCode(), handle, requestedHandle: preservedHandle(value), owner: ownerKey(session), wallet, status: "pending", createdAt, expiresAt: createdAt + 900_000 };
+      const request: SignatureRequest = recovering || { code: opaqueCode(), handle, requestedHandle: preservedHandle(value), owner: ownerKey(session), wallet, status: "pending", createdAt, expiresAt: createdAt + 900_000, ...(attemptId ? { attemptId } : {}) };
       await this.options.store.put(`request:${request.code}`, request);
       this.#requirePreparationWallet(session);
       if (session.wallet !== wallet || session.generation !== generation) throw new PublicError(409, "WALLET_CHANGED", "Your wallet changed. Connect it again before preparing a mint.");
@@ -139,11 +155,17 @@ export class OpenMintService {
   #startAssessment(handle: string): Promise<Assessment> {
     const operation = (async () => {
       try {
-        const assessment = await this.options.assessments!.assess(handle);
-        await this.options.store.put<AssessmentAttempt>(`attempt:${handle}`, { handle, createdAt: this.now(), status: "succeeded", assessmentId: assessment.id });
+        const execution = await this.operations.execution(handle);
+        const assessment = await this.options.assessments!.assess(handle, execution);
         return assessment;
       } catch (error) {
-        await this.options.store.put<AssessmentAttempt>(`attempt:${handle}`, { handle, createdAt: this.now(), status: "failed" }).catch(() => undefined);
+        if (error instanceof ProviderResponseInvalidError) {
+          await this.operations.execution(handle).then(execution => execution.recordOutcome({ kind: "invalid" })).catch(() => undefined);
+        }
+        const attempt = await this.operations.get(handle).catch(() => undefined);
+        const category = error instanceof AssessmentPersistenceError || (attempt?.version === 1 && attempt.outcome === "accepted") ? "storage"
+          : attempt?.version === 1 && attempt.phases.xDispatchedAt !== undefined && attempt.phases.xVerifiedAt === undefined ? "identity" : "provider";
+        await this.operations.fail(handle, category).catch(() => undefined);
         throw error;
       }
     })().finally(() => { this.#assessing.delete(handle); });
@@ -154,15 +176,33 @@ export class OpenMintService {
     try {
       const assessment = await result;
       if (!this.options.fixture && assessment.xIdentity?.provenance !== "x-api") throw new Error("Verified X preparation is required.");
+      // A saved result can outlive a failed post-persistence ledger write. Reconcile its
+      // reference only; this never dispatches a provider or changes the accepted bytes.
+      const attempt = await this.operations.get(request.handle);
+      if (attempt?.version === 1 && attempt.outcome === "accepted" && !attempt.acceptedAssessment) {
+        await (await this.operations.execution(request.handle)).assessmentPersisted(assessment);
+      }
       await this.#locks.run(request.handle, () => this.#artifact(assessment, assessment.xIdentity?.username ?? request.requestedHandle ?? request.handle));
+      if (attempt?.version === 1) await this.operations.artifactOutcome(request.handle, "prepared");
       await this.options.store.put(`request:${request.code}`, { ...request, status: "ready", assessmentId: assessment.id });
-    } catch {
+    } catch (error) {
       // Provider responses and credentials are never exposed in browser errors or logs.
       const cached = await this.options.assessments!.get(request.handle).catch(() => undefined);
-      await this.options.store.put(`request:${request.code}`, { ...request, status: "failed", error: cached ? "Your assessment is saved, but mint preparation was interrupted. Try again to reuse the same result." : ASSESSMENT_FAILED }).catch(() => undefined);
+      if (cached) await this.operations.artifactOutcome(request.handle, "failed").catch(() => undefined);
+      await this.options.store.put(`request:${request.code}`, { ...request, status: "failed",
+        errorCategory: cached ? "preparation-interrupted" : error instanceof AssessmentAbstainedError ? "assessment-abstained" : "assessment-blocked",
+        error: cached ? "Your assessment is saved, but mint preparation was interrupted. Return to mint to reuse the same result."
+          : error instanceof AssessmentAbstainedError ? "Grok could not make a supported assessment. No signature or mint was created. This attempt will not be retried automatically."
+            : ASSESSMENT_FAILED }).catch(() => undefined);
     }
   }
   async recoverInterruptedRequests(): Promise<void> {
+    for (const [key] of await this.options.store.entries("attempt:")) {
+      const handle = key.slice("attempt:".length), attempt = await this.operations.get(handle);
+      if (attempt?.version === 1 && (attempt.outcome === "pending" || (attempt.outcome === "accepted" && !attempt.acceptedAssessment))) {
+        await this.operations.fail(handle, "interrupted");
+      }
+    }
     for (const [key, request] of await this.options.store.entries<SignatureRequest>("request:")) {
       if (request.status === "pending") await this.options.store.put(key, { ...request, status: "failed", error: "This request was interrupted. A saved assessment can be reused; an unfinished assessment will not be retried automatically." });
     }
@@ -174,6 +214,8 @@ export class OpenMintService {
     if (record.code !== code || canonicalHandle(record.handle) !== record.handle || !/^[a-f0-9]{64}$/.test(record.owner)
       || !["pending", "ready", "failed"].includes(record.status) || !Number.isSafeInteger(record.createdAt) || record.expiresAt !== record.createdAt + 900_000) throw new Error("Corrupt signature request.");
     if (record.requestedHandle !== undefined && (preservedHandle(record.requestedHandle) !== record.requestedHandle || canonicalHandle(record.requestedHandle) !== record.handle)) throw new Error("Corrupt request spelling.");
+    if (record.attemptId !== undefined && !isDiagnosticReference(record.attemptId)) throw new Error("Corrupt request diagnostic reference.");
+    if (record.errorCategory !== undefined && !["assessment-abstained", "assessment-blocked", "preparation-interrupted"].includes(record.errorCategory)) throw new Error("Corrupt request error category.");
     if (record.wallet !== undefined && (!/^0x[0-9a-fA-F]{40}$/.test(record.wallet) || /^0x0{40}$/i.test(record.wallet))) throw new Error("Corrupt request wallet.");
     return record;
   }
@@ -299,7 +341,8 @@ export class OpenMintService {
       const key = `issuance:${request.handle}`;
       let issuance = await this.options.store.get<Issuance>(key);
       if (issuance && BigInt(issuance.authorization.deadline) >= BigInt(chainTime)) {
-        if (issuance.owner !== ownerKey(session) || issuance.code !== request.code || issuance.authorization.recipient !== recipient) throw new PublicError(409, "MINT_RESERVED", "A mint authorization for this handle is still active. Please try after its window expires.");
+        if (issuance.owner !== ownerKey(session) || issuance.code !== request.code || issuance.authorization.recipient !== recipient) throw new PublicError(409, "MINT_RESERVED", "A mint authorization for this handle is still active. Wait for its window to expire, then choose Continue mint.",
+          { reservedUntil: new Date(Number(issuance.authorization.deadline) * 1000).toISOString(), category: "reservation", reference: request.attemptId });
       } else {
         const issuedAt = chainTime;
         const deadline = Math.min(Math.floor(request.expiresAt / 1000), issuedAt + 600);

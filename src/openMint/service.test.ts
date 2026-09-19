@@ -16,6 +16,7 @@ import { formalSignatureRenderer } from "../v1/renderer.js";
 import { renderSignatureSvg } from "../algorithmV2/index.js";
 import { XApiIdentityResolver, type XIdentityResolver } from "./xIdentity.js";
 import { GROK_DEFAULT_MODEL, GrokAssessmentProvider } from "./grok.js";
+import { AssessmentOperations } from "./assessmentOperations.js";
 
 // Service tests exercise real locked SVG rendering and byte commitments. Raster rendering
 // is covered by the renderer suite; substituting deterministic bytes keeps race tests fast.
@@ -53,7 +54,8 @@ function setup(options: { network?: boolean; provider?: AssessmentProvider; repo
     sign: vi.fn(async () => `0x${"1".repeat(130)}` as Hex),
     transaction: vi.fn(async (_handle: string, a: OpenMintAuthorization) => ({ from: a.recipient, to: CONTRACT, data: "0x1234" as const, value: "0x0" as const, chainId: "0x7a69" as const })),
   };
-  const service = new OpenMintService({ assessments, store, origin: sessions.origin, network: options.network === false ? undefined : network, fixture: options.fixture ?? true, now: () => now, dailyAssessmentLimit: options.limit });
+  const operations = options.fixture === false ? new AssessmentOperations({ store, now: () => now, generationEnabled: true, allowedHandle: "alice", reservationUsdTicks: "10000000000", maxExposureUsdTicks: "10000000000" }) : undefined;
+  const service = new OpenMintService({ assessments, store, operations, origin: sessions.origin, network: options.network === false ? undefined : network, fixture: options.fixture ?? true, now: () => now, dailyAssessmentLimit: options.limit });
   const prove = (code?: string, target = session, wallet = WALLET) => { target.wallet = wallet; target.walletProof = { wallet, code, expiresAt: now + 600_000 }; };
   const ready = async (handle = "alice", target = session) => {
     const requested = await service.request(handle, target); await service.idle();
@@ -172,7 +174,7 @@ describe("request ownership and immutable assessment workflow", () => {
     expect((await runtime.service.request("@ALICE", runtime.session)).code).toBe(first.code);
     const joining = await runtime.service.request("alice", runtime.connectedSession());
     expect(joining.code).not.toBe(first.code);
-    expect((await runtime.store.entries<number>("budget:"))[0][1]).toBe(1);
+    expect(await runtime.store.get(`budget:${new Date(NOW).toISOString().slice(0, 10)}`)).toBe(1);
     finish(); await runtime.service.idle();
     expect(source.assess).toHaveBeenCalledTimes(1);
     expect((await runtime.service.getRequest(first.code)).status).toBe("ready");
@@ -183,7 +185,7 @@ describe("request ownership and immutable assessment workflow", () => {
     await runtime.ready("alice");
     await expectCode(runtime.service.request("bob", runtime.session), "ASSESSMENT_LIMIT");
     await runtime.ready("alice", runtime.connectedSession());
-    expect((await runtime.store.entries<number>("budget:"))[0][1]).toBe(1);
+    expect(await runtime.store.get(`budget:${new Date(NOW).toISOString().slice(0, 10)}`)).toBe(1);
   });
 
   it("limits active requests per browser session", async () => {
@@ -214,7 +216,7 @@ describe("request ownership and immutable assessment workflow", () => {
       if (key.startsWith(`${prefix}:`)) throw new Error("disk full");
       return put(key, value);
     });
-    await expect(runtime.service.request("alice", runtime.session)).rejects.toThrow("disk full");
+    await expect(runtime.service.request("alice", runtime.session)).rejects.toThrow(prefix === "request" ? "disk full" : "Assessment operational persistence failed.");
     expect(assess).not.toHaveBeenCalled();
   });
 
@@ -226,18 +228,19 @@ describe("request ownership and immutable assessment workflow", () => {
     const put = store.put.bind(store);
     vi.spyOn(store, "put").mockImplementation(async (key, value) => {
       if (value && typeof value === "object" && "status" in value && value.status === "failed") throw new Error("terminal write failed");
+      if (key.startsWith("attempt:") && value && typeof value === "object" && "phases" in value && (value.phases as Record<string, unknown>).failedAt !== undefined) throw new Error("terminal write failed");
       return put(key, value);
     });
     const request = await runtime.service.request("alice", runtime.session); await runtime.service.idle();
     expect((await runtime.service.getRequest(request.code)).status).toBe("pending");
-    expect((await store.get<{ status: string }>("attempt:alice"))?.status).toBe("started");
+    expect(await store.get("attempt:alice")).toMatchObject({ version: 1, outcome: "pending", phases: { grokDispatchedAt: NOW } });
     await expectCode(runtime.service.request("ALICE", runtime.connectedSession()), "ASSESSMENT_RETRY_BLOCKED");
     const restarted = new OpenMintService({ ...runtime.service.options, store: await FileKeyValueStore.create(join(directory, "state")), assessments: new AssessmentCoordinator({ provider: source, repository: new MemoryAssessmentRepository() }) });
     await restarted.recoverInterruptedRequests();
     expect((await restarted.getRequest(request.code)).error).toContain("will not be retried automatically");
     await expectCode(restarted.request("alice", runtime.connectedSession()), "ASSESSMENT_RETRY_BLOCKED");
     expect(source.assess).toHaveBeenCalledTimes(1);
-    expect((await store.entries<number>("budget:"))[0][1]).toBe(1);
+    expect(await store.get(`budget:${new Date(NOW).toISOString().slice(0, 10)}`)).toBe(1);
   });
 
   it("reuses a durable assessment after request completion writes fail instead of rerolling or leaving it stuck", async () => {
@@ -254,7 +257,7 @@ describe("request ownership and immutable assessment workflow", () => {
     const resumed = await runtime.ready("alice");
     expect(resumed.code).toBe(request.code);
     expect(assess).toHaveBeenCalledTimes(1);
-    expect((await runtime.store.entries<number>("budget:"))[0][1]).toBe(1);
+    expect(await runtime.store.get(`budget:${new Date(NOW).toISOString().slice(0, 10)}`)).toBe(1);
   });
 
   it("rechecks wallet freshness after admission IO and before dispatch", async () => {
@@ -668,5 +671,26 @@ describe("mint authorization policy and race handling", () => {
     expect(await restarted.authorize(request.code, true, runtime.session)).toEqual(first);
     expect(runtime.network.sign).toHaveBeenCalledTimes(1);
     expect((await restarted.artifact("alice"))!.assessment.id).toBe(request.assessmentId);
+  });
+
+  it("reuses saved artwork and mint authority after restart with all generation credentials removed", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "sg-readonly-recovery-test-")); paths.push(directory);
+    const store = await FileKeyValueStore.create(join(directory, "state"));
+    const repository = new FileAssessmentRepository(join(directory, "assessments"));
+    const runtime = setup({ store, repository });
+    const request = await runtime.ready("Alice");
+    const original = JSON.stringify(await runtime.service.artifact("alice"));
+    runtime.setNow(request.expiresAt + 1);
+    const restarted = new OpenMintService({ ...runtime.service.options,
+      store: await FileKeyValueStore.create(join(directory, "state")),
+      assessments: new AssessmentCoordinator({ expectedProvenance: "development-fixture", repository: new FileAssessmentRepository(join(directory, "assessments")) }),
+    });
+    const freshSession = runtime.connectedSession();
+    const next = await restarted.request("ALICE", freshSession); await restarted.idle();
+    expect((await restarted.getRequest(next.code)).status).toBe("ready");
+    expect((await restarted.authorize(next.code, true, freshSession)).transaction.from).toBe(WALLET);
+    expect(JSON.stringify(await restarted.artifact("alice"))).toBe(original);
+    expect(await store.get(`budget:${new Date(NOW).toISOString().slice(0, 10)}`)).toBe(1);
+    await expectCode(restarted.request("bob", freshSession), "GROK_NOT_CONFIGURED");
   });
 });

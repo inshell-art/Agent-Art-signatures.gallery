@@ -1,12 +1,14 @@
 # Low-cost Grok assessments for Signatures Gallery
 
-## Recommendation
+**Historical research, September 14, 2026; implementation status corrected September 19.** Use [the current one-attempt runbook](grok-pilot.md) for operator settings and approvals. The code now implements the attempt/receipt/admission controls, explicit abstention and saved-result access described as gaps below. The real launcher selects `grok-4.3`/low/1024 output tokens/three assistant turns. No live account access or paid response has been validated. Historical comparisons, ten-per-day settings and 24-call evaluation proposals in this report are not the active pilot or permission to run them.
+
+## Recommendation at the research date
 
 Use the direct, gallery-funded xAI API for one independently researched assessment per new handle, then reuse the accepted assessment permanently. Evaluate `grok-4.3` with native X Search and minimal reasoning before changing the current model. Put most cost-control work into avoiding unnecessary generations, duplicate attempts, and uncontrolled search—not into shaving words from the final MBTI answer.
 
-The proposed sequence is: validate the handle, look for an existing assessment, admit a new paid job only after an explicit generation action, let Grok research and decide, durably save the result, then render and mint without another model call. A wallet-proof gate for new generation is recommended for a public launch but is a separate UX decision. It must not require ownership of the target X account.
+The proposed sequence was: validate the handle, look for an existing assessment, admit a new paid job only after an explicit generation action, let Grok research and decide, durably save the result, then render and mint without another model call. Wallet proof was a separate recommendation at that date and is now implemented before mint preparation; it does not require ownership of the target X account.
 
-This is a design and cost analysis, not an implemented or live-validated configuration. Prices and documentation were checked on September 14, 2026. All dollar examples below are constructed scenarios, not measured costs, forecasts, or maximum charges. They exclude taxes, hosting, storage, and blockchain gas.
+The original report is a design and cost analysis, not a live-validated configuration. Prices and documentation were checked on September 14, 2026; the runbook separately rechecks the chosen profile on September 19. All dollar examples below are constructed xAI-only scenarios, not measured costs, forecasts or maximum charges. They exclude the subsequently implemented authenticated X lookup, taxes, hosting, storage and blockchain gas. The runbook includes a separate X-lookup planning allowance without treating it as an observed charge.
 
 ## 1. Authority and cost boundaries
 
@@ -24,7 +26,7 @@ Short-context prices are USD per million tokens. Model cards provide the followi
 
 | Model | Uncached input | Cached input | Output | Decision |
 | --- | ---: | ---: | ---: | --- |
-| `grok-4.6` | $2.00 | $0.50 | $6.00 | Current local default; retain as an evaluation reference, not the cost baseline |
+| `grok-4.6` | $2.00 | $0.50 | $6.00 | Local default at the September 14 audit; retained as a historical evaluation reference |
 | `grok-4.3` | $1.25 | $0.20 | $2.50 | Recommended lower-cost candidate with documented native-search examples |
 | `grok-build-0.1` | $1.00 | $0.20 | $2.00 | Nominally cheaper, but native X Search support for this route was not established; do not choose on price alone |
 
@@ -126,7 +128,7 @@ That saving does not justify putting the main interactive flow on an overnight q
 
 ## 5. Concrete candidate configuration
 
-The following is the **proposed pilot specification**, not an applied environment file or a promise that every parameter combination has been exercised on the live API.
+The following is the **historical September 14 candidate specification**, not the implemented pilot profile or an applied environment file. The current runbook supersedes it with low reasoning, 1024 output tokens, three turns, no tool-choice/parallel-call override and one total attempt. None of these combinations has been exercised against the live API in this work.
 
 | Setting | Candidate A | Purpose / qualification |
 | --- | --- | --- |
@@ -154,7 +156,7 @@ Candidate B changes reasoning to `low` and allows an output cap of `2048`. Keep 
 
 ### Durable job and accounting records
 
-Create a private paid-attempt record before the provider request. It needs: canonical handle, frozen rendering spelling, attempt ID, provider/model/policy, relevant request settings, admission time, budget reservation, dispatch state, provider response ID, response/validation outcome, raw usage metadata, final integer cost, and a safe error category. Credentials and private browser messages do not belong in this record.
+Create a private paid-attempt record before the provider request. It needs: canonical handle, frozen rendering spelling, attempt ID, provider/model/policy, relevant request settings, admission time, budget reservation, dispatch state, provider response ID, response/validation outcome, bounded allowlisted usage metadata, final integer cost, and a safe error category. Credentials, raw bodies/posts, hidden reasoning and private browser messages do not belong in this record. The implemented version keeps provider receipts separate from the attempt and immutable assessment.
 
 Separate paid attempts from consumer request links and from immutable artwork provenance. Many request links can subscribe to one attempt. A permit can be replaced without replacing the assessment. A model-call error can consume money even when it produces no valid artwork.
 
@@ -164,12 +166,12 @@ Use a durable uniqueness constraint for the active job and an insert-only accept
 | --- | --- | --- |
 | Validated accepted assessment | No; serve saved result | Reconcile actual cost once |
 | Result received, publication failed | No; retry local persistence/publication | Retain the same attempt and charge |
-| Definite failure before dispatch | Only through normal admission | Release only proven unused reservation |
+| Definite failure before dispatch | No in the one-attempt pilot; future recovery needs evidence and explicit approval | Keep reservation until an audited recovery mechanism proves and records resolution |
 | Completed insufficient evidence | No on refresh or new session | Save outcome and charge; require a controlled retry policy |
 | Timeout, disconnect, crash after dispatch | No | Mark unknown, retain reservation, investigate/reconcile |
 | Missing or invalid usage telemetry | No blind continuation | Accounting unknown; stop new paid work pending review |
 
-Recommend an initial 24-hour cooldown on completed insufficient-evidence outcomes, followed by operator review during the pilot rather than automatic paid retries. A later retry must be a new budgeted job and cannot replace an already accepted result. Unknown transport outcomes are not resolved merely because a cooldown expired.
+The original research suggested a 24-hour cooldown before operator review. The implemented one-attempt pilot has no timer-based reopening and no retry/release command. Any later recovery must prove the relevant phases and billing, link to the original attempt and carry explicit authorization for new paid dispatch; it cannot replace an already accepted result. Unknown transport outcomes are not resolved merely because time passed.
 
 ### Actual charges and reservations
 
@@ -177,7 +179,7 @@ Use `usage.cost_in_usd_ticks` as the primary bill record; xAI documents it as th
 
 Implement admission as `spent + unresolved reservations + next reservation <= configured budget`, alongside an attempt-count limit. Include unresolved work across day boundaries and restarts. Validate persisted budget fields at runtime; a negative, non-numeric or corrupt counter must stop new paid work, not grant extra allowance. Actual cost can exceed a reservation because native search lacks a documented per-request resource ceiling; stop admissions when it does and keep the overrun visible.
 
-For an operator-approved pilot, a concrete starting proposal is **one worker, at most ten new attempts per day, a $2 daily admission budget, and a $1 provisional reservation per dispatched request**. Stop new generation for review if one completed request costs more than $0.25 or if any outcome/cost is unknown. These are deliberately cautious operational settings, not an authorization to spend, not provider price caps, and not a proof that a single unusually expensive request cannot exceed the daily target. Recalibrate only after real usage is available.
+The historical scaling proposal was one worker, ten new attempts per day, a $2 admission budget and a $1 provisional reservation, with review for a charge above $0.25 or unknown cost. **Those are not current runtime settings.** The implemented pilot allows one active and one total attempt, with a proposed $1 combined reservation/exposure threshold requiring explicit acceptance of possible overruns. It does not authorize extra attempts after the first, even on a new day. Recalibrate only after separately approved live evidence; neither proposal creates a provider price cap.
 
 ### Provider billing backstop
 
@@ -195,22 +197,24 @@ The Responses API supports retrieving a known stored response by ID, with docume
 
 Do not treat the async-client guide as a recoverable background-job API; it describes concurrent client requests.[^20] Keep the pilot conservative: no automatic replay of uncertain POSTs, no generation retry merely because a user refreshed, and no deletion of a previously accepted result to repair an operational problem.
 
-## 7. Current repository gaps
+## 7. Historical repository findings and resolution
 
-The local paid path already has fixed server-owned requests, handle-only input, native X Search checks, citation validation, a bounded response, no transport-level retry, separate fixture storage, in-process sharing, and durable accepted-assessment publication. Production startup is still intentionally refused. These are useful foundations, not a finished spending-control system.[^21]
+At the September 14 audit, fixed server-owned requests, handle-only input, native X Search/citation checks, bounded responses, separate fixtures and durable accepted assessments already existed.[^21] The following findings are retained as history with their current resolution; production startup remains refused.
 
-The audit identified the following work before paid validation:
+| September 14 finding | Resolution as of September 19 and regression evidence |
+| --- | --- |
+| A stored pending request bypassed allowance after terminal-status write failure; the mocked reproduction produced two provider calls with budget one | Resolved. Durable admission/dispatch guards and live sharing prevent the second call. [Service tests](../src/openMint/service.test.ts): “does not repeat an uncertain paid attempt when both terminal status writes fail, including after restart.” |
+| Interrupted requests could lose durable dispatch uncertainty and allow a repeat | Resolved. Versioned attempts preserve dispatched/unknown state; legacy ambiguity is blocked. [Lifecycle tests](../src/openMint/assessmentOperations.test.ts) cover fault injection and restart. No repeat-dispatch recovery operation is enabled. |
+| Provider usage was discarded; count alone did not control concurrent paid exposure | Resolved locally. [Receipt tests](../src/openMint/providerReceipt.test.ts) validate allowlisted usage and exact integer billing; lifecycle tests cover one active/total attempt, reservations, corruption and cross-day uncertainty. Unknown X billing remains explicitly unresolved. |
+| Instructions permitted refusal while the JSON schema required an MBTI | Resolved. Typed abstention has nullable MBTI, a bounded reason and no artifact/authority. [Grok tests](../src/openMint/grok.test.ts) cover abstention, mismatch, invalid output and paid receipts. |
+| A crash between assessment persistence and first artifact publication could change spelling through later case-variant input | Resolved for new real assessments. The authenticated X spelling/account snapshot is part of the persisted assessment and is used for artifact rendering. [Coordinator tests](../src/openMint/assessment.test.ts) cover durable identity reuse; service tests cover X-returned case and unchanged artifact/snapshot after restart and expiry. Historical bytes remain unchanged. |
+| Saved-result access depended on generation availability | Resolved. Service tests cover “reuses saved artwork and mint authority after restart with all generation credentials removed.” New generation remains disabled when credentials or admission are unavailable. |
 
-1. **Reproduced allowance bypass.** A stored pending request exempts a later request from the daily count. If saving terminal failure status fails, another session can make a second provider call while the persisted daily count remains one. An isolated in-memory reproduction produced two provider invocations, budget one, and pending/failed request records; it used no live API. Replace request-status-based exemptions with a real shared durable job.
-2. **No durable unknown-outcome state.** In-memory pending and unsaved-result maps do not survive process loss. Interrupted requests are marked failed on restart, which permits another paid attempt. Preserve dispatch uncertainty and usable results instead.
-3. **No actual-cost ledger or paid-worker concurrency limit.** The provider adapter discards usage; the default 25-per-day counter does not constrain dollar cost or prevent those jobs from running together.
-4. **Contradictory refusal schema.** Instructions allow refusal but JSON requires an MBTI. Add the typed non-artwork outcome before benchmarking cheap settings.
-5. **Rendering-spelling recovery gap.** Between durable assessment and artwork publication, a crash can let a later case variant supply the first published spelling. Freeze the initiating spelling in the durable attempt and recover it.
-6. **Read path coupled to generation availability.** Keep saved assessments available when disabling paid generation or encountering provider/budget outages.
+The original 119-test audit record is retained in [paid-grok-fallback.md](paid-grok-fallback.md); it is not the current test count. Neither that record nor the new mocked regressions establish live account entitlement, actual unit cost, broad model quality or public-launch readiness. Current preflight reports both provider credentials absent and generation disabled.
 
-These findings concern the current working tree. Fixes are proposed, not applied by this report. The earlier preparation record lists 119 passing mocked tests, which do not establish live provider compatibility or actual unit cost. The reproduced allowance bypass needs a permanent regression test.
+## 8. Historical evaluation sequence
 
-## 8. Implementation and validation sequence
+The sequence below records the original research proposal. Phase A is now implemented for the local one-attempt scope; the [current E09/E10 runbook](grok-pilot.md) controls the next live step. The later comparison phases remain separate, unapproved work and must not be used to expand the one-call envelope.
 
 ### Phase A: protect spending without paying
 
@@ -255,9 +259,9 @@ Recheck the announced search pricing at the transition before continuing a live 
 
 ## 10. Decision summary
 
-The practical fallback is **one short, independently researched Grok assessment for each genuinely new handle; durable reuse everywhere else**. The lowest-cost verified native-search candidate is 4.3, but the final reasoning profile must be selected by a small live evaluation. Native-search scope, demand gating, crash-safe deduplication and actual-charge accounting dominate the design.
+The practical fallback is **one short, independently researched Grok assessment for each new handle; durable reuse everywhere else**. The economical documented candidate is 4.3; the current pilot selects low reasoning, while its live behavior remains unverified. Native-search scope, demand gating, durable deduplication and actual-charge accounting dominate the design.
 
-The next implementation unit is the durable attempt/budget layer and regression tests, followed by the lean provider profile and a single approved live check. No purchasing, live inference, runtime configuration change, or production launch is authorized by this research document. Wallet gating and any narrower evidence window remain explicit product choices.
+The next paid milestone is the single separately approved live check in the runbook. The attempt/budget/receipt layer and profile are now implemented, and wallet gating is already part of mint preparation. No purchasing, live inference, account-setting change, wider evaluation or production launch is authorized by this research document. A narrower evidence window remains an unselected policy change.
 
 ## Sources
 

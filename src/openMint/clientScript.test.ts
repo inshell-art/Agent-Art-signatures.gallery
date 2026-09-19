@@ -1,6 +1,6 @@
 import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
-import { OPEN_MINT_CLIENT_SCRIPT } from "./clientScript.js";
+import { OPEN_MINT_CLIENT_SCRIPT, assessmentFailureText } from "./clientScript.js";
 
 const WALLET = `0x${"1".repeat(40)}`;
 const OTHER = `0x${"2".repeat(40)}`;
@@ -36,6 +36,7 @@ type SetupOptions = {
   entry?: boolean;
   preview?: boolean;
   pending?: boolean;
+  support?: boolean;
   walletProved?: boolean;
   local?: boolean;
   storage?: Map<string, string>;
@@ -45,20 +46,30 @@ type SetupOptions = {
   duringAuthorize?: () => void;
   walletRequest?: (method: string, params: unknown) => unknown;
   now?: () => number;
+  expiresAt?: number;
+  proofExpiresAt?: number;
+  serverNow?: number;
+  expired?: boolean;
+  mintState?: string;
+  mintHash?: string;
+  response?: (path: string) => { ok: boolean; json: () => Promise<unknown> } | undefined;
 };
 const flush = async () => { for (let i = 0; i < 250; i++) await Promise.resolve(); };
 function setup(options: SetupOptions = {}) {
-  const selectors = ['[data-open-mint]', '[data-connect-wallet]', '[data-mint-feedback]', '[data-poll-feedback]', '[data-wallet-label]', '[data-disconnect-wallet]', '[data-copy-handoff]', '[data-handoff-prompt]', '[data-copy-feedback]', ...(options.preview ? [] : options.entry ? ['[data-assessment-request]', '[data-request-feedback]'] : ['[data-assessment-code]', '[data-assessment-status]', '[data-submit-mint]', '[data-mint-form]']), ...(options.local ? ['[data-dev-wallet]', '[data-dev-mint]', '[data-dev-feedback]'] : [])];
+  const selectors = ['[data-open-mint]', '[data-connect-wallet]', '[data-mint-feedback]', '[data-poll-feedback]', '[data-wallet-label]', '[data-disconnect-wallet]', '[data-copy-handoff]', '[data-handoff-prompt]', '[data-copy-feedback]', ...(options.preview ? [] : options.entry ? ['[data-assessment-request]', '[data-request-feedback]'] : ['[data-assessment-code]', '[data-assessment-status]', '[data-submit-mint]', '[data-mint-form]', '[data-request-recovery]', '[data-request-recovery-message]', '[data-check-progress]', '[data-mint-transaction]', '[data-mint-network]']), ...(options.local ? ['[data-dev-wallet]', '[data-dev-mint]', '[data-dev-feedback]'] : [])];
   const elements: Record<string, Element> = Object.fromEntries(selectors.map(selector => [selector, new Element()]));
+  if (options.support) { elements['[data-assessment-support]'] = new Element(); elements['[data-assessment-support]'].hidden = true; }
   elements['[data-open-mint]'].dataset = { chainId: "31337", contract: CONTRACT, localChain: String(Boolean(options.local)) };
-  if (elements['[data-assessment-code]']) elements['[data-assessment-code]'].dataset = { assessmentCode: "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr", assessmentHandle: "agent_art", tokenId: "123", assessmentState: options.pending ? "pending" : "ready", canMint: "true", mintState: "unminted", walletProved: String(Boolean(options.walletProved)) };
+  if (elements['[data-assessment-code]']) elements['[data-assessment-code]'].dataset = { assessmentCode: "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr", assessmentHandle: "agent_art", tokenId: "123", assessmentState: options.pending ? "pending" : "ready", canMint: "true", mintState: options.mintState ?? "unminted", walletProved: String(Boolean(options.walletProved)), requestExpired: String(Boolean(options.expired)), requestExpiresAt: String(options.expiresAt ?? ''), walletProofExpiresAt: String(options.proofExpiresAt ?? ''), serverNow: String(options.serverNow ?? '') };
+  if (elements['[data-assessment-code]']) elements['[data-assessment-code]'].dataset.mintTransactionHash = options.mintHash ?? '';
+  if (elements['[data-mint-network]']) elements['[data-mint-network]'].hidden = true;
   if (options.entry) {
     elements['[data-assessment-request]'].children = { 'button[type=submit]': new Element(), 'input[name=handle]': new Element() };
     elements['[data-assessment-request]'].children['input[name=handle]'].value = " @Agent_Art ";
   }
   const requests: Array<{ path: string; body: any; init: any }> = [];
   const walletCalls: Array<{ method: string; params: unknown }> = [];
-  const scheduled: Array<() => Promise<void>> = [];
+  const scheduled: Array<(() => Promise<void>) & { delay?: number }> = [];
   const timers = new Map<number, () => Promise<void>>();
   let nextTimerId = 0;
   const globalEvents: Record<string, Listener> = {};
@@ -97,13 +108,18 @@ function setup(options: SetupOptions = {}) {
     location: { origin: "https://example.test", hash: "", assign(path: string) { navigations.push(path); }, reload() { reloads += 1; } },
     sessionStorage: { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value), removeItem: (key: string) => storage.delete(key) },
     URL, AbortController, Date: class extends Date { static now() { return options.now?.() ?? Date.now(); } }, navigator: {},
-    setTimeout(fn: () => Promise<void>) { const id = ++nextTimerId; timers.set(id, fn); scheduled.push(fn); return id; },
+    setTimeout(fn: () => Promise<void>, delay = 0) {
+      const id = ++nextTimerId;
+      const run = async () => { timers.delete(id); const index = scheduled.indexOf(run); if (index !== -1) scheduled.splice(index, 1); await fn(); };
+      run.delay = delay; timers.set(id, run); scheduled.push(run); scheduled.sort((a, b) => (a.delay ?? 0) - (b.delay ?? 0)); return id;
+    },
     clearTimeout(id: number) { const fn = timers.get(id); const index = fn ? scheduled.indexOf(fn) : -1; if (index !== -1) scheduled.splice(index, 1); timers.delete(id); },
     async fetch(path: string, init: any) {
       const body = init.body ? JSON.parse(init.body) : undefined;
       requests.push({ path, body, init });
+      const response = options.response?.(path); if (response) return response;
       const custom = await options.api?.(path, body);
-      if (custom !== undefined) return { ok: !(custom as any).error || (custom as any).status === 'failed', json: async () => custom };
+      if (custom !== undefined) return { ok: !(custom as any).error || ['failed', 'abstained'].includes((custom as any).status), json: async () => custom };
       let result: unknown = {};
       if (path === "/api/session") result = state;
       else if (path.startsWith('/api/wallet/context')) result = { ...NETWORK, ...(path.includes('?address=') ? { nonce: '0x1' } : {}) };
@@ -128,6 +144,420 @@ function intent(storage = new Map<string, string>(), overrides = {}) {
 }
 const sends = (test: ReturnType<typeof setup>) => test.walletCalls.filter(call => call.method === 'eth_sendTransaction');
 const savedSubmission = (overrides = {}) => new Map([[SUBMISSION_KEY, JSON.stringify({ hash: HASH, wallet: WALLET, mode: 'injected', ...overrides })]]);
+const ASSESSMENT_PATH = '/api/assessments/rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr';
+const INTENT_KEY = 'sg-open:intent:rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr';
+const readyStatus = { handle: 'agent_art', tokenId: '123', status: 'ready', canMint: true, walletProvedForCode: true };
+const tick = (test: ReturnType<typeof setup>, delay: number) => {
+  const timer = test.scheduled.find(timer => timer.delay === delay);
+  expect(timer, `Expected a ${delay}ms timer`).toBeDefined();
+  return timer!();
+};
+
+describe('actionable mint recovery', () => {
+  const reference = '12345678-1234-4123-8123-123456789abc';
+
+  it('waits out a reservation and checks availability only after explicit continuation', async () => {
+    let now = Date.now(), reserved = true;
+    const test = setup({ walletProved: true, now: () => now, api: path => path === '/api/mints/authorize' && reserved ? { error: 'Reserved', code: 'MINT_RESERVED', category: 'reservation', reservedUntil: new Date(now + 5000).toISOString() } : undefined }); await flush();
+    await test.elements['[data-mint-form]'].emit('submit');
+    expect(test.elements['[data-mint-feedback]'].textContent).toContain('reserved until');
+    expect(test.elements['[data-mint-feedback]'].textContent).toContain('UTC');
+    expect(test.elements['[data-submit-mint]'].disabled).toBe(true);
+    await test.elements['[data-mint-form]'].emit('submit');
+    expect(test.requests.filter(request => request.path === '/api/mints/authorize')).toHaveLength(1);
+    now += 5000; await tick(test, 5000);
+    expect(test.elements['[data-submit-mint]'].disabled).toBe(false);
+    expect(test.elements['[data-mint-feedback]'].textContent).toContain('Choose Continue mint to check availability');
+    expect(sends(test)).toEqual([]);
+    expect(test.requests.filter(request => request.path === '/api/mints/authorize')).toHaveLength(1);
+    reserved = false; await test.elements['[data-mint-form]'].emit('submit');
+    expect(sends(test)).toHaveLength(1);
+    expect(test.requests.filter(request => request.path === '/api/mints/authorize')).toHaveLength(2);
+  });
+
+  it.each([undefined, 'not-a-time', '<script>alert(1)</script>'])('does not invent a reservation deadline from %s', async reservedUntil => {
+    const test = setup({ walletProved: true, api: path => path === '/api/mints/authorize' ? { error: 'Reserved', code: 'MINT_RESERVED', reservedUntil } : undefined }); await flush();
+    await test.elements['[data-mint-form]'].emit('submit');
+    expect(test.elements['[data-mint-feedback]'].textContent).toContain('Wait for its window to end');
+    expect(test.elements['[data-mint-feedback]'].textContent).not.toMatch(/Invalid Date|<script>|not-a-time/);
+    expect(sends(test)).toEqual([]);
+    expect(test.scheduled).toEqual([]);
+  });
+
+  it('does not enable a reserved request that expires before the reservation ends', async () => {
+    let now = Date.now();
+    const test = setup({ walletProved: true, now: () => now, serverNow: now, expiresAt: now + 1000,
+      api: path => path === '/api/mints/authorize' ? { error: 'Reserved', code: 'MINT_RESERVED', reservedUntil: new Date(now + 5000).toISOString() } : undefined }); await flush();
+    await test.elements['[data-mint-form]'].emit('submit'); now += 1000; await tick(test, 1000); now += 4000; await tick(test, 4000);
+    expect(test.elements['[data-submit-mint]'].disabled).toBe(true);
+    expect(test.elements['[data-request-recovery]'].hidden).toBe(false);
+    expect(sends(test)).toEqual([]);
+  });
+
+  it('requires a fresh wallet proof after authorization rejects an expired proof', async () => {
+    const test = setup({ walletProved: true, api: path => path === '/api/mints/authorize' ? { error: 'Proof expired', code: 'WALLET_PROOF_REQUIRED' } : undefined }); await flush();
+    await test.elements['[data-mint-form]'].emit('submit');
+    expect(test.elements['[data-assessment-code]'].dataset.mintUiPhase).toBe('wallet-required');
+    expect(test.elements['[data-mint-feedback]'].textContent).toContain('Connect and verify');
+    await test.elements['[data-mint-form]'].emit('submit');
+    expect(test.requests.filter(request => request.path === '/api/mints/authorize')).toHaveLength(1);
+    expect(test.requests.filter(request => request.path === '/api/wallet/challenge')).toEqual([]);
+    expect(sends(test)).toEqual([]);
+  });
+
+  it.each(['SESSION_REQUIRED', 'CSRF_INVALID', 'REQUEST_SESSION_MISMATCH', 'REQUEST_WALLET_MISMATCH'])('offers safe return and reconnect for %s without reopening mint authority', async code => {
+    const test = setup({ walletProved: true, api: path => path === '/api/mints/authorize' ? { error: 'No session', code } : undefined }); await flush();
+    await test.elements['[data-mint-form]'].emit('submit');
+    expect(test.elements['[data-request-recovery]'].hidden).toBe(false);
+    expect(test.elements['[data-mint-feedback]'].textContent).toContain('Return to mint and reconnect');
+    expect(test.elements['[data-submit-mint]'].disabled).toBe(true);
+    expect(sends(test)).toEqual([]);
+    expect(test.requests.filter(request => request.path === '/api/assessments')).toEqual([]);
+  });
+
+  it.each(['INSUFFICIENT_FUNDS', 'NETWORK_ERROR'])('makes the pre-send wallet error %s actionable without a transaction retry', async code => {
+    const test = setup({ walletProved: true, walletRequest: method => { if (method === 'eth_call') throw Object.assign(new Error('Wallet check failed'), { code }); } }); await flush();
+    await test.elements['[data-mint-form]'].emit('submit');
+    expect(test.elements['[data-mint-feedback]'].textContent).toContain(code === 'INSUFFICIENT_FUNDS' ? 'balance on the mint network' : 'Restore the configured network/RPC');
+    expect(sends(test)).toEqual([]);
+    expect(test.storage.has(SUBMISSION_KEY)).toBe(false);
+    expect(test.requests.filter(request => request.path === '/api/mints/authorize')).toHaveLength(1);
+  });
+
+  it('keeps an uncertain send guarded even if its wallet error mentions funds', async () => {
+    const test = setup({ walletProved: true, walletRequest: method => { if (method === 'eth_sendTransaction') throw Object.assign(new Error('insufficient funds'), { code: 'INSUFFICIENT_FUNDS' }); } }); await flush();
+    await test.elements['[data-mint-form]'].emit('submit');
+    expect(test.elements['[data-mint-feedback]'].textContent).toContain('uncertain');
+    expect(test.elements['[data-submit-mint]'].disabled).toBe(true);
+    expect(test.storage.has(SUBMISSION_KEY)).toBe(true);
+  });
+
+  it.each(['assessment-blocked', 'assessment-abstained', 'preparation-interrupted'])('projects %s with only its safe operator reference and no retry', async errorCategory => {
+    const status = errorCategory === 'assessment-abstained' ? 'abstained' : 'failed';
+    const test = setup({ pending: true, walletProved: true, storage: intent(), api: path => path === ASSESSMENT_PATH ? { ...readyStatus, status, error: 'private-provider-payload', errorCategory, diagnosticReference: reference } : undefined }); await flush(); await tick(test, 1500);
+    expect(test.elements['[data-mint-feedback]'].textContent).toBe(assessmentFailureText({ errorCategory, diagnosticReference: reference }));
+    expect(test.elements['[data-mint-feedback]'].textContent).not.toContain('private-provider-payload');
+    expect(test.elements['[data-mint-feedback]'].textContent).toContain(reference);
+    expect(sends(test)).toEqual([]);
+    expect(test.requests.filter(request => request.init.method === 'POST')).toEqual([]);
+  });
+
+  it.each(['failed', 'abstained'])('reveals the configured support placeholder after a live %s result', async status => {
+    const errorCategory = status === 'abstained' ? 'assessment-abstained' : 'assessment-blocked';
+    const test = setup({ pending: true, support: true, walletProved: true,
+      api: path => path === ASSESSMENT_PATH ? { ...readyStatus, status, errorCategory, diagnosticReference: reference } : undefined });
+    expect(test.elements['[data-assessment-support]'].hidden).toBe(true);
+    await flush(); await tick(test, 1500);
+    expect(test.elements['[data-assessment-support]'].hidden).toBe(false);
+    expect(test.elements['[data-mint-feedback]'].textContent).toContain(reference);
+    expect(test.navigations).toEqual([]);
+    expect(test.requests.every(request => request.path.startsWith('/api/'))).toBe(true);
+    expect(test.requests.filter(request => request.init.method === 'POST')).toEqual([]);
+    expect(sends(test)).toEqual([]);
+  });
+
+  it('keeps support hidden when preparation succeeds and creates no unconfigured destination', async () => {
+    const configured = setup({ pending: true, support: true, walletProved: true });
+    await flush(); await tick(configured, 1500);
+    expect(configured.elements['[data-assessment-code]'].dataset.assessmentState).toBe('ready');
+    expect(configured.elements['[data-assessment-support]'].hidden).toBe(true);
+    const unconfigured = setup({ pending: true, api: path => path === ASSESSMENT_PATH ? { ...readyStatus, status: 'failed', errorCategory: 'assessment-blocked' } : undefined });
+    await flush(); await tick(unconfigured, 1500);
+    expect(unconfigured.elements['[data-assessment-support]']).toBeUndefined();
+  });
+
+  it.each([reference, 'legacy-1234567890abcdef12345678', 'r'.repeat(43), '/mint/private', '<script>alert(1)</script>'])('only exposes an allowed diagnostic reference: %s', async diagnostic => {
+    const test = setup({ entry: true, walletProved: true, api: path => path === '/api/assessments' ? { error: 'Do not expose raw backend details', code: 'ASSESSMENT_RETRY_BLOCKED', reference: diagnostic, category: 'assessment' } : undefined }); await flush();
+    await test.elements['[data-assessment-request]'].emit('submit');
+    const copy = test.elements['[data-request-feedback]'].textContent;
+    expect(copy).toContain('operator review');
+    expect(copy.includes(diagnostic)).toBe(diagnostic === reference || diagnostic.startsWith('legacy-'));
+    expect(copy).not.toContain('raw backend details');
+    expect(test.navigations).toEqual([]);
+    expect(test.requests.filter(request => request.path === '/api/assessments')).toHaveLength(1);
+  });
+
+  it('shows the known transaction independently of errors and labels only a verified network', async () => {
+    const test = setup({ walletProved: true, storage: savedSubmission(), api: path => path.startsWith('/api/mints/status/') ? { error: 'Unavailable' } : undefined }); await flush();
+    expect(test.elements['[data-mint-transaction]'].textContent).toContain(HASH);
+    expect(test.elements['[data-mint-network]'].hidden).toBe(true);
+    await tick(test, 100);
+    expect(test.elements['[data-mint-network]'].textContent).toBe('Verified mint network: chain 31337.');
+    expect(test.elements['[data-mint-network]'].hidden).toBe(false);
+    test.walletEvents.chainChanged('0x1');
+    expect(test.elements['[data-mint-network]'].hidden).toBe(true);
+    expect(test.elements['[data-mint-transaction]'].textContent).toContain(HASH);
+    expect(sends(test)).toEqual([]);
+  });
+
+  it('keeps a server-known pending hash visible even without browser submission storage', async () => {
+    const test = setup({ mintState: 'pending', mintHash: HASH, api: path => path.startsWith('/api/mints/status/') ? { state: 'pending', transactionHash: HASH } : undefined }); await flush(); await tick(test, 100);
+    expect(test.elements['[data-mint-transaction]'].hidden).toBe(false);
+    expect(test.elements['[data-mint-transaction]'].textContent).toContain(HASH);
+    expect(test.elements['[data-mint-network]'].hidden).toBe(true);
+    expect(test.requests.filter(request => request.init.method === 'POST')).toEqual([]);
+  });
+
+  it('does not restore a verified network label from a check that outlives a wallet change', async () => {
+    let release!: (block: unknown) => void;
+    const block = new Promise(resolve => { release = resolve; });
+    const test = setup({ walletProved: true, walletRequest: method => method === 'eth_getBlockByNumber' ? block : undefined }); await flush();
+    const submission = test.elements['[data-mint-form]'].emit('submit'); await flush();
+    test.walletEvents.chainChanged('0x1'); release({ number: NETWORK.blockNumber, hash: BLOCK_HASH }); await submission;
+    expect(test.elements['[data-mint-network]'].hidden).toBe(true);
+    expect(test.requests.filter(request => request.path === '/api/mints/authorize')).toEqual([]);
+    expect(sends(test)).toEqual([]);
+  });
+
+  it('does not promise automatic session recovery after the request must be reopened', async () => {
+    const test = setup({ api: path => path === '/api/session' ? { error: 'No session', code: 'SESSION_REQUIRED' } : undefined }); await flush();
+    expect(test.elements['[data-request-recovery]'].hidden).toBe(false);
+    expect(test.elements['[data-poll-feedback]'].textContent).toContain('Return to mint and reconnect');
+    expect(test.elements['[data-poll-feedback]'].textContent).not.toContain('automatically');
+    expect(test.scheduled).toEqual([]);
+  });
+});
+
+describe('request expiry and bounded read recovery', () => {
+  it.each([false, true])('expires an idle request while pending=%s without posting, signing, or losing its saved-result return', async pending => {
+    let now = Date.now();
+    const test = setup({ pending, now: () => now, serverNow: now, expiresAt: now + 1000, walletProved: true, storage: pending ? intent() : undefined });
+    await flush(); now += 1000; await tick(test, 1000);
+    expect(test.elements['[data-assessment-code]'].dataset.mintUiPhase).toBe('expired');
+    expect(test.elements['[data-request-recovery]'].hidden).toBe(false);
+    expect(test.elements['[data-request-recovery-message]'].textContent).toContain('saved assessment and artwork will be reused');
+    expect(test.elements['[data-submit-mint]'].disabled).toBe(true);
+    expect(test.storage.has(INTENT_KEY)).toBe(false);
+    await test.elements['[data-mint-form]'].emit('submit');
+    await test.elements['[data-connect-wallet]'].emit('click');
+    expect(test.requests.filter(request => request.init.method === 'POST')).toEqual([]);
+    expect(test.walletCalls).toEqual([]);
+  });
+
+  it('honors server-observed expiry, including while assessment is still pending', async () => {
+    const test = setup({ pending: true, walletProved: true, storage: intent(), api: path => path === ASSESSMENT_PATH ? { ...readyStatus, status: 'pending', requestExpired: true } : undefined });
+    await flush(); await tick(test, 1500);
+    expect(test.elements['[data-assessment-code]'].dataset.requestExpired).toBe('true');
+    expect(test.elements['[data-assessment-status]'].textContent).toContain('expired');
+    expect(test.storage.has(INTENT_KEY)).toBe(false);
+    expect(sends(test)).toEqual([]);
+    expect(test.requests.every(request => !request.init.method)).toBe(true);
+  });
+
+  it('uses the server clock for a request deadline despite browser clock skew', async () => {
+    let now = Date.now() + 3_600_000;
+    const serverNow = now - 3_600_000;
+    const test = setup({ now: () => now, serverNow, expiresAt: serverNow + 5000, walletProved: true }); await flush();
+    expect(test.elements['[data-submit-mint]'].disabled).toBe(false);
+    now += 5000; await tick(test, 5000);
+    expect(test.elements['[data-assessment-status]'].textContent).toContain('expired');
+  });
+
+  it('invalidates an idle wallet proof without creating a new challenge or assessment', async () => {
+    let now = Date.now();
+    const test = setup({ now: () => now, serverNow: now, proofExpiresAt: now + 1000, walletProved: true }); await flush();
+    now += 1000; await tick(test, 1000);
+    expect(test.elements['[data-assessment-code]'].dataset.mintUiPhase).toBe('wallet-required');
+    expect(test.elements['[data-submit-mint]'].disabled).toBe(true);
+    expect(test.requests.filter(request => request.init.method === 'POST')).toEqual([]);
+    expect(test.walletCalls).toEqual([]);
+  });
+
+  it('expires a pending one-shot intent without silently renewing it', async () => {
+    let now = Date.now();
+    const test = setup({ pending: true, walletProved: true, now: () => now, storage: intent(undefined, { expiresAt: now + 1000 }) }); await flush();
+    now += 1000; await tick(test, 1000); await tick(test, 1500);
+    expect(test.storage.has(INTENT_KEY)).toBe(false);
+    expect(sends(test)).toEqual([]);
+    expect(test.elements['[data-assessment-code]'].dataset.mintUiPhase).toBe('ready');
+  });
+
+  it('blocks a late authorization when the request expires during preparation', async () => {
+    let now = Date.now(), release!: () => void;
+    const wait = new Promise<void>(resolve => { release = resolve; });
+    const test = setup({ walletProved: true, now: () => now, serverNow: now, expiresAt: now + 1000, api: path => path === '/api/mints/authorize' ? wait : undefined }); await flush();
+    const submission = test.elements['[data-mint-form]'].emit('submit'); await flush();
+    now += 1000; await tick(test, 1000); release(); await submission;
+    expect(sends(test)).toEqual([]);
+    expect(test.elements['[data-assessment-code]'].dataset.mintUiPhase).toBe('expired');
+    expect(test.storage.has(SUBMISSION_KEY)).toBe(false);
+  });
+
+  it.each(['hash', 'reject', 'unknown'])('keeps the wallet approval authoritative across request expiry: %s', async outcome => {
+    let now = Date.now(), resolve!: (value: unknown) => void, reject!: (error: unknown) => void;
+    const approval = new Promise((yes, no) => { resolve = yes; reject = no; });
+    const test = setup({ walletProved: true, now: () => now, serverNow: now, expiresAt: now + 1000, walletRequest: method => method === 'eth_sendTransaction' ? approval : undefined }); await flush();
+    const submission = test.elements['[data-mint-form]'].emit('submit'); await flush();
+    expect(test.storage.has(SUBMISSION_KEY)).toBe(true);
+    now += 1000; await tick(test, 1000);
+    expect(test.elements['[data-assessment-code]'].dataset.mintUiPhase).toBe('wallet-approval');
+    expect(test.elements['[data-request-recovery]'].hidden).toBe(true);
+    if (outcome === 'hash') resolve(HASH);
+    else reject(Object.assign(new Error('Wallet closed'), outcome === 'reject' ? { code: 4001 } : {}));
+    await submission;
+    expect(test.elements['[data-assessment-code]'].dataset.mintUiPhase).toBe(outcome === 'hash' ? 'submitted' : outcome === 'unknown' ? 'uncertain' : 'expired');
+    expect(test.storage.has(SUBMISSION_KEY)).toBe(outcome !== 'reject');
+    await test.elements['[data-mint-form]'].emit('submit');
+    expect(sends(test)).toHaveLength(1);
+  });
+
+  it.each(['hash', 'unknown', 'server-pending'])('continues reconciliation for an already expired request with %s', async kind => {
+    const test = setup({ expired: true, walletProved: true, storage: kind === 'hash' ? savedSubmission() : kind === 'unknown' ? new Map([[SUBMISSION_KEY, JSON.stringify({ uncertain: true, wallet: WALLET })]]) : undefined,
+      mintState: kind === 'server-pending' ? 'pending' : 'unminted', api: path => path.startsWith('/api/mints/status/') ? { state: 'minted' } : undefined }); await flush();
+    expect(test.elements['[data-request-recovery]'].hidden).toBe(true);
+    await tick(test, 100);
+    expect(test.navigations).toEqual(['/signatures/agent_art']);
+    expect(test.requests.filter(request => request.init.method === 'POST')).toEqual([]);
+    expect(sends(test)).toEqual([]);
+  });
+
+  it('returns an expired reverted transaction to request recovery, never Continue mint', async () => {
+    const test = setup({ walletProved: true, expired: true, storage: savedSubmission(), api: path => path.startsWith('/api/mints/status/') ? { state: 'unminted' } : undefined,
+      walletRequest: method => method === 'eth_getTransactionByHash' ? { ...PENDING_TRANSACTION, blockNumber: RECEIPT.blockNumber } : method === 'eth_getTransactionReceipt' ? RECEIPT : undefined }); await flush(); await tick(test, 100);
+    expect(test.storage.has(SUBMISSION_KEY)).toBe(false);
+    expect(test.elements['[data-submit-mint]'].disabled).toBe(true);
+    expect(test.elements['[data-request-recovery]'].hidden).toBe(false);
+    expect(test.elements['[data-mint-feedback]'].textContent).toContain('Return to mint');
+    expect(test.elements['[data-mint-feedback]'].textContent).not.toContain('Continue mint');
+  });
+
+  it.each(['fetch', 'body'])('reconciles a saved transaction even when the session %s never completes', async hang => {
+    const never = new Promise(() => {});
+    const test = setup({ storage: savedSubmission(), api: path => path === '/api/session' && hang === 'fetch' ? never : path.startsWith('/api/mints/status/') ? { state: 'minted' } : undefined,
+      response: path => path === '/api/session' && hang === 'body' ? { ok: true, json: () => never } : undefined }); await flush();
+    expect(test.elements['[data-submit-mint]'].disabled).toBe(true);
+    await tick(test, 100);
+    expect(test.navigations).toEqual(['/signatures/agent_art']);
+    expect(sends(test)).toEqual([]);
+    expect(test.requests.filter(request => request.init.method === 'POST')).toEqual([]);
+  });
+
+  it.each(['fetch', 'body'])('bounds a hung session %s and recovers through reads without reviving automatic mint intent', async hang => {
+    let failed = true, release!: (value: unknown) => void;
+    const pending = new Promise(resolve => { release = resolve; });
+    const test = setup({ walletProved: true, storage: intent(), api: path => path === '/api/session' && failed && hang === 'fetch' ? pending : undefined,
+      response: path => path === '/api/session' && failed && hang === 'body' ? { ok: true, json: () => pending } : undefined }); await flush();
+    await tick(test, 8000); await flush();
+    expect(test.elements['[data-assessment-code]'].dataset.mintUiPhase).toBe('read-unavailable');
+    expect(test.elements['[data-poll-feedback]'].textContent).toContain('choose Check progress to check now');
+    expect(test.elements['[data-poll-feedback]'].textContent).not.toContain('reload this page to check now');
+    expect(test.requests[0].init.signal.aborted).toBe(true);
+    expect(test.storage.has(INTENT_KEY)).toBe(false);
+    failed = false; await tick(test, 5000); await flush();
+    expect(test.elements['[data-assessment-code]'].dataset.mintUiPhase).toBe('ready');
+    expect(test.elements['[data-poll-feedback]'].textContent).toBe('');
+    release({ ...test.state, wallet: OTHER }); await flush();
+    expect(test.elements['[data-wallet-label]'].textContent).toBe(WALLET);
+    expect(test.requests.filter(request => request.init.method === 'POST')).toEqual([]);
+    expect(test.walletCalls).toEqual([]);
+  });
+
+  it('keeps reload guidance on the entry page, which has no Check progress control', async () => {
+    let failing = true;
+    const test = setup({ entry: true, api: path => path === '/api/session' && failing ? new Promise(() => {}) : undefined }); await flush();
+    await tick(test, 8000); await flush();
+    expect(test.elements['[data-check-progress]']).toBeUndefined();
+    expect(test.elements['[data-request-feedback]'].textContent).toContain('reload this page to check now');
+    expect(test.elements['[data-request-feedback]'].textContent).not.toContain('choose Check progress');
+    failing = false; await tick(test, 5000);
+    expect(test.elements['[data-request-feedback]'].textContent).toBe('');
+    expect(test.requests.filter(request => request.init.method === 'POST')).toEqual([]);
+  });
+
+  it.each(['failed', 'abstained'])('preserves a server-rendered %s assessment diagnostic across boot failure and recovery', async status => {
+    let failing = true;
+    const test = setup({ api: path => path === '/api/session' && failing ? { error: 'Session temporarily unavailable' } : undefined });
+    test.elements['[data-assessment-code]'].dataset.assessmentState = status;
+    const copy = assessmentFailureText({ errorCategory: status === 'abstained' ? 'assessment-abstained' : 'assessment-blocked', diagnosticReference: '12345678-1234-4123-8123-123456789abc' });
+    test.elements['[data-mint-feedback]'].textContent = copy;
+    await flush();
+    expect(test.elements['[data-mint-feedback]'].textContent).toBe(copy);
+    expect(test.elements['[data-poll-feedback]'].textContent).toContain('Session temporarily unavailable');
+    failing = false; await tick(test, 5000);
+    expect(test.elements['[data-mint-feedback]'].textContent).toBe(copy);
+    expect(test.elements['[data-poll-feedback]'].textContent).toBe('');
+    expect(test.elements['[data-assessment-code]'].dataset.mintUiPhase).toBe(status);
+    expect(test.requests.filter(request => request.init.method === 'POST')).toEqual([]);
+  });
+
+  it('does not clear newer transaction feedback when session recovery completes', async () => {
+    let failing = true;
+    const test = setup({ mintState: 'pending', mintHash: HASH, api: path => path === '/api/session' && failing ? { error: 'Session temporarily unavailable' } : undefined }); await flush();
+    test.elements['[data-poll-feedback]'].textContent = 'Canonical confirmation is still unavailable.';
+    failing = false; await tick(test, 5000);
+    expect(test.elements['[data-poll-feedback]'].textContent).toBe('Canonical confirmation is still unavailable.');
+    expect(test.elements['[data-submit-mint]'].disabled).toBe(true);
+    expect(test.elements['[data-mint-transaction]'].textContent).toContain(HASH);
+    expect(test.requests.filter(request => request.init.method === 'POST')).toEqual([]);
+  });
+
+  it.each(['fetch', 'body'])('bounds a hung assessment %s and ignores its late result after a successful retry', async hang => {
+    let first = true, release!: (value: unknown) => void;
+    const pending = new Promise(resolve => { release = resolve; });
+    const test = setup({ pending: true, walletProved: true, storage: intent(),
+      api: path => path === ASSESSMENT_PATH && first && hang === 'fetch' ? pending : undefined,
+      response: path => path === ASSESSMENT_PATH && first && hang === 'body' ? { ok: true, json: () => pending } : undefined }); await flush();
+    const polling = tick(test, 1500); await flush(); await tick(test, 8000); await polling;
+    expect(test.elements['[data-check-progress]'].hidden).toBe(false);
+    expect(test.requests.find(request => request.path === ASSESSMENT_PATH)!.init.signal.aborted).toBe(true);
+    first = false; await tick(test, 5000);
+    expect(test.elements['[data-assessment-code]'].dataset.mintUiPhase).toBe('ready');
+    release({ ...readyStatus, mint: { state: 'minted' } }); await flush();
+    expect(test.navigations).toEqual([]);
+    expect(sends(test)).toEqual([]);
+    expect(test.requests.filter(request => request.init.method === 'POST')).toEqual([]);
+  });
+
+  it('caps assessment retry delay and gives an explicit read-only recovery action', async () => {
+    let failing = true;
+    const test = setup({ pending: true, walletProved: true, storage: intent(), api: path => path === ASSESSMENT_PATH && failing ? { error: 'Unavailable' } : undefined }); await flush(); await tick(test, 1500);
+    for (const delay of [5000, 10000, 20000, 30000, 30000]) await tick(test, delay);
+    expect(test.scheduled.filter(timer => timer.delay === 30000)).toHaveLength(1);
+    failing = false; await test.elements['[data-check-progress]'].emit('click');
+    expect(test.elements['[data-assessment-code]'].dataset.mintUiPhase).toBe('ready');
+    expect(test.storage.has(INTENT_KEY)).toBe(false);
+    expect(test.requests.filter(request => request.init.method === 'POST')).toEqual([]);
+    expect(test.walletCalls).toEqual([]);
+  });
+
+  it('discards a response that arrives after local request expiry', async () => {
+    let now = Date.now(), release!: (value: unknown) => void;
+    const pending = new Promise(resolve => { release = resolve; });
+    const test = setup({ pending: true, walletProved: true, storage: intent(), now: () => now, serverNow: now, expiresAt: now + 2000, api: path => path === ASSESSMENT_PATH ? pending : undefined }); await flush();
+    const polling = tick(test, 1500); await flush(); now += 2000; await tick(test, 2000);
+    release({ ...readyStatus, requestExpired: false }); await polling;
+    expect(test.elements['[data-assessment-code]'].dataset.mintUiPhase).toBe('expired');
+    expect(sends(test)).toEqual([]);
+    expect(test.storage.has(INTENT_KEY)).toBe(false);
+  });
+
+  it.each(['session', 'assessment', 'confirmation'])('cancels a pending %s read on pagehide and ignores its late body', async kind => {
+    let release!: (value: unknown) => void;
+    const pending = new Promise(resolve => { release = resolve; });
+    const path = kind === 'session' ? '/api/session' : kind === 'assessment' ? ASSESSMENT_PATH : '/api/mints/status/rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr';
+    const test = setup({ pending: kind === 'assessment', storage: kind === 'confirmation' ? savedSubmission() : intent(), walletProved: true,
+      response: url => url === path ? { ok: true, json: () => pending } : undefined }); await flush();
+    const polling = kind === 'session' ? Promise.resolve() : tick(test, kind === 'assessment' ? 1500 : 100); await flush();
+    const before = test.elements['[data-assessment-status]'].textContent;
+    test.globalEvents.pagehide({}); await flush();
+    release(kind === 'session' ? test.state : kind === 'assessment' ? { ...readyStatus, mint: { state: 'minted' } } : { state: 'minted' }); await polling; await flush();
+    expect(test.requests.find(request => request.path === path)!.init.signal.aborted).toBe(true);
+    expect(test.elements['[data-assessment-status]'].textContent).toBe(before);
+    expect(test.scheduled).toEqual([]);
+    expect(test.navigations).toEqual([]);
+    expect(sends(test)).toEqual([]);
+  });
+
+  it('does not restore a stale verified wallet when accounts change during session boot', async () => {
+    let release!: (value: unknown) => void;
+    const pending = new Promise(resolve => { release = resolve; });
+    const test = setup({ walletProved: true, storage: intent(), api: path => path === '/api/session' ? pending : undefined }); await flush();
+    test.walletEvents.accountsChanged([OTHER]); release(test.state); await flush();
+    expect(test.elements['[data-assessment-code]'].dataset.mintUiPhase).toBe('wallet-required');
+    expect(test.elements['[data-submit-mint]'].disabled).toBe(true);
+    expect(sends(test)).toEqual([]);
+  });
+});
 
 describe('submitted mint diagnostics', () => {
   it('detects a wallet actually broadcasting nonce 411 after receiving nonce 1 and never submits a duplicate', async () => {
@@ -331,8 +761,7 @@ describe('submitted mint diagnostics', () => {
     await test.scheduled.shift()!(); await flush(); await submission;
     expect(test.elements['[data-mint-feedback]'].textContent).toContain('Transaction nonce 411');
     expect(test.elements['[data-submit-mint]'].disabled).toBe(true);
-    const polling = test.scheduled.shift()!(); await flush();
-    await test.scheduled.shift()!(); await flush(); await polling;
+    await test.scheduled.shift()!(); await flush();
     expect(test.navigations).toEqual(['/signatures/agent_art']); expect(sends(test)).toHaveLength(1);
   });
   it('times out a hanging status read, inspects the existing transaction, and confirms on a later poll', async () => {
@@ -509,7 +938,7 @@ describe('preview and mint browser lifecycle', () => {
   });
   it('continues an explicit one-shot intent after assessment, without a second art confirmation', async () => {
     const test = setup({ pending: true, walletProved: true, storage: intent() }); await flush();
-    expect(sends(test)).toEqual([]); expect(test.scheduled).toHaveLength(1);
+    expect(sends(test)).toEqual([]); expect(test.scheduled.filter(timer => timer.delay === 1500)).toHaveLength(1);
     await test.scheduled.shift()!();
     expect(sends(test)).toHaveLength(1);
     expect(test.requests.find(r => r.path === '/api/mints/authorize')?.body).toEqual({ code: 'rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr', consent: true });
@@ -548,9 +977,12 @@ describe('preview and mint browser lifecycle', () => {
     const test = setup({ walletProved: true, api: path => path === '/api/mints/report' ? { error: 'Temporary failure' } : undefined }); await flush();
     await test.elements['[data-mint-form]'].emit('submit');
     expect(test.navigations).toEqual([]); expect(test.storage.get('sg-open:submission:rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr')).toContain(HASH);
-    const refreshed = setup({ walletProved: true, storage: test.storage, api: path => path === '/api/mints/status/rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr' ? { state: 'minted' } : undefined }); await flush();
+    let confirmed = false;
+    const refreshed = setup({ walletProved: true, storage: test.storage, api: path => path === '/api/mints/status/rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr' ? { state: confirmed ? 'minted' : 'pending' } : undefined }); await flush();
     await refreshed.scheduled.shift()!();
     expect(refreshed.requests.find(r => r.path === '/api/mints/report')?.body).toEqual({ code: 'rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr', transactionHash: HASH });
+    expect(refreshed.navigations).toEqual([]);
+    confirmed = true; await refreshed.scheduled.shift()!();
     expect(refreshed.navigations).toEqual(['/signatures/agent_art']); expect(sends(refreshed)).toEqual([]);
   });
   it('permits explicit continuation after a matching reverted receipt without reassessment', async () => {
@@ -579,9 +1011,11 @@ describe('preview and mint browser lifecycle', () => {
     const test = setup({ entry: true, walletProved: true, accounts: () => [OTHER] }); await flush();
     await test.elements['[data-assessment-request]'].emit('submit'); expect(test.requests.some(r => r.path === '/api/assessments')).toBe(false);
   });
-  it('stops on failed assessment without requesting a wallet transaction', async () => {
-    const test = setup({ pending: true, walletProved: true, storage: intent(), api: path => path === '/api/assessments/rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr' ? { handle: 'agent_art', tokenId: '123', status: 'failed', error: 'No usable public content.' } : undefined }); await flush();
+  it.each(['failed', 'abstained'])('stops on %s assessment without requesting a wallet transaction', async status => {
+    const test = setup({ pending: true, walletProved: true, storage: intent(), api: path => path === '/api/assessments/rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr' ? { handle: 'agent_art', tokenId: '123', status, error: 'No usable public content.' } : undefined }); await flush();
     await test.scheduled.shift()!(); expect(sends(test)).toEqual([]); expect(test.elements['[data-mint-feedback]'].textContent).toContain('No usable public content');
+    expect(test.elements['[data-assessment-code]'].dataset.mintUiPhase).toBe(status);
+    expect(test.storage.has(INTENT_KEY)).toBe(false);
   });
   it('connects local DEV wallet without minting and follows only explicit local intent', async () => {
     const entry = setup({ entry: true, local: true }); await flush();
@@ -629,7 +1063,7 @@ describe('preview and mint browser lifecycle', () => {
     await test.elements['[data-dev-wallet]'].emit('click'); await test.elements['[data-dev-mint]'].emit('click');
     expect([...test.storage.keys()].some(key => key.includes('submission:'))).toBe(false);
     expect(test.elements['[data-mint-feedback]'].textContent).toContain(code === 'WALLET_PROOF_REQUIRED' ? 'Connect and verify' : 'Network or wallet unavailable');
-    expect(test.elements['[data-dev-mint]'].disabled).toBe(false);
+    expect(test.elements['[data-dev-mint]'].disabled).toBe(code === 'WALLET_PROOF_REQUIRED');
     expect(test.walletCalls).toEqual([]);
   });
   it('keeps raw server errors meaningful and disposes polling/listeners on navigation', async () => {

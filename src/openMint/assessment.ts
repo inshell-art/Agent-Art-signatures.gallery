@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { encodeAbiParameters, keccak256, type Hex } from "viem";
 import { canonicalHandle, isMbti, LEGACY_MAPPING_VERSION, LEGACY_RENDERER_VERSION, POLICY_VERSION, RENDERER_VERSION, seedForMbti, type MBTI } from "./identity.js";
 import { validateXIdentity, type XIdentityResolver, type XIdentitySnapshot } from "./xIdentity.js";
+import type { AssessmentExecution } from "./assessmentOperations.js";
 
 export type AssessmentProvenance = "grok" | "development-fixture";
 interface AssessmentBase {
@@ -35,7 +36,18 @@ export type UnsignedAssessment = Omit<LegacyAssessment, "digest"> | Omit<NativeM
 export interface AssessmentProvider {
   readonly provenance: AssessmentProvenance;
   readonly model: string;
-  assess(handle: string, identity?: XIdentitySnapshot): Promise<ProviderAssessment>;
+  assess(handle: string, identity?: XIdentitySnapshot, execution?: AssessmentExecution): Promise<ProviderAssessment | ProviderAbstention>;
+}
+export interface ProviderAbstention {
+  readonly kind: "abstained";
+  readonly reason: "insufficient-evidence" | "subject-unavailable" | "provider-refusal";
+  readonly handle: string;
+  readonly model: string;
+  readonly providerResponseId: string;
+  readonly xUserId?: string;
+}
+export class AssessmentAbstainedError extends Error {
+  constructor(readonly reason: ProviderAbstention["reason"]) { super("Grok did not return an assessment. No type was invented and no retry will be automatic."); }
 }
 export interface ProviderAssessment {
   readonly handle: string;
@@ -147,27 +159,30 @@ function validateProviderMetadata(model: unknown, responseId: unknown, provenanc
 
 /** One successful assessment becomes canonical. There is deliberately no public completion/import API. */
 export class AssessmentCoordinator {
-  readonly #provider: AssessmentProvider;
+  readonly #provider?: AssessmentProvider;
   readonly #repository: AssessmentRepository;
   readonly #now: () => Date;
   readonly #pending = new Map<string, Promise<Assessment>>();
   readonly #success = new Map<string, Assessment>();
   readonly #provenance: AssessmentProvenance;
-  readonly #model: string;
+  readonly #model?: string;
   readonly #identityResolver?: XIdentityResolver;
   readonly #identities = new Map<string, XIdentitySnapshot>();
 
-  constructor(options: { provider: AssessmentProvider; repository: AssessmentRepository; identityResolver?: XIdentityResolver; now?: () => Date }) {
+  constructor(options: { provider?: AssessmentProvider; expectedProvenance?: AssessmentProvenance; repository: AssessmentRepository; identityResolver?: XIdentityResolver; now?: () => Date }) {
     this.#provider = options.provider;
     this.#repository = options.repository;
     this.#now = options.now ?? (() => new Date());
-    this.#provenance = options.provider.provenance;
-    this.#model = options.provider.model;
+    const provenance = options.expectedProvenance ?? options.provider?.provenance;
+    if (!provenance || (options.provider && options.provider.provenance !== provenance)) throw new Error("Explicit assessment provenance is required and must match its provider.");
+    this.#provenance = provenance;
+    this.#model = options.provider?.model;
     this.#identityResolver = options.identityResolver;
     if (!["grok", "development-fixture"].includes(this.#provenance)) throw new Error("Unsupported assessment provider.");
     if (this.#identityResolver && (this.#identityResolver.provenance === "development-fixture") !== (this.#provenance === "development-fixture")) throw new Error("Assessment resolver provenance mismatch.");
   }
   get identityProvenance(): XIdentitySnapshot["provenance"] | undefined { return this.#identityResolver?.provenance; }
+  get generationConfigured(): boolean { return !!this.#provider; }
 
   async get(value: unknown): Promise<Assessment | undefined> {
     const handle = canonicalHandle(value);
@@ -179,24 +194,25 @@ export class AssessmentCoordinator {
     return saved;
   }
 
-  assess(value: unknown): Promise<Assessment> {
+  assess(value: unknown, execution?: AssessmentExecution): Promise<Assessment> {
     const handle = canonicalHandle(value);
     const pending = this.#pending.get(handle);
     if (pending) return pending;
-    const operation = this.#assess(handle).finally(() => { this.#pending.delete(handle); });
+    const operation = this.#assess(handle, execution).finally(() => { this.#pending.delete(handle); });
     this.#pending.set(handle, operation);
     return operation;
   }
 
-  async #assess(handle: string): Promise<Assessment> {
+  async #assess(handle: string, execution?: AssessmentExecution): Promise<Assessment> {
     const existing = await this.get(handle);
     if (existing) return existing;
-    const assessed = this.#unsaved.get(handle) ?? await this.#invoke(handle);
+    const assessed = this.#unsaved.get(handle) ?? await this.#invoke(handle, execution);
     try {
       const saved = validateAssessment(await this.#repository.putIfAbsent(assessed));
       if (saved.handle !== handle || saved.provenance !== this.#provenance) throw new Error("Assessment storage provenance or handle mismatch.");
       this.#success.set(handle, saved);
       this.#unsaved.delete(handle);
+      await execution?.assessmentPersisted(saved);
       return saved;
     } catch (error) {
       // Retry persistence, never a second paid assessment, after a successful provider result.
@@ -205,14 +221,27 @@ export class AssessmentCoordinator {
     }
   }
 
-  async #invoke(handle: string): Promise<Assessment> {
+  async #invoke(handle: string, execution?: AssessmentExecution): Promise<Assessment> {
+    if (!this.#provider) throw new Error("Assessment generation is not configured; saved results remain available.");
     let xIdentity = this.#identities.get(handle);
     if (!xIdentity && this.#identityResolver) {
-      xIdentity = validateXIdentity(await this.#identityResolver.resolve(handle), handle);
+      await execution?.beforeDispatch("x-identity");
+      xIdentity = validateXIdentity(await this.#identityResolver.resolve(handle, execution), handle);
       if (xIdentity.provenance !== this.#identityResolver.provenance) throw new Error("X resolver provenance mismatch.");
       this.#identities.set(handle, xIdentity);
+      await execution?.identityVerified(xIdentity);
     }
-    const result = exactObject(await (xIdentity ? this.#provider.assess(handle, xIdentity) : this.#provider.assess(handle)), xIdentity ? [...PROVIDER_FIELDS, "xUserId"] : PROVIDER_FIELDS, "provider assessment");
+    await execution?.beforeDispatch("grok");
+    const raw = await (execution ? this.#provider.assess(handle, xIdentity, execution) : xIdentity ? this.#provider.assess(handle, xIdentity) : this.#provider.assess(handle));
+    if (raw && "kind" in raw && raw.kind === "abstained") {
+      const abstention = exactObject(raw, ["kind", "reason", "handle", "model", "providerResponseId", ...(xIdentity ? ["xUserId"] : [])], "provider abstention");
+      if (abstention.handle !== handle || abstention.model !== this.#model || !["insufficient-evidence", "subject-unavailable", "provider-refusal"].includes(String(abstention.reason))
+        || (xIdentity && abstention.xUserId !== xIdentity.userId)) throw new Error("Invalid provider abstention identity or reason.");
+      validateProviderMetadata(abstention.model, abstention.providerResponseId, this.#provenance);
+      await execution?.recordOutcome({ kind: "abstained", reason: raw.reason });
+      throw new AssessmentAbstainedError(raw.reason);
+    }
+    const result = exactObject(raw, xIdentity ? [...PROVIDER_FIELDS, "xUserId"] : PROVIDER_FIELDS, "provider assessment");
     if (result.handle !== handle || !isMbti(result.mbti) || result.model !== this.#model) throw new Error("Provider assessment identity, type, or model mismatch.");
     if (xIdentity && result.xUserId !== xIdentity.userId) throw new Error("Provider assessment X account mismatch.");
     validateProviderMetadata(result.model, result.providerResponseId, this.#provenance);
@@ -220,11 +249,13 @@ export class AssessmentCoordinator {
     const unsigned: Omit<NativeMbtiAssessment, "digest"> = {
       id: randomUUID(), handle, mbti: result.mbti,
       rendererVersion: RENDERER_VERSION, policyVersion: POLICY_VERSION,
-      model: this.#model, providerResponseId: result.providerResponseId as string, sourceUrls,
+      model: this.#model!, providerResponseId: result.providerResponseId as string, sourceUrls,
       createdAt: this.#now().toISOString(), provenance: this.#provenance,
       ...(xIdentity ? { xIdentity } : {}),
     };
-    return validateAssessment({ ...unsigned, digest: assessmentDigest(unsigned) });
+    const assessed = validateAssessment({ ...unsigned, digest: assessmentDigest(unsigned) });
+    await execution?.recordOutcome({ kind: "accepted" });
+    return assessed;
   }
 
   readonly #unsaved = new Map<string, Assessment>();

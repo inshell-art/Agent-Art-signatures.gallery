@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { privateKeyToAccount } from "viem/accounts";
 import * as ecdsa from "../v2/core/ethereumSignature.js";
-import { fields, isCode, opaqueCode, PublicError, WalletSessions } from "./security.js";
+import { fields, isCode, opaqueCode, PublicError, publicErrorDetails, isDiagnosticReference, WalletSessions } from "./security.js";
 
 const alice = privateKeyToAccount(`0x${"1".repeat(64)}`);
 const bob = privateKeyToAccount(`0x${"2".repeat(64)}`);
@@ -10,6 +10,27 @@ const initialTime = 1_800_000_000_000;
 afterEach(() => vi.restoreAllMocks());
 
 describe("open mint session and input boundary", () => {
+  it("allowlists diagnostic metadata without reflecting capability codes or arbitrary provider details", () => {
+    const reference = "d63d39b6-fb45-45aa-bc27-914d4801cfd3";
+    const reservedUntil = "2026-09-19T10:00:00.000Z";
+    expect(publicErrorDetails({ reference, reservedUntil, category: "reservation", secret: "private" } as never))
+      .toEqual({ reference, reservedUntil, category: "reservation" });
+    expect(publicErrorDetails(undefined)).toEqual({});
+    expect(publicErrorDetails(null as never)).toEqual({});
+    for (const value of [opaqueCode(), "not-a-reference", reference.toUpperCase(), "<script>", "", 1]) {
+      expect(isDiagnosticReference(value)).toBe(false);
+      expect(publicErrorDetails({ reference: value } as never)).toEqual({});
+    }
+    const legacy = `legacy-${"a".repeat(24)}`;
+    expect(publicErrorDetails({ reference: legacy })).toEqual({ reference: legacy });
+    for (const reservedUntil of ["invalid", "2026-09-19", "2026-09-19T10:00:00Z", "2026-02-31T00:00:00.000Z", 42]) {
+      expect(publicErrorDetails({ reservedUntil, category: "private-dump" } as never)).toEqual({});
+    }
+    for (const category of ["reservation", "assessment", "wallet", "network", "temporary"] as const) {
+      expect(publicErrorDetails({ category })).toEqual({ category });
+    }
+  });
+
   it("pairs exact cookies with their original session and csrf token", () => {
     const sessions = new WalletSessions(origin, 31337, () => initialTime);
     const first = sessions.session();

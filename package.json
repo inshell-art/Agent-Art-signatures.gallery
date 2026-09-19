@@ -16,6 +16,7 @@
     "open:contract:build": "cd contracts && forge build --offline",
     "test:open": "vitest run src/openMint",
     "open:rehearsal": "node scripts/open-mint-rehearsal.mjs",
+    "open:preflight": "node --env-file-if-exists=.env.local --import tsx scripts/open-mint-preflight.mjs",
     "legacy:dev": "tsx src/legacyMain.ts",
     "start": "node dist/main.js",
     "pretest": "npm run renderer:verify",

@@ -837,7 +837,7 @@ describe("open mint pages", () => {
     expect(OPEN_MINT_CSS).not.toMatch(/(?:\.mbti-link|\.artwork-status)[^{]*\{[^}]*\b(?:padding|border-radius):/);
   });
 
-  it.each(["pending", "ready", "failed"] as const)("withholds artwork and metadata for %s assessments until confirmed mint", status => {
+  it.each(["pending", "ready", "failed", "abstained"] as const)("withholds artwork and metadata for %s assessments until confirmed mint", status => {
     const html = assessmentPage({ ...ready, status });
     const main = html.match(/<main>([\s\S]*?)<\/main>/)![1]!;
     expect(main).toContain('data-assessment-handle="agent_art"');
@@ -875,10 +875,86 @@ describe("open mint pages", () => {
     expect(assessmentPage({ ...ready, canMint: false, requestExpired: true })).toContain("This mint request has expired.");
   });
 
+  it.each(["pending", "ready"] as const)("exposes only safe deadlines and a preserved-spelling return for %s expiry", status => {
+    const model = { ...ready, status, requestExpiresAt: 1_800_000_900_000, walletProofExpiresAt: 1_800_000_600_000, serverNow: 1_800_000_000_000 };
+    const active = assessmentPage(model);
+    expect(active).toContain('data-request-expires-at="1800000900000"');
+    expect(active).toContain('data-wallet-proof-expires-at="1800000600000"');
+    expect(active).toContain('data-server-now="1800000000000"');
+    expect(active).toContain('<div data-request-recovery hidden>');
+    expect(active).toContain('data-check-progress hidden');
+    expect(active).toContain('href="/mint?handle=Agent_Art"><span>Return to mint');
+    const expired = assessmentPage({ ...model, canMint: false, requestExpired: true });
+    expect(expired).toContain('data-request-expired="true"');
+    expect(expired).toContain('<div data-request-recovery>');
+    expect(expired).toContain('Any saved assessment and artwork will be reused.');
+    expect(expired).not.toMatch(/data-submit-mint|data-connect-wallet|\/art\/hidden|secret-svg-digest|secret-png-digest/);
+  });
+
+  it("keeps expired submitted requests in confirmation instead of offering a new mint", () => {
+    const html = assessmentPage({ ...ready, requestExpired: true, canMint: false, mint: { state: "pending" } });
+    expect(html).toContain('Mint submitted. Waiting to reveal your signature…');
+    expect(html).toContain('<div data-request-recovery hidden>');
+    expect(html).not.toContain('This mint request has expired.');
+    expect(html).not.toMatch(/data-submit-mint|data-connect-wallet/);
+  });
+
   it("shows truthful assessment failure without a retry or reroll promise", () => {
     const html = assessmentPage({ ...ready, status: "failed", canMint: false, error: "The provider response is uncertain. Contact support." });
     expect(html).toContain('The provider response is uncertain. Contact support.');
     expect(html).not.toMatch(/Try again|another assessment|data-mint-form|data-connect-wallet/);
+    expect(html).not.toMatch(/Request help|data-assessment-support/);
+  });
+
+  it.each(["failed", "abstained"] as const)("shows an optional static support link for %s, separate from diagnostics", status => {
+    const reference = "12345678-1234-4123-8123-123456789abc";
+    const html = assessmentPage({ ...ready, status, canMint: false, diagnosticReference: reference,
+      errorCategory: status === "abstained" ? "assessment-abstained" : "assessment-blocked" }, { supportUrl: "https://help.example.test/request?source=mint" });
+    const support = /<div class="auth-actions" data-assessment-support>(.*?)<\/div>/.exec(html)?.[1];
+    expect(support).toContain('href="https://help.example.test/request?source=mint"');
+    expect(support).toContain('referrerpolicy="no-referrer"');
+    expect(support).toContain('rel="noopener noreferrer"');
+    expect(support).toContain("Request help");
+    expect(support).not.toContain(reference);
+    expect(support).not.toContain(ready.code);
+    expect(html).toContain(`Reference: ${reference}.`);
+  });
+
+  it.each(["pending", "ready"] as const)("keeps a configured support placeholder hidden while %s", status => {
+    const html = assessmentPage({ ...ready, status }, { supportUrl: "https://help.example.test/" });
+    expect(html).toContain('data-assessment-support hidden>');
+    expect(html).toContain("Request help");
+  });
+
+  it.each(["javascript:alert(1)", "http://help.example.test", "https://user:password@example.test"])("rejects unsafe support links in direct page rendering: %s", supportUrl => {
+    expect(() => assessmentPage({ ...ready, status: "failed" }, { supportUrl })).toThrow("HTTPS URL without credentials");
+  });
+
+  it.each(["assessment-blocked", "assessment-abstained", "preparation-interrupted"] as const)("shows bounded %s recovery with a safe reference", errorCategory => {
+    const reference = "12345678-1234-4123-8123-123456789abc";
+    const html = assessmentPage({ ...ready, status: errorCategory === "assessment-abstained" ? "abstained" : "failed", canMint: false, errorCategory, diagnosticReference: reference, error: "private-provider-payload" });
+    expect(html).toContain(`Reference: ${reference}.`);
+    expect(html).not.toContain("private-provider-payload");
+    expect(html).not.toMatch(/data-mint-form|data-connect-wallet|href="mailto:|href="\/support/);
+    expect(html).toContain(errorCategory === "assessment-abstained" ? "will not be retried automatically" : "operator review");
+    expect(html).not.toMatch(/\/art\/hidden|secret-svg-digest|secret-png-digest/);
+  });
+
+  it.each(["opaque-request-code", "r".repeat(43), '<img src=x onerror=alert(1)>', "/mint/private"])("omits unsafe diagnostic references: %s", diagnosticReference => {
+    const html = assessmentPage({ ...ready, status: "failed", canMint: false, code: "safe-request", errorCategory: "assessment-blocked", diagnosticReference });
+    expect(html).not.toContain("Reference:");
+    expect(html).not.toContain(diagnosticReference);
+  });
+
+  it("shows a known pending transaction hash without asserting unverified network state", () => {
+    const transactionHash = `0x${"4".repeat(64)}`;
+    const html = assessmentPage({ ...ready, mint: { state: "pending", transactionHash } });
+    expect(html).toContain(`data-mint-transaction-hash="${transactionHash}"`);
+    expect(html).toContain(`data-mint-transaction>Transaction: ${transactionHash}</p>`);
+    expect(html).toContain('data-mint-network hidden');
+    expect(html).not.toContain("Verified mint network:");
+    const unsafe = assessmentPage({ ...ready, mint: { state: "pending", transactionHash: "/mint/private" } });
+    expect(unsafe).not.toContain("/mint/private");
   });
 
   it("reveals frozen rendering spelling and provenance only after confirmed mint", () => {

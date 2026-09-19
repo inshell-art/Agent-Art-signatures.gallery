@@ -9,10 +9,14 @@ import { createOpenMintServer } from "./server.js";
 import { localTestMinter, startIsolatedLocalChain } from "./localChain.js";
 import { closeHttpServer } from "./shutdown.js";
 import { DevelopmentXIdentityResolver, XApiIdentityResolver } from "./xIdentity.js";
+import { AssessmentOperations } from "./assessmentOperations.js";
+import { FIXTURE_PROFILE_VERSION, generationPolicy, GROK_PILOT_PROFILE } from "./providerProfile.js";
+import { openMintSupportUrl } from "./supportUrl.js";
 
 /** Configuration only; constructing providers performs no X or Grok requests. */
 export function openMintProviders(fixture: boolean, env: NodeJS.ProcessEnv) {
-  const provider = fixture ? new DevelopmentAssessmentProvider() : env.XAI_API_KEY ? new GrokAssessmentProvider({ apiKey: env.XAI_API_KEY, model: env.OPEN_MINT_GROK_MODEL }) : undefined;
+  generationPolicy(fixture, env);
+  const provider = fixture ? new DevelopmentAssessmentProvider() : env.XAI_API_KEY ? new GrokAssessmentProvider({ apiKey: env.XAI_API_KEY, profile: GROK_PILOT_PROFILE }) : undefined;
   const identityResolver = fixture ? new DevelopmentXIdentityResolver() : env.OPEN_MINT_X_BEARER_TOKEN ? new XApiIdentityResolver({ bearerToken: env.OPEN_MINT_X_BEARER_TOKEN }) : undefined;
   return { provider, identityResolver };
 }
@@ -27,19 +31,22 @@ export async function startOpenMintApp() {
   if (origin !== `http://127.0.0.1:${port}`) throw new Error("Local open mint requires OPEN_MINT_ORIGIN to match its literal loopback port.");
   const root = resolve(process.env.OPEN_MINT_DATA_DIR ?? `.local/open-mint/${fixture ? "fixture" : "grok"}`);
   if (!root.startsWith(`${resolve(".local/open-mint")}/`)) throw new Error("Open-mint data must use a dedicated directory under .local/open-mint/.");
-  const limit = Number(process.env.OPEN_MINT_DAILY_ASSESSMENT_LIMIT ?? 25);
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) throw new Error("Invalid daily assessment limit.");
+  const policy = generationPolicy(fixture, process.env);
+  const supportUrl = openMintSupportUrl(process.env.OPEN_MINT_SUPPORT_URL);
   const { provider, identityResolver } = openMintProviders(fixture, process.env);
   const unlock = await acquireProcessLock(root);
   let chain: Awaited<ReturnType<typeof startIsolatedLocalChain>> | undefined;
   try {
     if (localChain) chain = await startIsolatedLocalChain({ directory: join(root, "chain"), port: Number(process.env.OPEN_MINT_RPC_PORT ?? (fixture ? 18547 : 18546)), origin, fixture });
-    const assessments = provider ? new AssessmentCoordinator({ provider, identityResolver, repository: new FileAssessmentRepository(join(root, "assessments")) }) : undefined;
+    // Reading frozen results is independent from possessing paid-generation credentials.
+    const assessments = new AssessmentCoordinator({ provider, identityResolver, expectedProvenance: fixture ? "development-fixture" : "grok", repository: new FileAssessmentRepository(join(root, "assessments")) });
     const store = await FileKeyValueStore.create(join(root, "records"));
-    const service = new OpenMintService({ assessments, store, origin, network: chain?.network, fixture, dailyAssessmentLimit: limit });
+    const operations = new AssessmentOperations({ ...policy, store, generationEnabled: () => fixture || generationPolicy(false, process.env).enabled });
+    const service = new OpenMintService({ assessments, store, origin, network: chain?.network, fixture, operations,
+      assessmentProfileVersion: fixture ? FIXTURE_PROFILE_VERSION : GROK_PILOT_PROFILE.id });
     await service.recoverInterruptedRequests();
     const sessions = new WalletSessions(origin, 31337);
-    const server = createOpenMintServer({ origin, fixture, service, sessions, rpcUrl: chain?.rpcUrl,
+    const server = createOpenMintServer({ origin, fixture, service, sessions, rpcUrl: chain?.rpcUrl, supportUrl,
       ...(chain ? {
         devWallet: async (session, code) => {
           const challenge = sessions.challenge(session, localTestMinter().address, code);
@@ -65,6 +72,7 @@ export async function startOpenMintApp() {
     process.once("SIGINT", () => { void close(); });
     console.log(`Open-mint development app: ${origin}`);
     console.log(`Assessment: ${fixture ? "EXPLICIT DEVELOPMENT FIXTURE (not Grok)" : provider ? "backend Grok + native X Search" : "disabled — XAI_API_KEY is not configured"}`);
+    console.log(`New generation: ${policy.enabled ? "enabled within the configured admission limits" : "disabled; saved assessment recovery remains available"}`);
     console.log(`X username verification: ${fixture ? "EXPLICIT DEVELOPMENT FIXTURE (not X verification)" : identityResolver ? "X API username lookup at first preparation; frozen snapshot reused" : "disabled — OPEN_MINT_X_BEARER_TOKEN is not configured; new real preparation is blocked"}`);
     console.log(`Minting: ${chain ? `isolated local Anvil ${chain.rpcUrl}` : "disabled — start with --local-chain"}`);
     return { server, service, sessions, chain, close, origin };

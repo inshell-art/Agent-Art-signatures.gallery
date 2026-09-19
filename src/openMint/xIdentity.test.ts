@@ -1,9 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DevelopmentXIdentityResolver, validateXIdentity, XApiIdentityResolver, X_IDENTITY_MAX_RESPONSE_BYTES, X_USER_LOOKUP_ENDPOINT } from "./xIdentity.js";
+import type { AssessmentExecution, ProviderReceipt } from "./assessmentOperations.js";
 
 const NOW = new Date("2026-09-16T00:00:00.000Z");
 const valid = { data: { id: "123456789", username: "Alice_Bob_Key", name: "Ignored display name" } };
 const transport = (payload: unknown = valid) => vi.fn(async () => new Response(JSON.stringify(payload))) as unknown as typeof fetch;
+function executionRecorder() {
+  const receipts: ProviderReceipt[] = [];
+  const execution: AssessmentExecution = { attemptId: "attempt-test", beforeDispatch: vi.fn(async () => {}),
+    recordReceipt: vi.fn(async receipt => { receipts.push(receipt); }), identityVerified: vi.fn(async () => {}),
+    recordOutcome: vi.fn(async () => {}), assessmentPersisted: vi.fn(async () => {}) };
+  return { execution, receipts };
+}
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe("authoritative X username lookup", () => {
@@ -72,10 +80,59 @@ describe("authoritative X username lookup", () => {
     expect(() => new XApiIdentityResolver({ bearerToken: "mock-token", timeoutMs })).toThrow("timeout");
   });
   it("keeps explicit fixture identities visibly simulated and validates saved snapshots", async () => {
+    expect((await new DevelopmentXIdentityResolver().resolve("alice")).verifiedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     const identity = await new DevelopmentXIdentityResolver({ alice: "ALIce" }, () => NOW).resolve("@Alice");
     expect(identity).toMatchObject({ username: "ALIce", provenance: "development-fixture" });
     for (const change of [{ canonicalHandle: "ALICE" }, { username: "Bob" }, { verifiedAt: "yesterday" }, { verifiedAt: "2026-09-16T00:00:00Z" }, { provenance: "client" }, { freshness: "live" }, { extra: true }]) {
       expect(() => validateXIdentity({ ...identity, ...change }, "alice")).toThrow();
     }
+  });
+
+  it.each([valid, { data: { id: "123", username: "wrong" } }])("persists one unknown-cost X receipt before semantic validation for %j", async payload => {
+    const { execution, receipts } = executionRecorder();
+    const resolver = new XApiIdentityResolver({ bearerToken: "private-token", fetch: transport(payload) });
+    if (payload === valid) await resolver.resolve("alice_bob_key", execution);
+    else await expect(resolver.resolve("alice_bob_key", execution)).rejects.toThrow("does not match");
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]).toMatchObject({ leg: "x-identity", category: "success", httpStatus: 200, usageStatus: "missing", cost: { status: "unknown", currency: "USD", scale: 10 } });
+    expect(JSON.stringify(receipts)).not.toMatch(/private-token|Ignored display name|Alice_Bob_Key/);
+    expect(execution.beforeDispatch).not.toHaveBeenCalled();
+  });
+
+  it("cannot return an identity when receipt persistence fails", async () => {
+    const { execution } = executionRecorder();
+    vi.mocked(execution.recordReceipt).mockRejectedValue(new Error("receipt unavailable"));
+    const fetch = transport();
+    await expect(new XApiIdentityResolver({ bearerToken: "token", fetch }).resolve("alice_bob_key", execution)).rejects.toThrow("receipt unavailable");
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(execution.recordReceipt).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["http-error", () => new Response('{"error":"private details"}', { status: 403 })],
+    ["invalid-body", () => new Response('{"data":')],
+    ["oversized-body", () => new Response("{}", { headers: { "content-length": String(X_IDENTITY_MAX_RESPONSE_BYTES + 1) } })],
+  ] as const)("records %s without fabricated costs", async (category, response) => {
+    const { execution, receipts } = executionRecorder();
+    const fetch = vi.fn(async () => response()) as unknown as typeof globalThis.fetch;
+    await expect(new XApiIdentityResolver({ bearerToken: "token", fetch }).resolve("alice", execution)).rejects.toThrow();
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]).toMatchObject({ category, cost: { status: "unknown" } });
+    expect(JSON.stringify(receipts)).not.toContain("private details");
+  });
+
+  it("records transport uncertainty and ignores a late completed lookup after timeout", async () => {
+    vi.useFakeTimers();
+    const { execution, receipts } = executionRecorder();
+    let respond!: (response: Response) => void;
+    const fetch = vi.fn(() => new Promise<Response>(resolve => { respond = resolve; })) as unknown as typeof globalThis.fetch;
+    const pending = new XApiIdentityResolver({ bearerToken: "token", fetch, timeoutMs: 25 }).resolve("alice_bob_key", execution);
+    const failure = expect(pending).rejects.toThrow("timed out");
+    await vi.advanceTimersByTimeAsync(25); await failure;
+    expect(receipts[0]).toMatchObject({ category: "timeout", cost: { status: "unknown" } });
+    respond(new Response(JSON.stringify(valid)));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(execution.recordReceipt).toHaveBeenCalledTimes(1);
+    expect(receipts[0]).not.toHaveProperty("httpStatus");
   });
 });

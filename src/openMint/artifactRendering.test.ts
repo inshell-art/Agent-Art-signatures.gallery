@@ -95,7 +95,11 @@ describe("native MBTI artifact rendering integration", () => {
     expect(digest).toBe(keccak256(stringToHex(JSON.stringify(unsigned))));
     expect(artifact.tokenURI).toBe(`${ORIGIN}/artifacts/${artifact.metadataSha256}.json`);
     expect(provider.assess).toHaveBeenCalledTimes(1);
-    expect(provider.assess).toHaveBeenCalledWith(HANDLE.toLowerCase(), artifact.assessment.xIdentity);
+    expect(provider.assess).toHaveBeenCalledWith(HANDLE.toLowerCase(), artifact.assessment.xIdentity, {
+      attemptId: request.attemptId,
+      beforeDispatch: expect.any(Function), identityVerified: expect.any(Function),
+      recordReceipt: expect.any(Function), recordOutcome: expect.any(Function), assessmentPersisted: expect.any(Function),
+    });
     expect(artifact.assessment.xIdentity?.provenance).toBe("development-fixture");
     expect(network.sign).not.toHaveBeenCalled();
     expect(network.transaction).not.toHaveBeenCalled();

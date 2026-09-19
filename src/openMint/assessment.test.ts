@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { assessmentDigest, AssessmentCoordinator, exactObject, isXSource, validateAssessment, validateSourceUrls, type AssessmentProvider, type AssessmentRepository, type LegacyAssessment, type NativeMbtiAssessment } from "./assessment.js";
+import { AssessmentAbstainedError, assessmentDigest, AssessmentCoordinator, exactObject, isXSource, validateAssessment, validateSourceUrls, type AssessmentProvider, type AssessmentRepository, type LegacyAssessment, type NativeMbtiAssessment } from "./assessment.js";
+import type { AssessmentExecution } from "./assessmentOperations.js";
 import { MemoryAssessmentRepository } from "./assessmentStore.js";
 import { DevelopmentAssessmentProvider, GROK_DEFAULT_MODEL } from "./grok.js";
 import { LEGACY_MAPPING_VERSION, LEGACY_RENDERER_VERSION, POLICY_VERSION, RENDERER_VERSION } from "./identity.js";
@@ -16,7 +17,78 @@ function provider(): AssessmentProvider {
   return { provenance: "grok", model: GROK_DEFAULT_MODEL, assess: vi.fn(async (handle: string) => ({ handle, mbti: "INTJ" as const, model: GROK_DEFAULT_MODEL, providerResponseId: "response-123", sourceUrls: ["https://x.com/alice/status/123"] })) };
 }
 
+describe("durable dispatch hooks and abstention boundary", () => {
+  function hooks(): AssessmentExecution {
+    return { attemptId: "00000000-0000-4000-8000-000000000001", beforeDispatch: vi.fn(async () => undefined),
+      recordReceipt: vi.fn(async () => undefined), identityVerified: vi.fn(async () => undefined),
+      recordOutcome: vi.fn(async () => undefined), assessmentPersisted: vi.fn(async () => undefined) };
+  }
+  it("never calls an adapter if its dispatch marker cannot be persisted", async () => {
+    const execution = hooks(), source = provider();
+    vi.mocked(execution.beforeDispatch).mockRejectedValue(new Error("disk full"));
+    const coordinator = new AssessmentCoordinator({ provider: source, repository: new MemoryAssessmentRepository() });
+    await expect(coordinator.assess("alice", execution)).rejects.toThrow("disk full");
+    expect(source.assess).not.toHaveBeenCalled();
+    expect(execution.recordOutcome).not.toHaveBeenCalled();
+  });
+  it("passes the context to adapters and only links the assessment after durable storage", async () => {
+    const execution = hooks(), source = provider(), repository = new MemoryAssessmentRepository();
+    vi.mocked(execution.assessmentPersisted).mockImplementation(async value => { expect(await repository.get("alice")).toEqual(value); });
+    const coordinator = new AssessmentCoordinator({ provider: source, repository });
+    const result = await coordinator.assess("alice", execution);
+    expect(execution.beforeDispatch).toHaveBeenCalledWith("grok");
+    expect(source.assess).toHaveBeenCalledWith("alice", undefined, execution);
+    expect(execution.recordOutcome).toHaveBeenCalledWith({ kind: "accepted" });
+    expect(execution.assessmentPersisted).toHaveBeenCalledWith(result);
+    await coordinator.assess("ALICE", execution);
+    expect(execution.beforeDispatch).toHaveBeenCalledTimes(1);
+  });
+  it("retains canonical success if its operational linkage fails after persistence", async () => {
+    const execution = hooks(), source = provider(), repository = new MemoryAssessmentRepository();
+    vi.mocked(execution.assessmentPersisted).mockRejectedValue(new Error("ledger unavailable"));
+    const coordinator = new AssessmentCoordinator({ provider: source, repository });
+    await expect(coordinator.assess("alice", execution)).rejects.toThrow("ledger unavailable");
+    const saved = await repository.get("alice");
+    expect(await coordinator.assess("ALICE")).toEqual(saved);
+    expect(source.assess).toHaveBeenCalledTimes(1);
+  });
+  it.each(["insufficient-evidence", "subject-unavailable", "provider-refusal"] as const)("records %s without synthesizing a type or saving an assessment", async reason => {
+    const execution = hooks(), source = provider(), repository = new MemoryAssessmentRepository();
+    source.assess = vi.fn(async handle => ({ kind: "abstained" as const, reason, handle, model: source.model, providerResponseId: "response-123" }));
+    const coordinator = new AssessmentCoordinator({ provider: source, repository });
+    await expect(coordinator.assess("alice", execution)).rejects.toBeInstanceOf(AssessmentAbstainedError);
+    expect(execution.recordOutcome).toHaveBeenCalledWith({ kind: "abstained", reason });
+    expect(execution.assessmentPersisted).not.toHaveBeenCalled();
+    expect(await repository.get("alice")).toBeUndefined();
+  });
+  it.each([{ reason: "try-again" }, { handle: "bob" }, { model: "forged" }, { mbti: "ENFP" }, { providerResponseId: "" }])("rejects malformed abstention %#", async mutation => {
+    const source = provider(), execution = hooks();
+    source.assess = vi.fn(async () => ({ kind: "abstained", reason: "insufficient-evidence", handle: "alice", model: source.model, providerResponseId: "response-123", ...mutation }) as never);
+    await expect(new AssessmentCoordinator({ provider: source, repository: new MemoryAssessmentRepository() }).assess("alice", execution)).rejects.toThrow();
+    expect(execution.recordOutcome).not.toHaveBeenCalled();
+  });
+});
+
 describe("canonical server assessment coordinator", () => {
+  it("reads and reuses exact saved results without a provider or credentials", async () => {
+    const repository = new MemoryAssessmentRepository();
+    const source = provider();
+    const first = await new AssessmentCoordinator({ provider: source, repository }).assess("alice");
+    const reader = new AssessmentCoordinator({ expectedProvenance: "grok", repository });
+    expect(reader.generationConfigured).toBe(false);
+    expect(await reader.get("@ALICE")).toEqual(first);
+    expect(await reader.assess("Alice")).toEqual(first);
+    await expect(reader.assess("bob")).rejects.toThrow("not configured");
+    expect(source.assess).toHaveBeenCalledTimes(1);
+  });
+
+  it("requires explicit mode for a read-only coordinator and never reclassifies stored provenance", async () => {
+    const repository = new MemoryAssessmentRepository();
+    expect(() => new AssessmentCoordinator({ repository })).toThrow("provenance");
+    expect(() => new AssessmentCoordinator({ repository, expectedProvenance: "development-fixture", provider: provider() })).toThrow("provenance");
+    await new AssessmentCoordinator({ provider: new DevelopmentAssessmentProvider(), repository }).assess("alice");
+    await expect(new AssessmentCoordinator({ repository, expectedProvenance: "grok" }).get("alice")).rejects.toThrow("provenance");
+  });
   it("deduplicates concurrent requests and locks the first successful MBTI forever", async () => {
     const source = provider();
     const coordinator = new AssessmentCoordinator({ provider: source, repository: new MemoryAssessmentRepository() });

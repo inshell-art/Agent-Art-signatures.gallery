@@ -2,7 +2,7 @@
 
 Evaluated: 2026-09-19. Source: the consolidated Inbox, current active code, focused tests and three independent read-only subsystem reviews.
 
-This is the task table extracted from `INBOX.md`, not another handoff. The Inbox returns to collecting new, untriaged items. Update task status and evidence here as work lands; moving an item here does not complete it. The previous token-saving/lightweight-night limit is superseded. This planning pass does not itself implement the tasks or authorize paid calls, provisioning, public transactions or deployment.
+This is the task table extracted from `INBOX.md`, not another handoff. The Inbox returns to collecting new, untriaged items. Update task status and evidence here as work lands; moving an item here does not complete it. The previous token-saving/lightweight-night limit is superseded. Implementation is now authorized below; paid calls, provisioning, public transactions and deployment still require their specific approvals.
 
 Execution authorized: 2026-09-19. The user requested the current checkpoint be committed and pushed, followed by continued implementation on a new branch. Checkpoint `16fff22` is on `origin/main`; implementation continues on `codex/execution-table`. Paid calls, public deployment and other approval gates below remain separate.
 
@@ -23,11 +23,11 @@ Development can proceed locally before external choices are supplied. No new ren
 | Active app | `src/main.ts` starts `src/openMint/main.ts`. Legacy claim/OAuth code is not the active architecture. |
 | TypeScript | `npm run typecheck` passed in this evaluation. |
 | Renderer locks | `npm run renderer:verify` passed for signature v1.0.0, signature v2.0.0 and the slogan-only v2.0.1 capture. |
-| Active app tests | After allowing isolated loopback sockets, `npm run test:open -- --reporter=dot`: **881 passed, 3 failed, 884 total**. All three failures in `src/openMint/server.test.ts` assert retired question-mark/tooltip content. Fix expectations against the approved slogan, not by restoring the old UI. |
-| Test environment | The first sandboxed run also had three `listen EPERM` failures; those passed with loopback permission. They are not application defects. Full coverage/build/contracts and browser QA were not rerun in this planning pass. |
-| Paid integration | The provider path and conservative attempt guards exist. Live paid-provider compatibility, observed costs and a real-assessment mint remain unverified. |
-| Newly confirmed dependencies | Usage is discarded by the Grok adapter; the refusal instruction conflicts with a success-only MBTI schema; saved-assessment access depends on provider configuration; public metadata needs a new URI/version policy; deployment tooling targets the legacy contract. These are explicit tasks below. |
-| Worktree | Existing UI/slogan/docs edits and the previously removed handoff are uncommitted. Preserve them; do not reset, bulk-stage or claim they were introduced by this evaluation. |
+| Tests and baseline | The three stale slogan assertions are fixed. E00 passed 3,313 tests and hosted CI; the E01–E09 verification record is below. No coverage thresholds were reduced. |
+| Test environment | Isolated loopback permission is needed for HTTP/browser checks; initial sandbox `listen EPERM` failures were environmental. Paid transports remain mocked. |
+| Paid integration | Durable attempts/receipts, typed abstention, fail-closed admission and credential-independent recovery are implemented. Live compatibility, observed costs and a real-assessment mint remain unverified. |
+| Remaining dependencies | Public metadata still needs a new URI/version policy and deployment tooling still targets the legacy contract. These are E16–E19, not silently solved by the local work. |
+| Git checkpoint | Reviewed UI/slogan/docs changes and the old handoff removal are committed on `origin/main` as `16fff22`. Execution continues on `codex/execution-table`; no local artwork, wallet history or chain state was reset. |
 
 ## Non-negotiable invariants
 
@@ -48,17 +48,17 @@ Development can proceed locally before external choices are supplied. No new ren
 
 | ID | Task and deliverable | Status | Depends on | Size / milestone |
 | --- | --- | --- | --- | --- |
-| E00 | Restore the approved baseline; add repeatable offline CI | Locally verified; hosted CI pending | — | M / M1 |
-| E01 | Define the mint state contract; repair live request expiry | In progress | E00 baseline | M / M1 |
-| E02 | Bound session/assessment status reads and stale responses | After | E01 state contract | M / M1 |
-| E03 | Make wallet/reservation/error recovery actionable | After | E01–E02; E04 diagnostic IDs | M / M1 |
-| E04 | Persist a versioned attempt lifecycle and safe operator report | Ready | Existing guard tests | M / M1 |
-| E05 | Capture provider receipts and usage, including unsuccessful calls | After | E04 | M / M1 |
-| E06 | Represent abstention and insufficient evidence explicitly | Ready | Coordinate outcome types with E04 | M / M1 |
-| E07 | Add spend admission, bounded concurrency and a generation kill switch | After | E04–E05 | M / M1 |
-| E08 | Decouple saved-result recovery from generation credentials | Ready | Existing assessment invariants | M / M1 |
-| E09 | Verify a supported economical provider profile and prepare the pilot | After | E04–E08 for executable preflight | S–M / M1 |
-| E10 | Run one measured real X → Grok → Anvil pilot | Approval | E00–E09; paid envelope + user wallet approval | M / M1 |
+| E00 | Restore the approved baseline; add repeatable offline CI | Done locally and hosted | — | M / M1 |
+| E01 | Define the mint state contract; repair live request expiry | Implemented; offline/browser verified | E00 baseline | M / M1 |
+| E02 | Bound session/assessment status reads and stale responses | Implemented; offline/browser verified | E01 state contract | M / M1 |
+| E03 | Make wallet/reservation/error recovery actionable | Implemented; offline/browser verified; support destination unset | E01–E02; E04 diagnostic IDs | M / M1 |
+| E04 | Persist a versioned attempt lifecycle and safe operator report | Implemented; offline verified | Existing guard tests | M / M1 |
+| E05 | Capture provider receipts and usage, including unsuccessful calls | Implemented; offline verified | E04 | M / M1 |
+| E06 | Represent abstention and insufficient evidence explicitly | Implemented; offline verified | Coordinate outcome types with E04 | M / M1 |
+| E07 | Add spend admission, bounded concurrency and a generation kill switch | Implemented; offline verified | E04–E05 | M / M1 |
+| E08 | Decouple saved-result recovery from generation credentials | Implemented; offline verified | Existing assessment invariants | M / M1 |
+| E09 | Verify a supported economical provider profile and prepare the pilot | Prepared; account entitlement awaits E10 | E04–E08 for executable preflight | S–M / M1 |
+| E10 | Run one measured real X → Grok → Anvil pilot | Next approval gate: handle, spend, keys | E00–E09; paid envelope + user wallet approval | M / M1 |
 | E11 | Expose factual Grok/MBTI provenance | Ready | Existing stored fields; E10 for real evidence | M / M2, early delivery |
 | E12 | Refine About and substantiate the “First” proposition | Ready | Evidence research; user approves claim scope | M–L / M2 |
 | E13 | Define and implement the supported wallet matrix | Ready to design | User scope; E01–E03 for flow QA | M / M2; mobile expansion conditional |
@@ -172,7 +172,12 @@ No need to resolve every decision before E00–E08. Do not repeatedly block loca
 
 ### Execution evidence
 
-- **E00 (2026-09-19):** Updated approved-slogan assertions and historical study labels, without changing rendered artwork or lock files. Added `.github/workflows/verify.yml` with pinned actions, Node 22, Foundry 1.5.1, mocked providers and explicit loopback HTTP testing. Full coverage run: **3,313 tests passed across 115 files**, existing thresholds unchanged. Typecheck, renderer verification/build, 65 contract tests, deployment manifest validation and nine manifest-role tests passed. Hosted execution is not yet claimed.
+- **E00 (2026-09-19):** Updated approved-slogan assertions and historical study labels, without changing rendered artwork or lock files. Added `.github/workflows/verify.yml` with pinned actions, Node 22, Foundry 1.5.1, mocked providers and explicit loopback HTTP testing. Full coverage run: **3,313 tests passed across 115 files**, existing thresholds unchanged. Typecheck, renderer verification/build, 65 contract tests, deployment manifest validation and nine manifest-role tests passed. Commit `e53a77a`; [hosted run 35434526612](https://github.com/inshell-art/Agent-Art-signatures.gallery/actions/runs/35434526612) completed successfully.
+- **E01–E03:** Shared `mintUiState.ts` governs request/proof expiry, read recovery, explicit intent and canonical confirmation. Session and assessment reads include an eight-second body deadline, abort/late-generation guards and bounded retry delay. Expired requests preserve spelling on Return to mint; pending or unknown submissions stay blocked from a second mint. Structured reservation deadlines and safe attempt references support manual recovery. Headless Chrome checks at 390×844 light/dark and 1280×900 dark showed no horizontal overflow, correct fonts, no POST/provider/wallet calls, and preserved submitted-hash monitoring after expiry. See [offline validation](validation/m1-offline-2026-09-19.md). Full wallet-matrix QA remains E13.
+- **E04–E08:** Added versioned attempts, paid reservations, phase hooks and private per-leg receipts. Admission and each dispatch marker are durable before external work; receipt writes precede semantic validation. Typed accepted/abstained/invalid outcomes preserve billing uncertainty and immutable accepted results. The read-only operator CLI cannot reset/retry/release anything. Failure/restart tests cover marker, receipt, result-link and artifact writes. Kill switches, pricing expiry and missing credentials block new calls without blocking valid saved-result recovery. Fixture billing exemptions never settle real charges. [Operations specification](assessment-operations.md).
+- **E09:** Pinned candidate `sg-grok-mbti-2026-09-19-v1`: Grok 4.3, low reasoning, 1,024 output tokens, three turns, 90-second response deadline, native handle-restricted X Search with image/video tools off. Official pricing/capability references, limitations and the one-attempt proposal are in [the pilot runbook](grok-pilot.md). Read-only preflight found both keys absent and generation disabled. New generation also closes automatically at the announced pricing change, **2026-09-21 19:00 UTC**, including between X and Grok. This is not observed live account compatibility or a guaranteed dollar cap.
+- **E10 remains unrun:** No X lookup, xAI inference, paid credit purchase, wallet signing, local chain reset or public deployment was performed during this implementation. Next approval: one target handle, acceptance of the documented spend uncertainty, both credentials privately configured and the user's later Anvil wallet approval. E11–E24 and D01/D02 are not declared complete by the M1 offline results.
+- **Final offline checks:** `OPEN_MINT_TEST_HTTP=1 npm run test:coverage -- --reporter=dot`: **3,605 tests passed across 121 files**; **95.02% statements, 91.11% branches, 98.03% functions**. Typecheck, build/renderer locks and whitespace checks passed. An optional static HTTPS `OPEN_MINT_SUPPORT_URL` is implemented and validated; no contact is configured or called, and no private code/reference is appended to it. Hosting/public support operation remains E21. Hosted CI for this implementation checkpoint is observed after its push, separately from the already-passing E00 baseline.
 
 - Start with **E00's baseline repair, then E01/E02**, while designing E04–E08. This is the first concrete batch, not another round of slogan refinement.
 - Keep changes reviewable. Coordinate shared `service.ts`, `pages.ts`, `server.ts` and client files rather than assigning simultaneous broad edits. Reuse existing boundaries and tests.

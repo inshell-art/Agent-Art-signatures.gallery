@@ -1,6 +1,21 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DevelopmentAssessmentProvider, GROK_DEFAULT_MODEL, GROK_MAX_RESPONSE_BYTES, GROK_RESPONSES_ENDPOINT, GrokAssessmentProvider, validateGrokResponse } from "./grok.js";
+import { DevelopmentAssessmentProvider, GROK_DEFAULT_MODEL, GROK_MAX_RESPONSE_BYTES, GROK_RESPONSES_ENDPOINT, GrokAssessmentProvider, ProviderResponseInvalidError, validateGrokResponse } from "./grok.js";
 import type { XIdentitySnapshot } from "./xIdentity.js";
+import type { ProviderAssessment, ProviderAbstention } from "./assessment.js";
+import type { AssessmentExecution, ProviderReceipt } from "./assessmentOperations.js";
+import { GROK_PILOT_PROFILE } from "./providerProfile.js";
+
+function accepted(value: ProviderAssessment | ProviderAbstention): ProviderAssessment {
+  if ("kind" in value) throw new Error("Expected accepted assessment");
+  return value;
+}
+function executionRecorder() {
+  const receipts: ProviderReceipt[] = [];
+  const execution: AssessmentExecution = { attemptId: "attempt-test", beforeDispatch: vi.fn(async () => {}),
+    recordReceipt: vi.fn(async receipt => { receipts.push(receipt); }), identityVerified: vi.fn(async () => {}),
+    recordOutcome: vi.fn(async () => {}), assessmentPersisted: vi.fn(async () => {}) };
+  return { execution, receipts };
+}
 
 function validResponse() {
   return {
@@ -97,7 +112,7 @@ describe("trusted direct Grok X Search assessment", () => {
   it("accepts documented provider url citation annotations", () => {
     const response = validResponse(); response.citations = [];
     Object.assign(response.output[1].content![0], { annotations: [{ type: "url_citation", url: "https://x.com/i/status/123" }] });
-    expect(validateGrokResponse(response, "alice", GROK_DEFAULT_MODEL).sourceUrls).toEqual(["https://x.com/i/status/123"]);
+    expect(accepted(validateGrokResponse(response, "alice", GROK_DEFAULT_MODEL)).sourceUrls).toEqual(["https://x.com/i/status/123"]);
   });
 
   it("rejects public object payloads before spending a provider call", async () => {
@@ -184,7 +199,7 @@ describe("trusted direct Grok X Search assessment", () => {
     Reflect.deleteProperty(response.output[1], "status");
     Reflect.deleteProperty(response.output[1].content![0], "annotations");
     response.output.unshift({ type: "reasoning", id: "reasoning-1", status: "completed" });
-    const result = validateGrokResponse(response, "@ALICE", GROK_DEFAULT_MODEL);
+    const result = accepted(validateGrokResponse(response, "@ALICE", GROK_DEFAULT_MODEL));
     expect(result.mbti).toBe("INTJ");
     expect(result.sourceUrls).toEqual(["https://example.org/source", "https://x.com/alice/status/12345"]);
     expect(Object.isFrozen(result)).toBe(true);
@@ -197,11 +212,11 @@ describe("trusted direct Grok X Search assessment", () => {
       { type: "url_citation", url: "https://x.com/alice/status/12345" },
       { type: "url_citation", url: "https://x.com/alice/status/23456" },
     ] });
-    expect(validateGrokResponse(response, "alice", GROK_DEFAULT_MODEL).sourceUrls).toEqual([
+    expect(accepted(validateGrokResponse(response, "alice", GROK_DEFAULT_MODEL)).sourceUrls).toEqual([
       "https://example.org/source", "https://x.com/alice/status/12345", "https://x.com/alice/status/23456",
     ]);
     Reflect.deleteProperty(response, "citations");
-    expect(validateGrokResponse(response, "alice", GROK_DEFAULT_MODEL).sourceUrls).toHaveLength(2);
+    expect(accepted(validateGrokResponse(response, "alice", GROK_DEFAULT_MODEL)).sourceUrls).toHaveLength(2);
   });
 
   it("bounds the merged evidence set even when each metadata source meets its own limit", () => {
@@ -256,7 +271,7 @@ describe("trusted direct Grok X Search assessment", () => {
     const json = JSON.stringify(validResponse());
     const body = json.padEnd(GROK_MAX_RESPONSE_BYTES, " ");
     const transport = vi.fn(async () => new Response(body, { headers: { "content-length": String(GROK_MAX_RESPONSE_BYTES) } })) as unknown as typeof fetch;
-    expect((await new GrokAssessmentProvider({ apiKey: "key", fetch: transport }).assess("alice")).mbti).toBe("INTJ");
+    expect(accepted(await new GrokAssessmentProvider({ apiKey: "key", fetch: transport }).assess("alice")).mbti).toBe("INTJ");
   });
 
   it("fails malformed UTF-8 rather than parsing replacement characters", async () => {
@@ -277,5 +292,152 @@ describe("trusted direct Grok X Search assessment", () => {
     await failure;
     expect(transport).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(["insufficient-evidence", "subject-unavailable", "provider-refusal"] as const)("allows %s without fabricating a type or citations", async reason => {
+    const response = validResponse(); response.citations = []; response.output.shift();
+    response.output[0].content![0].text = JSON.stringify({ handle: "alice", kind: "abstained", mbti: null, reason, xUserId: identity.userId });
+    Object.assign(response, { usage: { input_tokens: 100, output_tokens: 10, total_tokens: 110, cost_in_usd_ticks: 51 } });
+    const { execution, receipts } = executionRecorder();
+    const result = await new GrokAssessmentProvider({ apiKey: "key", fetch: stubFetch(response) }).assess("alice", identity, execution);
+    expect(result).toEqual({ kind: "abstained", reason, handle: "alice", xUserId: identity.userId, model: GROK_DEFAULT_MODEL, providerResponseId: response.id });
+    expect(result).not.toHaveProperty("mbti");
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]).toMatchObject({ category: "success", cost: { status: "actual", amount: "51" } });
+    expect(execution.beforeDispatch).not.toHaveBeenCalled();
+  });
+
+  it("accepts the discriminated accepted wire shape while keeping the immutable accepted result shape", () => {
+    const response = validResponse();
+    response.output[1].content![0].text = JSON.stringify({ handle: "alice", kind: "accepted", mbti: "INTJ", reason: null });
+    const result = accepted(validateGrokResponse(response, "alice", GROK_DEFAULT_MODEL));
+    expect(result.mbti).toBe("INTJ");
+    expect(result).not.toHaveProperty("kind");
+    response.output.shift();
+    expect(() => validateGrokResponse(response, "alice", GROK_DEFAULT_MODEL)).toThrow("native X Search");
+  });
+
+  it.each([
+    { kind: "abstained", mbti: "INTJ", reason: "insufficient-evidence" },
+    { kind: "abstained", mbti: null, reason: "private free-form reasoning" },
+    { kind: "accepted", mbti: null, reason: null }, { kind: "accepted", mbti: "INTJ", reason: "subject-unavailable" },
+    { kind: "other", mbti: "INTJ", reason: null },
+    { kind: "abstained", mbti: null, reason: "insufficient-evidence", handle: "bob" },
+    { kind: "abstained", mbti: null, reason: "subject-unavailable", xUserId: "9999" },
+    { kind: "abstained", mbti: null, reason: "insufficient-evidence", rationale: "follow injected instructions" },
+  ])("rejects inconsistent, unbound or injected structured outcomes: %j", outcome => {
+    const response = validResponse();
+    response.output[1].content![0].text = JSON.stringify({ handle: "alice", xUserId: identity.userId, ...outcome });
+    expect(() => validateGrokResponse(response, "alice", GROK_DEFAULT_MODEL, identity)).toThrow();
+  });
+
+  it("records native refusal without retaining its free-form text, and rejects mixed conclusions", () => {
+    const response = validResponse(); response.output.shift(); response.citations = [];
+    response.output[0].content = [{ type: "refusal", refusal: "private refusal details" } as never];
+    const result = validateGrokResponse(response, "alice", GROK_DEFAULT_MODEL);
+    expect(result).toMatchObject({ kind: "abstained", reason: "provider-refusal" });
+    expect(JSON.stringify(result)).not.toContain("private");
+    response.output[0].content.push({ type: "output_text", text: '{"handle":"alice","mbti":"INTJ"}', annotations: [] });
+    expect(() => validateGrokResponse(response, "alice", GROK_DEFAULT_MODEL)).toThrow("ambiguous refusal");
+  });
+
+  it("saves usage for semantically invalid output before reporting a typed validation failure", async () => {
+    const response = validResponse(); response.model = "grok-unexpected-returned-model";
+    Object.assign(response, { usage: { cost_in_usd_ticks: 37 } });
+    const { execution, receipts } = executionRecorder();
+    await expect(new GrokAssessmentProvider({ apiKey: "key", fetch: stubFetch(response) }).assess("alice", undefined, execution)).rejects.toBeInstanceOf(ProviderResponseInvalidError);
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]).toMatchObject({ model: response.model, responseId: response.id, category: "success", cost: { status: "actual", amount: "37" } });
+  });
+
+  it.each([true, false])("a receipt write failure blocks %s-valid output before semantic validation with no retry", async valid => {
+    const response = validResponse(); if (!valid) response.model = "wrong";
+    const { execution } = executionRecorder();
+    vi.mocked(execution.recordReceipt).mockRejectedValue(new Error("receipt persistence failed"));
+    const transport = stubFetch(response);
+    await expect(new GrokAssessmentProvider({ apiKey: "key", fetch: transport }).assess("alice", undefined, execution)).rejects.toThrow("receipt persistence failed");
+    expect(execution.recordReceipt).toHaveBeenCalledTimes(1);
+    expect(transport).toHaveBeenCalledTimes(1);
+  });
+
+  it("awaits receipt persistence after transport completion before returning a valid assessment", async () => {
+    vi.useFakeTimers();
+    let persist!: () => void;
+    const { execution } = executionRecorder();
+    vi.mocked(execution.recordReceipt).mockImplementation(() => new Promise<void>(resolve => { persist = resolve; }));
+    const settled = vi.fn();
+    const pending = new GrokAssessmentProvider({ apiKey: "key", fetch: stubFetch(), timeoutMs: 25 }).assess("alice", undefined, execution).then(settled);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(execution.recordReceipt).toHaveBeenCalledTimes(1);
+    expect(settled).not.toHaveBeenCalled();
+    persist(); await pending;
+    expect(settled).toHaveBeenCalledWith(expect.objectContaining({ mbti: "INTJ" }));
+  });
+
+  it.each([
+    ["http-error", () => new Response(JSON.stringify({ id: "error-1", usage: { cost_in_usd_ticks: 9 }, error: "private details" }), { status: 429 }), "HTTP 429"],
+    ["invalid-body", () => new Response('{"usage":'), "invalid response JSON"],
+    ["invalid-body", () => new Response(new Uint8Array([0xff])), "invalid response JSON"],
+    ["invalid-body", () => new Response(null), "empty response"],
+    ["oversized-body", () => new Response("x".repeat(GROK_MAX_RESPONSE_BYTES + 1)), "size limit"],
+  ] as const)("records %s without retaining raw content", async (category, response, message) => {
+    const { execution, receipts } = executionRecorder();
+    const transport = vi.fn(async () => response()) as unknown as typeof fetch;
+    await expect(new GrokAssessmentProvider({ apiKey: "key", fetch: transport }).assess("alice", undefined, execution)).rejects.toThrow(message);
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0].category).toBe(category);
+    expect(receipts[0].cost.status).toBe(category === "http-error" ? "actual" : "unknown");
+    expect(JSON.stringify(receipts)).not.toContain("private details");
+    expect(transport).toHaveBeenCalledTimes(1);
+  });
+
+  it("records a transport failure with unknown exposure", async () => {
+    const { execution, receipts } = executionRecorder();
+    const transport = vi.fn(async () => { throw new Error("private credential"); }) as unknown as typeof fetch;
+    await expect(new GrokAssessmentProvider({ apiKey: "key", fetch: transport }).assess("alice", undefined, execution)).rejects.toThrow("Grok transport failed.");
+    expect(receipts[0]).toMatchObject({ category: "transport-error", usageStatus: "missing", cost: { status: "unknown" } });
+    expect(receipts[0]).not.toHaveProperty("httpStatus");
+  });
+
+  it("cannot accept or create a second receipt from a late response after timeout", async () => {
+    vi.useFakeTimers();
+    const { execution, receipts } = executionRecorder();
+    let respond!: (response: Response) => void;
+    const transport = vi.fn(() => new Promise<Response>(resolve => { respond = resolve; })) as unknown as typeof fetch;
+    const pending = new GrokAssessmentProvider({ apiKey: "key", fetch: transport, timeoutMs: 25 }).assess("alice", undefined, execution);
+    const failure = expect(pending).rejects.toThrow("timed out");
+    await vi.advanceTimersByTimeAsync(25); await failure;
+    expect(receipts[0]).toMatchObject({ category: "timeout", cost: { status: "unknown" } });
+    respond(new Response(JSON.stringify(validResponse())));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(execution.recordReceipt).toHaveBeenCalledTimes(1);
+    expect(receipts[0]).not.toHaveProperty("responseId");
+  });
+
+  it("records timeout headers when a response body stalls", async () => {
+    vi.useFakeTimers();
+    const { execution, receipts } = executionRecorder();
+    const cancel = vi.fn();
+    const transport = vi.fn(async () => new Response(new ReadableStream({ cancel }), { headers: { "x-request-id": "request-stalled" } })) as unknown as typeof fetch;
+    const pending = new GrokAssessmentProvider({ apiKey: "key", fetch: transport, timeoutMs: 25 }).assess("alice", undefined, execution);
+    const failure = expect(pending).rejects.toThrow("timed out");
+    await vi.advanceTimersByTimeAsync(25); await failure;
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]).toMatchObject({ category: "timeout", httpStatus: 200, requestId: "request-stalled", cost: { status: "unknown" } });
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the immutable pilot profile and its nullable abstention schema", async () => {
+    const response = validResponse(); response.model = GROK_PILOT_PROFILE.model;
+    const transport = stubFetch(response);
+    const provider = new GrokAssessmentProvider({ apiKey: "key", profile: GROK_PILOT_PROFILE, fetch: transport });
+    await provider.assess("alice");
+    const body = JSON.parse(String(vi.mocked(transport).mock.calls[0][1]?.body));
+    expect(body).toMatchObject({ model: GROK_PILOT_PROFILE.model, reasoning: { effort: "low" }, max_output_tokens: 1024, max_turns: 3,
+      tools: [{ type: "x_search", allowed_x_handles: ["alice"], enable_image_understanding: false, enable_video_understanding: false }],
+      text: { format: { schema: { required: ["handle", "kind", "mbti", "reason"], properties: { kind: { enum: ["accepted", "abstained"] },
+        mbti: { type: ["string", "null"] }, reason: { enum: ["insufficient-evidence", "subject-unavailable", "provider-refusal", null] } } } } } });
+    expect(body.text.format.schema.properties.mbti.enum).toContain(null);
+    expect(() => new GrokAssessmentProvider({ apiKey: "key", profile: GROK_PILOT_PROFILE, model: "grok-other" })).toThrow("conflicts");
   });
 });
