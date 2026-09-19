@@ -17,7 +17,7 @@ import type { MintState, SignatureRequest } from "./service.js";
 import { renderSignatureSvg } from "../algorithmV2/index.js";
 import { formalSignatureRenderer, sha256Hex } from "../v1/renderer.js";
 import { SLOGAN_TOOLTIP_SCRIPT, SLOGAN_TOOLTIP_SCRIPT_URL } from "../brand/sloganTooltipScript.js";
-import { SLOGAN_MBTI_HERO_SCRIPT, SLOGAN_MBTI_HERO_SCRIPT_URL } from "../brand/sloganMbtiHero.js";
+import { SLOGAN_MBTI_HERO_SCRIPT, SLOGAN_MBTI_HERO_SCRIPT_URL, SLOGAN_MBTI_HERO_SVG } from "../brand/sloganMbtiHero.js";
 import { OPEN_FLOW_QUESTION_MARK, REBALANCED_INK_HOOK_QUESTION_MARK } from "../brand/sloganQuestionMark.js";
 import { QUESTION_MARK_V2_CANDIDATES } from "../brand/sloganQuestionMarkCandidates.js";
 import { QUESTION_MARK_STUDY_CSS, QUESTION_MARK_STUDY_CSS_PATH, QUESTION_MARK_STUDY_PATH } from "../brand/sloganQuestionMarkStudy.js";
@@ -290,7 +290,7 @@ describe("open mint HTTP boundary", () => {
     expect(test.network.state).not.toHaveBeenCalled();
   });
 
-  it("visiting every Reveal comparison leaves the current home punctuation unchanged", async () => {
+  it("visiting every Reveal comparison preserves the approved homepage without punctuation", async () => {
     const test = await fixture();
     const client = test.client();
     for (const frame of SLOGAN_MBTI_FRAMES) {
@@ -298,10 +298,11 @@ describe("open mint HTTP boundary", () => {
     }
     const home = await client.request("/");
     expect(home.status).toBe(200);
-    expect(home.text.split(REBALANCED_INK_HOOK_QUESTION_MARK.svgMarkup)).toHaveLength(2);
+    expect(home.text).toContain(SLOGAN_MBTI_HERO_SVG);
+    expect(home.text).not.toContain('data-punctuation-id=');
     expect(home.text).not.toContain(OPEN_FLOW_QUESTION_MARK.svgMarkup);
     expect(home.text).not.toContain(QUESTION_MARK_REVEAL_CSS_PATH);
-    for (const mark of REVEAL_QUESTION_MARK_OPTIONS.filter(mark => mark.id !== REBALANCED_INK_HOOK_QUESTION_MARK.id)) {
+    for (const mark of REVEAL_QUESTION_MARK_OPTIONS) {
       expect(home.text).not.toContain(mark.svgMarkup);
     }
     expect(test.assess).not.toHaveBeenCalled();
@@ -359,13 +360,15 @@ describe("open mint HTTP boundary", () => {
     expect(test.assess).not.toHaveBeenCalled();
   });
 
-  it("proposal selections never replace the current question mark on home", async () => {
+  it("proposal selections never add punctuation to the approved homepage", async () => {
     const test = await fixture(); const client = test.client();
     for (const mark of QUESTION_MARK_V2_CANDIDATES) {
       expect((await client.request(`${QUESTION_MARK_STUDY_PATH}?mark=${mark.id}&shape=INTP`)).status).toBe(200);
       const home = await client.request("/");
       expect(home.status).toBe(200);
-      expect(home.text).toContain(REBALANCED_INK_HOOK_QUESTION_MARK.svgMarkup);
+      expect(home.text).toContain(SLOGAN_MBTI_HERO_SVG);
+      expect(home.text).not.toContain('data-punctuation-id=');
+      expect(home.text).not.toContain(REBALANCED_INK_HOOK_QUESTION_MARK.svgMarkup);
       expect(home.text).not.toContain(OPEN_FLOW_QUESTION_MARK.svgMarkup);
       expect(home.text).not.toContain(mark.svgMarkup);
       expect(home.text).not.toContain(QUESTION_MARK_STUDY_CSS_PATH);
@@ -380,7 +383,9 @@ describe("open mint HTTP boundary", () => {
     const scripts = [...home.text.matchAll(/<script src="([^"]+)" defer><\/script>/g)].map(match => match[1]!);
     expect(scripts.filter(path => path === SLOGAN_TOOLTIP_SCRIPT_URL)).toHaveLength(1);
     expect(home.text).toContain('aria-labelledby="slogan-heading"');
-    expect(home.text).toContain('role="tooltip" aria-hidden="true" hidden>Whose_Signature_Will_You_Reveal?</span>');
+    expect(home.text).toContain('<h1 id="slogan-heading" class="visually-hidden">The_First_Agent_Artwork</h1>');
+    expect(home.text).toContain('title="The_First_Agent_Artwork"');
+    expect(home.text).toContain('role="tooltip" aria-hidden="true" hidden>The_First_Agent_Artwork</span>');
     const csp = home.headers.get("content-security-policy")!;
     expect(csp).toContain("script-src 'self';");
     expect(csp).not.toMatch(/unsafe-inline|unsafe-eval/);

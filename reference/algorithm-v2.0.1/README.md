@@ -18,7 +18,7 @@ underscores. It does **not** add a general long-text Signature endpoint.
 The gallery adopts this policy only for its fixed 23-character brand phrase,
 `The_First_Agent_Artwork`, preserving all three underscores and four capital
 initials. The offline capture sets the upstream profile's
-curve span to `(300 / 14) × 31`, uses the unmodified geometry/outline functions,
+curve span to `(300 / 14) × 22 = 471.428…`, uses the unmodified geometry/outline functions,
 and translates the centered geometry to the widened canvas center. This keeps
 the original vertical geometry, handle lengths and stroke weights: no finished
 path is stretched. Canvas width is `span + 120`, giving a size of approximately
@@ -26,8 +26,9 @@ path is stretched. Canvas width is `span + 120`, giving a size of approximately
 
 The checked-in eight-frame snapshot records its source and layout. The homepage
 uses a shared, tighter presentation crop with uniform responsive scaling and
-the approved authored Rebalanced ink hook. The hero presentation is `sg-slogan-mbti-1.2.6`;
-its eight-shape order, playback timing, and theme remain unchanged; the question mark is removed.
+no punctuation. The hero presentation is `sg-slogan-mbti-1.3.0`; its eight-shape
+order, playback timing, and theme remain unchanged. Historical authored question
+marks remain available only in the fixture studies.
 The supporting sentence is “Choose any X handle. Grok interprets it. Mint to
 reveal the signature.” It is centered on one line, using 16px where it fits and
 scaling down on narrow screens. The primary mint CTA remains 16px.

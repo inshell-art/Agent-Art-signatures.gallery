@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SLOGAN_MBTI_FRAMES, SLOGAN_MBTI_SOURCE } from "./sloganMbtiFrames.js";
-import { SLOGAN_MBTI_HERO_SVG, SLOGAN_MBTI_HERO_LAYOUT } from "./sloganMbtiHero.js";
+import { SLOGAN_MBTI_HERO_SVG, SLOGAN_MBTI_HERO_LAYOUT, SLOGAN_MBTI_HERO_MANIFEST } from "./sloganMbtiHero.js";
 import { OPEN_FLOW_QUESTION_MARK, REBALANCED_INK_HOOK_QUESTION_MARK } from "./sloganQuestionMark.js";
 import { QUESTION_MARK_V2_CANDIDATES } from "./sloganQuestionMarkCandidates.js";
 import {
@@ -29,8 +29,8 @@ describe("read-only v2 question-mark proposal page", () => {
     expect(html).toContain('name="robots" content="noindex,nofollow"');
     expect(html).toContain("Earlier study");
     expect(html).toContain("Previous selection");
-    expect(html).not.toContain("Ink hook is now on home");
-    expect(html).not.toContain("On home");
+    expect(html).toContain("The homepage title is The_First_Agent_Artwork, with no punctuation.");
+    expect(html).not.toMatch(/now on home|On home|homepage now uses/);
     expect(html).not.toContain("Preview only — nothing has changed on home.");
     expect(html).toContain("authored vector marks, not renderer output");
   });
@@ -89,7 +89,9 @@ describe("read-only v2 question-mark proposal page", () => {
     const initialHero = SLOGAN_MBTI_HERO_SVG;
     for (const { mark, frame } of combinations) questionMarkStudyPage(stylesheet, mark.id, frame.mbti);
     expect(SLOGAN_MBTI_HERO_SVG).toBe(initialHero);
-    expect(SLOGAN_MBTI_HERO_SVG.split(REBALANCED_INK_HOOK_QUESTION_MARK.svgMarkup)).toHaveLength(2);
+    expect(SLOGAN_MBTI_HERO_MANIFEST.punctuation).toBeNull();
+    expect(SLOGAN_MBTI_HERO_SVG).not.toContain('data-punctuation-id=');
+    expect(SLOGAN_MBTI_HERO_SVG).not.toContain(REBALANCED_INK_HOOK_QUESTION_MARK.svgMarkup);
     expect(SLOGAN_MBTI_HERO_SVG).not.toContain(OPEN_FLOW_QUESTION_MARK.svgMarkup);
     for (const mark of QUESTION_MARK_V2_CANDIDATES) {
       expect(SLOGAN_MBTI_HERO_SVG).not.toContain(mark.svgMarkup);

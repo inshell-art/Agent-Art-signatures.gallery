@@ -30,7 +30,7 @@ export const INK_HOOK_QUESTION_MARK = Object.freeze({
   });
 
 
-/** Approved ink hook, shared by the current homepage slogan and its study. */
+/** Historical approved ink hook, retained for studies; the current title has no punctuation. */
 export const REBALANCED_INK_HOOK_QUESTION_MARK = Object.freeze({
   id: "rebalanced-ink-hook",
   version: "sg-question-mark-rebalanced-ink-hook-1",

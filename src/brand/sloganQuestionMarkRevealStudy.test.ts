@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { SITE_CSS } from "../v1/siteCss.js";
 import { SLOGAN_MBTI_FRAMES, SLOGAN_MBTI_SOURCE } from "./sloganMbtiFrames.js";
-import { SLOGAN_MBTI_HERO_LAYOUT, SLOGAN_MBTI_HERO_SVG } from "./sloganMbtiHero.js";
+import { SLOGAN_MBTI_HERO_LAYOUT, SLOGAN_MBTI_HERO_SVG, SLOGAN_MBTI_HERO_MANIFEST } from "./sloganMbtiHero.js";
 import { INK_HOOK_QUESTION_MARK, OPEN_FLOW_QUESTION_MARK, REBALANCED_INK_HOOK_QUESTION_MARK } from "./sloganQuestionMark.js";
 import {
   QUESTION_MARK_REVEAL_CSS,
@@ -17,7 +17,7 @@ const shapeIds = ["ISTJ", "ISFJ", "INFJ", "INTJ", "ISTP", "ISFP", "INFP", "INTP"
 const optionIds = ["ink-hook", "rebalanced-ink-hook", "chisel-hook", "quiet-anchor"];
 
 describe("read-only Reveal question-mark comparison", () => {
-  it("retains the previous baseline, shares the selected home mark, and provides immutable alternatives", () => {
+  it("retains both historical selections and provides immutable alternatives", () => {
     expect(QUESTION_MARK_REVEAL_PATH).toBe("/dev/question-mark-reveal");
     expect(QUESTION_MARK_REVEAL_CSS_PATH).toBe(`${QUESTION_MARK_REVEAL_PATH}.css`);
     expect(REVEAL_QUESTION_MARK_OPTIONS.map(mark => mark.id)).toEqual(optionIds);
@@ -70,18 +70,18 @@ describe("read-only Reveal question-mark comparison", () => {
     expect(html).not.toMatch(/<style\b|\bstyle=/);
   });
 
-  it("labels only the selected Rebalanced ink hook as the current homepage mark", () => {
+  it("identifies the historical Rebalanced ink hook selection without claiming it is on home", () => {
     const html = questionMarkRevealStudyPage(stylesheet);
     const rows = [...html.matchAll(/<figure class="qm-reveal-option" data-candidate="([^"]+)">([\s\S]*?)<\/figure>/g)];
     expect(rows).toHaveLength(4);
     expect(rows[0]![2]).toContain("Previous ink hook");
     expect(rows[0]![2]).toContain('<span class="qm-reveal-tag">Previous</span>');
     expect(rows[1]![1]).toBe("rebalanced-ink-hook");
-    expect(rows[1]![2]).toContain('<span class="qm-reveal-tag">On home</span>');
-    expect(html.match(/class="qm-reveal-tag">On home</g)).toHaveLength(1);
-    expect(html).toContain("Selected: Rebalanced ink hook");
-    expect(html).toContain("Static comparison; Rebalanced ink hook is now on home.");
-    expect(html).not.toMatch(/Homepage unchanged|no option has been applied|Current ink hook/);
+    expect(rows[1]![2]).toContain('<span class="qm-reveal-tag">Historical selection</span>');
+    expect(html.match(/class="qm-reveal-tag">Historical selection</g)).toHaveLength(1);
+    expect(html).toContain("Earlier punctuation study");
+    expect(html).toContain("The homepage title is The_First_Agent_Artwork, with no punctuation.");
+    expect(html).not.toMatch(/On home|now on home|Selected: Rebalanced ink hook/);
   });
 
   it.each(SLOGAN_MBTI_FRAMES)("uses identical checked-in $mbti geometry and placement in all four comparisons", frame => {
@@ -135,15 +135,16 @@ describe("read-only Reveal question-mark comparison", () => {
     expect(html).not.toMatch(/<script\b|<form\b|<button\b|\bon[a-z]+=/);
   });
 
-  it("does not mutate current paths, the layout, or the homepage punctuation", () => {
+  it("does not mutate current paths, the layout, or the homepage's absence of punctuation", () => {
     const heroBefore = SLOGAN_MBTI_HERO_SVG;
     const geometryBefore = JSON.stringify({ source: SLOGAN_MBTI_SOURCE, frames: SLOGAN_MBTI_FRAMES, layout: SLOGAN_MBTI_HERO_LAYOUT });
     for (const frame of SLOGAN_MBTI_FRAMES) questionMarkRevealStudyPage(stylesheet, frame.mbti);
     expect(JSON.stringify({ source: SLOGAN_MBTI_SOURCE, frames: SLOGAN_MBTI_FRAMES, layout: SLOGAN_MBTI_HERO_LAYOUT })).toBe(geometryBefore);
     expect(SLOGAN_MBTI_HERO_SVG).toBe(heroBefore);
-    expect(SLOGAN_MBTI_HERO_SVG.split(REBALANCED_INK_HOOK_QUESTION_MARK.svgMarkup)).toHaveLength(1);
+    expect(SLOGAN_MBTI_HERO_MANIFEST.punctuation).toBeNull();
+    expect(SLOGAN_MBTI_HERO_SVG).not.toContain('data-punctuation-id=');
     expect(SLOGAN_MBTI_HERO_SVG).not.toContain(OPEN_FLOW_QUESTION_MARK.svgMarkup);
-    for (const mark of REVEAL_QUESTION_MARK_OPTIONS.filter(mark => mark.id !== REBALANCED_INK_HOOK_QUESTION_MARK.id)) {
+    for (const mark of REVEAL_QUESTION_MARK_OPTIONS) {
       expect(SLOGAN_MBTI_HERO_SVG).not.toContain(mark.svgMarkup);
     }
   });

@@ -4,6 +4,8 @@ Evaluated: 2026-09-19. Source: the consolidated Inbox, current active code, focu
 
 This is the task table extracted from `INBOX.md`, not another handoff. The Inbox returns to collecting new, untriaged items. Update task status and evidence here as work lands; moving an item here does not complete it. The previous token-saving/lightweight-night limit is superseded. This planning pass does not itself implement the tasks or authorize paid calls, provisioning, public transactions or deployment.
 
+Execution authorized: 2026-09-19. The user requested the current checkpoint be committed and pushed, followed by continued implementation on a new branch. Checkpoint `16fff22` is on `origin/main`; implementation continues on `codex/execution-table`. Paid calls, public deployment and other approval gates below remain separate.
+
 ## Target and scope
 
 Deliver the active open-mint product through three distinct milestones:
@@ -40,14 +42,14 @@ Development can proceed locally before external choices are supplied. No new ren
 
 ## Task table
 
-**Status:** Ready = can start locally; After = dependency first; Approval = local preparation is possible, external action needs approval; External = waiting on another party; Deferred = deliberately outside the minimum release. None of the implementation rows is done yet.
+**Status:** Ready = can start locally; After = dependency first; Approval = local preparation is possible, external action needs approval; External = waiting on another party; Deferred = deliberately outside the minimum release. Local verification and hosted CI are recorded separately.
 
 **Size:** S = focused change; M = connected module/test changes; L = subsystem requiring several reviewable increments. These are relative scopes, not calendar promises. Each row's check below is its definition of done.
 
 | ID | Task and deliverable | Status | Depends on | Size / milestone |
 | --- | --- | --- | --- | --- |
-| E00 | Restore the approved baseline; add repeatable offline CI | Ready | — | M / M1 |
-| E01 | Define the mint state contract; repair live request expiry | Ready | E00 baseline | M / M1 |
+| E00 | Restore the approved baseline; add repeatable offline CI | Locally verified; hosted CI pending | — | M / M1 |
+| E01 | Define the mint state contract; repair live request expiry | In progress | E00 baseline | M / M1 |
 | E02 | Bound session/assessment status reads and stale responses | After | E01 state contract | M / M1 |
 | E03 | Make wallet/reservation/error recovery actionable | After | E01–E02; E04 diagnostic IDs | M / M1 |
 | E04 | Persist a versioned attempt lifecycle and safe operator report | Ready | Existing guard tests | M / M1 |
@@ -168,8 +170,12 @@ No need to resolve every decision before E00–E08. Do not repeatedly block loca
 
 ## Execution and closure policy
 
+### Execution evidence
+
+- **E00 (2026-09-19):** Updated approved-slogan assertions and historical study labels, without changing rendered artwork or lock files. Added `.github/workflows/verify.yml` with pinned actions, Node 22, Foundry 1.5.1, mocked providers and explicit loopback HTTP testing. Full coverage run: **3,313 tests passed across 115 files**, existing thresholds unchanged. Typecheck, renderer verification/build, 65 contract tests, deployment manifest validation and nine manifest-role tests passed. Hosted execution is not yet claimed.
+
 - Start with **E00's baseline repair, then E01/E02**, while designing E04–E08. This is the first concrete batch, not another round of slogan refinement.
 - Keep changes reviewable. Coordinate shared `service.ts`, `pages.ts`, `server.ts` and client files rather than assigning simultaneous broad edits. Reuse existing boundaries and tests.
 - A task is done only when its acceptance evidence is recorded: changed files, commands/results, browser proof where relevant, remaining risks and decisions. A static test pass is not visual QA, fixture mint is not real Grok, and local green is not hosted CI.
 - Record blocked external actions against their specific task and continue independent local work. Do not mark work complete just because it moved out of Inbox or because only provider approval remains.
-- No commits, pushes, deployment, chain reset, or broad worktree cleanup are implied by this planning request. Do not recreate the retired `HANDOFF.md`.
+- The subsequent execution request authorizes implementation commits and pushes; it does not authorize deployment, paid calls, chain reset or broad worktree cleanup. Do not recreate the retired `HANDOFF.md`.
