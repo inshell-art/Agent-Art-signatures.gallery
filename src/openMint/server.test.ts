@@ -16,12 +16,13 @@ import type { OpenMintNetwork } from "./network.js";
 import type { MintState, SignatureRequest } from "./service.js";
 import { renderSignatureSvg } from "../algorithmV2/index.js";
 import { formalSignatureRenderer, sha256Hex } from "../v1/renderer.js";
-import { SLOGAN_DISPLAY_TEXT } from "../brand/sloganSignature.js";
 import { SLOGAN_TOOLTIP_SCRIPT, SLOGAN_TOOLTIP_SCRIPT_URL } from "../brand/sloganTooltipScript.js";
 import { SLOGAN_MBTI_HERO_SCRIPT, SLOGAN_MBTI_HERO_SCRIPT_URL } from "../brand/sloganMbtiHero.js";
-import { INK_HOOK_QUESTION_MARK, OPEN_FLOW_QUESTION_MARK } from "../brand/sloganQuestionMark.js";
+import { OPEN_FLOW_QUESTION_MARK, REBALANCED_INK_HOOK_QUESTION_MARK } from "../brand/sloganQuestionMark.js";
 import { QUESTION_MARK_V2_CANDIDATES } from "../brand/sloganQuestionMarkCandidates.js";
 import { QUESTION_MARK_STUDY_CSS, QUESTION_MARK_STUDY_CSS_PATH, QUESTION_MARK_STUDY_PATH } from "../brand/sloganQuestionMarkStudy.js";
+import { QUESTION_MARK_REVEAL_CSS, QUESTION_MARK_REVEAL_CSS_PATH, QUESTION_MARK_REVEAL_PATH, REVEAL_QUESTION_MARK_OPTIONS } from "../brand/sloganQuestionMarkRevealStudy.js";
+import { SLOGAN_MBTI_FRAMES } from "../brand/sloganMbtiFrames.js";
 import { OPEN_MINT_GALLERY_FIXTURES } from "./galleryFixtures.js";
 
 const servers: Server[] = [];
@@ -230,6 +231,82 @@ async function fixture(options: Pick<OpenMintServerOptions, "rpcUrl" | "devWalle
 }
 
 describe("open mint HTTP boundary", () => {
+  it("serves the Reveal question-mark comparisons and CSS without sessions or assessment under the existing CSP", async () => {
+    const test = await fixture();
+    const session = vi.spyOn(test.sessions, "session");
+    const css = await test.client().request(QUESTION_MARK_REVEAL_CSS_PATH);
+    expect(css.status).toBe(200);
+    expect(css.text).toBe(QUESTION_MARK_REVEAL_CSS);
+    expect(css.headers.get("content-type")).toBe("text/css; charset=utf-8");
+    const responses = [css];
+    for (const shape of [undefined, ...SLOGAN_MBTI_FRAMES.map(frame => frame.mbti)]) {
+      const page = await test.client().request(`${QUESTION_MARK_REVEAL_PATH}${shape ? `?shape=${shape}` : ""}`);
+      expect(page.status).toBe(200);
+      expect(page.headers.get("content-type")).toBe("text/html; charset=utf-8");
+      expect(page.text.match(/data-context="/g)).toHaveLength(4);
+      for (const mark of REVEAL_QUESTION_MARK_OPTIONS) {
+        expect(page.text).toContain(`data-context="${mark.id}" data-shape="${shape ?? "INFP"}"`);
+      }
+      expect(page.text).not.toMatch(/<script\b|<form\b|<button\b|\bon[a-z]+=/);
+      responses.push(page);
+    }
+    for (const response of responses) {
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(response.headers.get("set-cookie")).toBeNull();
+      expect(response.headers.get("content-security-policy")).toBe("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
+      expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    }
+    expect(session).not.toHaveBeenCalled();
+    expect(test.assess).not.toHaveBeenCalled();
+    expect(test.network.state).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid Reveal comparison shapes without reflecting inputs or issuing sessions", async () => {
+    const test = await fixture();
+    const session = vi.spyOn(test.sessions, "session");
+    for (const shape of ["", "unknown", "ENFP", "infp", "INFP\n", "__proto__", '\"><script>alert(1)</script>']) {
+      const response = await test.client().request(`${QUESTION_MARK_REVEAL_PATH}?shape=${encodeURIComponent(shape)}`);
+      expect(response.status).toBe(400);
+      expect(response.text).not.toContain("alert(1)");
+      expect(response.text).not.toContain("__proto__");
+      expect(response.text).not.toContain('data-context="');
+      expect(response.headers.get("set-cookie")).toBeNull();
+      expect(response.headers.get("cache-control")).toBe("no-store");
+    }
+    expect(session).not.toHaveBeenCalled();
+    expect(test.assess).not.toHaveBeenCalled();
+    expect(test.network.state).not.toHaveBeenCalled();
+  });
+
+  it("keeps Reveal comparison routes unavailable outside fixture mode", async () => {
+    const test = await fixture({ fixture: false });
+    for (const path of [QUESTION_MARK_REVEAL_PATH, `${QUESTION_MARK_REVEAL_PATH}?shape=INFP`, QUESTION_MARK_REVEAL_CSS_PATH]) {
+      const response = await test.client().request(path);
+      expect(response.status).toBe(404);
+      expect(response.text).not.toContain('data-context="');
+      expect(response.text).not.toBe(QUESTION_MARK_REVEAL_CSS);
+    }
+    expect(test.assess).not.toHaveBeenCalled();
+    expect(test.network.state).not.toHaveBeenCalled();
+  });
+
+  it("visiting every Reveal comparison leaves the current home punctuation unchanged", async () => {
+    const test = await fixture();
+    const client = test.client();
+    for (const frame of SLOGAN_MBTI_FRAMES) {
+      expect((await client.request(`${QUESTION_MARK_REVEAL_PATH}?shape=${frame.mbti}`)).status).toBe(200);
+    }
+    const home = await client.request("/");
+    expect(home.status).toBe(200);
+    expect(home.text.split(REBALANCED_INK_HOOK_QUESTION_MARK.svgMarkup)).toHaveLength(2);
+    expect(home.text).not.toContain(OPEN_FLOW_QUESTION_MARK.svgMarkup);
+    expect(home.text).not.toContain(QUESTION_MARK_REVEAL_CSS_PATH);
+    for (const mark of REVEAL_QUESTION_MARK_OPTIONS.filter(mark => mark.id !== REBALANCED_INK_HOOK_QUESTION_MARK.id)) {
+      expect(home.text).not.toContain(mark.svgMarkup);
+    }
+    expect(test.assess).not.toHaveBeenCalled();
+  });
+
   it("serves local question-mark proposals and their CSS without sessions, assessment, or weaker CSP", async () => {
     const test = await fixture();
     const session = vi.spyOn(test.sessions, "session");
@@ -288,9 +365,9 @@ describe("open mint HTTP boundary", () => {
       expect((await client.request(`${QUESTION_MARK_STUDY_PATH}?mark=${mark.id}&shape=INTP`)).status).toBe(200);
       const home = await client.request("/");
       expect(home.status).toBe(200);
-      expect(home.text).toContain(INK_HOOK_QUESTION_MARK.svgMarkup);
+      expect(home.text).toContain(REBALANCED_INK_HOOK_QUESTION_MARK.svgMarkup);
       expect(home.text).not.toContain(OPEN_FLOW_QUESTION_MARK.svgMarkup);
-      if (mark.id !== "ink-hook") expect(home.text).not.toContain(mark.svgMarkup);
+      expect(home.text).not.toContain(mark.svgMarkup);
       expect(home.text).not.toContain(QUESTION_MARK_STUDY_CSS_PATH);
     }
     expect(test.assess).not.toHaveBeenCalled();
@@ -303,7 +380,7 @@ describe("open mint HTTP boundary", () => {
     const scripts = [...home.text.matchAll(/<script src="([^"]+)" defer><\/script>/g)].map(match => match[1]!);
     expect(scripts.filter(path => path === SLOGAN_TOOLTIP_SCRIPT_URL)).toHaveLength(1);
     expect(home.text).toContain('aria-labelledby="slogan-heading"');
-    expect(home.text).toContain(`role="tooltip" aria-hidden="true" hidden>${SLOGAN_DISPLAY_TEXT}</span>`);
+    expect(home.text).toContain('role="tooltip" aria-hidden="true" hidden>Whose_Signature_Will_You_Reveal?</span>');
     const csp = home.headers.get("content-security-policy")!;
     expect(csp).toContain("script-src 'self';");
     expect(csp).not.toMatch(/unsafe-inline|unsafe-eval/);

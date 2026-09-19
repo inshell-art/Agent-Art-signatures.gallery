@@ -55,7 +55,10 @@ describe("brand-only slogan v2.0.1 release pin", () => {
     ["adoption.scope", "all-artworks"],
     ["adoption.accountRendererVersion", "sg-renderer-2.0.1"],
     ["adoption.legacyRendererVersion", "sg-renderer-2.0.1"],
-    ["source.displayText", "What_shape_do_you_go_by"],
+    ["source.displayText", "Whose_Signature_Will_You_Reveal"],
+    ["source.displayText", "Whose_signature_will_you_reveal?"],
+    ["source.displayText", "Whose_Shape_Will_You_Reveal?"],
+    ["source.displayText", "What_shape_do_you_go_by?"],
     ["source.rendererVersion", "sg-renderer-2.0.0"],
     ["source.upstreamCommit", "0".repeat(40)],
     ["source.pythonSha256", "0".repeat(64)],
@@ -82,19 +85,22 @@ describe("brand-only slogan v2.0.1 release pin", () => {
 
   it.each([
     ["rendererVersion: \"sg-renderer-2.0.1\"", "rendererVersion: \"sg-renderer-2.0.0\"", "Slogan snapshot capture identity changed"],
-    ["curve_span: 492.85714285714283", "curve_span: 300", "Slogan snapshot layout differs from the upstream long-text policy"],
+    ["curve_span: 471.4285714285714", "curve_span: 300", "Slogan snapshot layout differs from the upstream long-text policy"],
     ["mbti: \"ISTJ\"", "mbti: \"INTJ\"", "Slogan MBTI frame order changed"],
     ["pairedMbti: \"ESTJ\"", "pairedMbti: \"ENTJ\"", "Slogan I/E frame pair changed"],
-    ["M62.12,187.43", "M62.13,187.43", "Slogan frame path hash differs: ISTJ"],
+    ["M56.86,234.84", "M56.87,234.84", "Slogan frame path hash differs: ISTJ"],
   ])("checks injected snapshot bytes even after file rehashing: %s", (before, after, message) => {
-    const bytes = Buffer.from(read(SNAPSHOT_PATH).toString().replace(before, after));
+    const text = read(SNAPSHOT_PATH).toString();
+    expect(text).toContain(before);
+    const bytes = Buffer.from(text.replace(before, after));
     expect(() => verifySloganV201Lock(withRehashedFile(SNAPSHOT_PATH, bytes))).toThrow(message);
   });
 
   it("rejects a rehashed path and snapshot checksum that differ from the captured frame lock", () => {
     const text = read(SNAPSHOT_PATH).toString();
     const path = text.match(/    d: "([^"]+)"/)![1];
-    const changed = path.replace("M62.12,187.43", "M62.13,187.43");
+    const changed = path.replace("M56.86,234.84", "M56.87,234.84");
+    expect(changed).not.toBe(path);
     const bytes = Buffer.from(text.replace(path, changed).replace(hash(path), hash(changed)));
     expect(() => verifySloganV201Lock(withRehashedFile(SNAPSHOT_PATH, bytes))).toThrow("Slogan frame differs from the locked capture: ISTJ");
   });

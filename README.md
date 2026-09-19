@@ -2,7 +2,7 @@
 
 The default app separates **playful previews** from **wallet → independent Grok assessment → mint & reveal**. Anyone may mint any available handle. There is no X login, ownership claim, or claim withdrawal in this flow.
 
-The latest [next-agent handoff](MEMO.md) records the unfinished slogan refinement and current development state. The older root `HANDOFF.md` contains historical, superseded workflows; use this README and [open-mint architecture](docs/open-mint.md) for the active app.
+The approved homepage slogan is `The_First_Agent_Artwork`, supported by the centered, responsively sized guidance “Choose any X handle. Grok interprets it. Mint to reveal the signature.” See [the current slogan composition](docs/slogan-composition.md) and [open-mint architecture](docs/open-mint.md) for the active app. The [development execution plan](docs/development-plan.md) tracks the evaluated backlog, dependencies and acceptance gates; [INBOX.md](INBOX.md) collects new, untriaged items. The obsolete handoff has been removed; retained notes in [MEMO.md](MEMO.md) may be historical.
 
 - `/p/<handle>/<MBTI>` renders one freely editable preview, such as `/p/Alice_Bob_Key/ENFP`. Consumer Grok can choose the preview MBTI in the user's chat; previews make zero paid X or Grok calls and do not create an authoritative assessment.
 - `/p/<handle>/variations` keeps the 16-type comparison grid. Once a mint is confirmed, both preview routes redirect case variants to the saved artwork spelling; the selected type displays its archived artifact, and the other 15 stay clickable alternatives using the recorded renderer. The CTA becomes **View minted signature**. Pending and unavailable states never expose a prepared choice or suggest the handle is available to mint.

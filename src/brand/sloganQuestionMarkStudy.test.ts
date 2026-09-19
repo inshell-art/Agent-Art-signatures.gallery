@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { SLOGAN_MBTI_FRAMES, SLOGAN_MBTI_SOURCE } from "./sloganMbtiFrames.js";
 import { SLOGAN_MBTI_HERO_SVG, SLOGAN_MBTI_HERO_LAYOUT } from "./sloganMbtiHero.js";
-import { INK_HOOK_QUESTION_MARK, OPEN_FLOW_QUESTION_MARK } from "./sloganQuestionMark.js";
+import { OPEN_FLOW_QUESTION_MARK, REBALANCED_INK_HOOK_QUESTION_MARK } from "./sloganQuestionMark.js";
 import { QUESTION_MARK_V2_CANDIDATES } from "./sloganQuestionMarkCandidates.js";
 import {
   QUESTION_MARK_STUDY_CSS,
@@ -14,7 +14,7 @@ const stylesheet = "/assets/test-site.css";
 const combinations = QUESTION_MARK_V2_CANDIDATES.flatMap(mark => SLOGAN_MBTI_FRAMES.map(frame => ({ mark, frame })));
 
 describe("read-only v2 question-mark proposal page", () => {
-  it("defaults to the recommended Ink hook and INFP shape with three selectable proposals", () => {
+  it("defaults to the earlier Ink hook selection and INFP shape with three selectable proposals", () => {
     const html = questionMarkStudyPage(stylesheet);
     expect(QUESTION_MARK_V2_CANDIDATES.map(mark => mark.id)).toEqual(["ink-hook", "ribbon-fold", "quiet-solid"]);
     expect(html).toContain('data-candidate="ink-hook" aria-current="true"');
@@ -27,8 +27,10 @@ describe("read-only v2 question-mark proposal page", () => {
     expect(html).toContain('<link rel="stylesheet" href="/assets/test-site.css">');
     expect(html).toContain(`<link rel="stylesheet" href="${QUESTION_MARK_STUDY_CSS_PATH}">`);
     expect(html).toContain('name="robots" content="noindex,nofollow"');
-    expect(html).toContain("Ink hook is now on home. This study only previews alternatives.");
-    expect(html).toContain("On home");
+    expect(html).toContain("Earlier study");
+    expect(html).toContain("Previous selection");
+    expect(html).not.toContain("Ink hook is now on home");
+    expect(html).not.toContain("On home");
     expect(html).not.toContain("Preview only — nothing has changed on home.");
     expect(html).toContain("authored vector marks, not renderer output");
   });
@@ -87,9 +89,9 @@ describe("read-only v2 question-mark proposal page", () => {
     const initialHero = SLOGAN_MBTI_HERO_SVG;
     for (const { mark, frame } of combinations) questionMarkStudyPage(stylesheet, mark.id, frame.mbti);
     expect(SLOGAN_MBTI_HERO_SVG).toBe(initialHero);
-    expect(SLOGAN_MBTI_HERO_SVG.split(INK_HOOK_QUESTION_MARK.svgMarkup)).toHaveLength(2);
+    expect(SLOGAN_MBTI_HERO_SVG.split(REBALANCED_INK_HOOK_QUESTION_MARK.svgMarkup)).toHaveLength(2);
     expect(SLOGAN_MBTI_HERO_SVG).not.toContain(OPEN_FLOW_QUESTION_MARK.svgMarkup);
-    for (const mark of QUESTION_MARK_V2_CANDIDATES.filter(mark => mark.id !== "ink-hook")) {
+    for (const mark of QUESTION_MARK_V2_CANDIDATES) {
       expect(SLOGAN_MBTI_HERO_SVG).not.toContain(mark.svgMarkup);
     }
   });

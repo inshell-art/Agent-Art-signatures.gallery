@@ -15,16 +15,23 @@ This patch supplies `reusable_text_curve_layout(character_count)` for separate
 non-handle consumers. Signature input remains 1–15 ASCII letters, digits or
 underscores. It does **not** add a general long-text Signature endpoint.
 
-The gallery adopts this policy only for its fixed 24-character brand phrase,
-`What_shape_do_you_go_by?`. The offline capture sets the upstream profile's
-curve span to `(300 / 14) × 23`, uses the unmodified geometry/outline functions,
+The gallery adopts this policy only for its fixed 23-character brand phrase,
+`The_First_Agent_Artwork`, preserving all three underscores and four capital
+initials. The offline capture sets the upstream profile's
+curve span to `(300 / 14) × 31`, uses the unmodified geometry/outline functions,
 and translates the centered geometry to the widened canvas center. This keeps
 the original vertical geometry, handle lengths and stroke weights: no finished
-path is stretched. Canvas size is approximately `612.857 × 420`.
+path is stretched. Canvas width is `span + 120`, giving a size of approximately
+`591.429 × 420`, exported at `1521 × 1080`.
 
 The checked-in eight-frame snapshot records its source and layout. The homepage
 uses a shared, tighter presentation crop with uniform responsive scaling and
-the existing authored Ink hook. Capture verification:
+the approved authored Rebalanced ink hook. The hero presentation is `sg-slogan-mbti-1.2.6`;
+its eight-shape order, playback timing, and theme remain unchanged; the question mark is removed.
+The supporting sentence is “Choose any X handle. Grok interprets it. Mint to
+reveal the signature.” It is centered on one line, using 16px where it fits and
+scaling down on narrow screens. The primary mint CTA remains 16px.
+Capture verification:
 
 ```sh
 python3 scripts/capture-slogan-v2.py --check

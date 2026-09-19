@@ -1,10 +1,12 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { SLOGAN_WORDING_PATH, SLOGAN_WORDING_CSS_PATH, SLOGAN_WORDING_CSS, sloganWordingStudyPage } from "../brand/sloganWordingStudy.js";
 import { SITE_CSS } from "../v1/siteCss.js";
 import { SITE_FONT_CSS, siteFontAsset } from "../v1/fonts.js";
 import { FAVICON_SVG, FAVICON_URL } from "../brand/favicon.js";
 import { SLOGAN_TOOLTIP_SCRIPT, SLOGAN_TOOLTIP_SCRIPT_URL } from "../brand/sloganTooltipScript.js";
 import { SLOGAN_MBTI_HERO_SCRIPT, SLOGAN_MBTI_HERO_SCRIPT_URL } from "../brand/sloganMbtiHero.js";
 import { QUESTION_MARK_STUDY_PATH, QUESTION_MARK_STUDY_CSS_PATH, QUESTION_MARK_STUDY_CSS, questionMarkStudyPage } from "../brand/sloganQuestionMarkStudy.js";
+import { QUESTION_MARK_REVEAL_PATH, QUESTION_MARK_REVEAL_CSS_PATH, QUESTION_MARK_REVEAL_CSS, questionMarkRevealStudyPage } from "../brand/sloganQuestionMarkRevealStudy.js";
 import { formalSignatureRenderer, sha256Hex } from "../v1/renderer.js";
 import { renderSignatureSvg } from "../algorithmV2/index.js";
 import { canonicalHandle, handleDigest, isMbti, LEGACY_RENDERER_VERSION, preservedHandle, RENDERER_VERSION, seedForMbti } from "./identity.js";
@@ -95,6 +97,15 @@ export function createOpenMintServer(options: OpenMintServerOptions) {
       if (!["GET", "POST"].includes(req.method ?? "")) throw new PublicError(405, "METHOD_NOT_ALLOWED", "Method not allowed.");
       const path = url.pathname;
       if (req.method === "GET") {
+        if (options.fixture && path === SLOGAN_WORDING_CSS_PATH) return send(res, 200, SLOGAN_WORDING_CSS, "text/css; charset=utf-8");
+        if (options.fixture && path === SLOGAN_WORDING_PATH) return send(res, 200, sloganWordingStudyPage(cssUrl));
+        if (options.fixture && path === QUESTION_MARK_REVEAL_CSS_PATH) return send(res, 200, QUESTION_MARK_REVEAL_CSS, "text/css; charset=utf-8");
+        if (options.fixture && path === QUESTION_MARK_REVEAL_PATH) {
+          let html: string;
+          try { html = questionMarkRevealStudyPage(cssUrl, url.searchParams.get("shape") ?? "INFP"); }
+          catch { throw new PublicError(400, "INVALID_STUDY_OPTION", "Choose a listed slogan shape."); }
+          return send(res, 200, html);
+        }
         if (options.fixture && path === QUESTION_MARK_STUDY_CSS_PATH) return send(res, 200, QUESTION_MARK_STUDY_CSS, "text/css; charset=utf-8");
         if (options.fixture && path === QUESTION_MARK_STUDY_PATH) {
           let html: string;

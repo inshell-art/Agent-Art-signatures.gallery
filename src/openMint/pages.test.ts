@@ -3,7 +3,6 @@ import { aboutPage, assessmentPage, canonicalPageHandle, collectionPage, errorPa
 import { MBTI_TYPES, RENDERER_VERSION } from "./identity.js";
 import { HOME_LINK } from "../v1/navigation.js";
 import { SITE_CSS_URL } from "../v1/siteCss.js";
-import { SLOGAN_DISPLAY_TEXT } from "../brand/sloganSignature.js";
 import { SLOGAN_MBTI_HERO_MANIFEST, SLOGAN_MBTI_HERO_SCRIPT_URL, SLOGAN_MBTI_HERO_SVG } from "../brand/sloganMbtiHero.js";
 import { SLOGAN_TOOLTIP_SCRIPT_URL } from "../brand/sloganTooltipScript.js";
 import type { PublicPreviewState } from "./previewState.js";
@@ -126,16 +125,18 @@ describe("open mint pages", () => {
   });
 
   it("presents the eight v2 slogan shapes once while preserving the literal tooltip and keyboard label", () => {
+    const approvedSlogan = "The_First_Agent_Artwork";
     const html = homePage();
     const heading = html.match(/<h1\b[^>]*id="slogan-heading"[^>]*>([\s\S]*?)<\/h1>/);
-    expect(heading?.[1]).toBe(SLOGAN_DISPLAY_TEXT);
+    expect(heading?.[1]).toBe(approvedSlogan);
     expect(heading?.[0]).toContain('class="visually-hidden"');
     const figure = html.match(/<figure\b[^>]*class="slogan-signature"[^>]*>[\s\S]*?<\/figure>/)?.[0];
     expect(figure).toBeDefined();
     expect(figure).toContain('tabindex="0"');
     expect(figure).toContain('role="img"');
     expect(figure).toContain('aria-labelledby="slogan-heading"');
-    expect(figure).toContain(`title="${SLOGAN_DISPLAY_TEXT}"`);
+    expect(figure).toContain(`title="${approvedSlogan}"`);
+    expect(figure).toContain('data-slogan-signature-version="sg-slogan-mbti-1.3.0"');
     expect(figure).toContain(SLOGAN_MBTI_HERO_SVG);
     expect(figure!.match(/<svg\b/g)).toHaveLength(1);
     expect(figure).toContain('data-source-renderer="sg-renderer-2.0.1"');
@@ -144,15 +145,66 @@ describe("open mint pages", () => {
     ]);
     expect(figure).not.toMatch(/slogan-signature-desktop|slogan-signature-mobile/);
     const tip = html.match(/<span\b[^>]*id="slogan-tooltip"[^>]*>([\s\S]*?)<\/span>/);
-    expect(tip?.[1]).toBe(SLOGAN_DISPLAY_TEXT);
+    expect(tip?.[1]).toBe(approvedSlogan);
     expect(tip?.[0]).toContain('role="tooltip"');
     expect(tip?.[0]).toMatch(/\shidden(?:\s|>)/);
     expect(html.match(/id="slogan-heading"/g)).toHaveLength(1);
     expect(html.match(/id="slogan-tooltip"/g)).toHaveLength(1);
     expect(SLOGAN_MBTI_HERO_MANIFEST.sourceRendererVersion).toBe("sg-renderer-2.0.1");
+    expect(SLOGAN_MBTI_HERO_MANIFEST.displayText).toBe(approvedSlogan);
     expect(SLOGAN_MBTI_HERO_MANIFEST.frameCount).toBe(8);
     expect(SLOGAN_MBTI_HERO_MANIFEST).not.toHaveProperty("sourceGr0kRaw");
     expect(RENDERER_VERSION).toBe("sg-renderer-2.0.0");
+  });
+
+  it("pairs the approved case-sensitive slogan with the mint-and-reveal supporting sentence", () => {
+    for (const html of [homePage(), homePage({}, [entry])]) {
+      const guidance = html.match(/<p class="home-guidance">([\s\S]*?)<\/p>/)?.[1];
+      expect(guidance).toBe('<span>Choose any X handle.</span>&nbsp; <span>Grok interprets it.</span>&nbsp; <span>Mint to reveal the signature.</span>');
+      expect(guidance?.replace(/<[^>]+>/g, "").replaceAll("&nbsp;", "\u00a0"))
+        .toBe("Choose any X handle.\u00a0 Grok interprets it.\u00a0 Mint to reveal the signature.");
+      expect(html).not.toContain("Any X handle. One minted signature.");
+      expect(html).not.toContain("What_shape_do_you_go_by?");
+      expect(html).not.toContain("Whose_shape_will_you_reveal?");
+      expect(html).not.toContain("Whose_Shape_Will_You_Reveal?");
+    }
+  });
+
+  it.each([{ entries: [] }, { entries: [entry] }])("keeps the mint action outside a native collapsed Preview with Grok disclosure (entries: $entries)", ({ entries }) => {
+    const html = homePage({}, entries);
+    const intro = html.match(/<section class="open-intro"[^>]*>([\s\S]*?)<\/section>/)?.[1];
+    expect(intro).toBeDefined();
+    expect(intro).toMatch(/^<p class="home-guidance">[\s\S]*?<\/p><div class="auth-actions"><a class="auth-action home-mint-cta" href="\/mint"><span>Mint a signature<\/span><\/a><\/div><details\b/);
+    const disclosure = intro!.match(/<details\b([^>]*)>([\s\S]*?)<\/details>/);
+    expect(disclosure?.[1]).toBe(' class="auth-disclosure open-handoff"');
+    expect(disclosure?.[1]).not.toMatch(/\bopen\b(?:\s|=|$)/);
+    expect(disclosure?.[2]).toMatch(/^<summary>Preview with Grok<\/summary><div class="open-handoff-content">[\s\S]*<\/div>$/);
+    expect(disclosure?.[2]).not.toContain('href="/mint"');
+    expect(disclosure?.[2]).not.toContain("home-mint-cta");
+    expect(intro).not.toContain("Explore with Grok");
+    expect(intro?.match(/<summary>/g)).toHaveLength(1);
+  });
+
+  it("does not apply homepage Mint CTA typography to the mint flow, previews or other pages", () => {
+    for (const html of [mintPage("Alice_Bob_Key"), requestPage("Alice_Bob_Key"),
+      previewPage("Alice_Bob_Key", "ENFP"), previewVariationsPage("Alice_Bob_Key"),
+      collectionPage([entry]), mbtiGalleryPage("INTJ", [entry]), assessmentPage(ready), assessmentPage(minted), aboutPage(), errorPage("Not found")]) {
+      expect(html).not.toContain('class="auth-action home-mint-cta"');
+    }
+  });
+
+  it("keeps all preview instructions and the preview/mint distinction inside the expanded content", () => {
+    const html = homePage();
+    const disclosure = html.match(/<details class="auth-disclosure open-handoff">([\s\S]*?)<\/details>/)?.[1];
+    const content = disclosure?.match(/^<summary>Preview with Grok<\/summary><div class="open-handoff-content">([\s\S]*)<\/div>$/)?.[1];
+    expect(content).toBeDefined();
+    expect(content).toContain("Give this prompt to Grok on X or Grok.com.");
+    expect(content).toContain('readonly data-handoff-prompt aria-label="Prompt for Grok"');
+    expect(content).toContain("data-copy-handoff");
+    expect(content).toContain('href="https://grok.com" target="_blank" rel="noopener noreferrer"');
+    expect(content).toContain('data-copy-feedback role="status" aria-live="polite"');
+    expect(content).toContain('<p>Previews are for exploration. Minting uses a fresh Grok assessment.</p>');
+    expect(html.match(/Previews are for exploration\. Minting uses a fresh Grok assessment\./g)).toHaveLength(1);
   });
 
   it("omits the pause button while retaining a focusable slogan for the tooltip and motion pause", () => {
@@ -278,13 +330,20 @@ describe("open mint pages", () => {
   });
 
   it("requires wallet proof and explicit Mint & reveal without a separate review checkbox", () => {
+    const progress = assessmentPage(ready);
+    expect(progress).not.toContain('Grok chooses the final signature');
+    expect(progress).not.toContain('No mint fee.');
+    expect(progress).toContain('mint-progress-status');
     const html = mintPage("Alice_Bob_Key");
     expect(html).toContain('data-mint-entry data-wallet-verified="false"');
     expect(html).toContain('data-connect-wallet');
     expect(html).toContain('data-request-submit disabled');
     expect(html).toContain('data-assessment-request');
     expect(html).toContain('data-request-feedback role="status" aria-live="polite"');
-    expect(html).toContain('Grok chooses the final signature. It may differ from your preview. Reveal after minting.');
+    expect(mintPage()).toContain('Grok chooses the final signature. It may differ from <a data-mint-preview>your preview</a>. <strong>Reveal after minting.</strong>');
+    expect(mintPage('Alice_Bob')).toContain('data-mint-preview href="/p/Alice_Bob/variations"');
+    // The shared site reset forces all descendants to 400; semantic markup alone is insufficient.
+    expect(OPEN_MINT_CSS).toContain('.open-mint .open-mint-explanation strong{font-weight:700}');
     expect(html).toContain('No mint fee. You pay network gas. Minting creates a permanent public token.');
     expect(html.indexOf('Grok chooses')).toBeLessThan(html.indexOf('data-request-submit'));
     expect(html).not.toMatch(/checkbox|Create signature|data-mint-review|\/art\//);
@@ -449,10 +508,10 @@ describe("open mint pages", () => {
   });
 
   it("keeps warnings compact and unfilled without losing their conditional status label", () => {
-    expect(OPEN_MINT_CSS).toContain('.open-mint .open-preview-warning{--preview-warning:#806014;border-inline-start:1px solid var(--preview-warning);background:transparent;padding:.15rem 0 .15rem .65rem;color:var(--muted);font-size:.9em}');
-    expect(OPEN_MINT_CSS).toContain('.open-mint .open-preview-warning .open-preview-notice-label{display:inline;font-weight:500;color:var(--preview-warning)}');
-    expect(OPEN_MINT_CSS).toContain('.open-mint .open-preview-warning .open-preview-notice-label::after{content:":"}');
-    expect(OPEN_MINT_CSS).toContain('@media(prefers-color-scheme:dark){.open-mint .open-preview-warning{--preview-warning:#c6a65a}}');
+    expect(OPEN_MINT_CSS).toContain('.open-mint :is(.open-preview-warning,.provenance-caveats){--preview-warning:#806014;border-inline-start:1px solid var(--preview-warning);background:transparent;padding:.15rem 0 .15rem .65rem;color:var(--ink);font-size:.9em}');
+    expect(OPEN_MINT_CSS).toContain('.open-mint :is(.open-preview-warning,.provenance-caveats) .open-preview-notice-label{display:inline;font-weight:500;color:var(--preview-warning)}');
+    expect(OPEN_MINT_CSS).toContain('.open-mint :is(.open-preview-warning,.provenance-caveats) .open-preview-notice-label::after{content:":"}');
+    expect(OPEN_MINT_CSS).toContain('@media(prefers-color-scheme:dark){.open-mint :is(.open-preview-warning,.provenance-caveats){--preview-warning:#c6a65a}}');
     for (const html of [previewPage('Alice_Bob_Key', 'INTJ', {}, { state: 'unavailable' }), previewVariationsPage('Alice_Bob_Key', {}, { state: 'unavailable' })]) {
       expect(html).toContain('class="open-preview-notice open-preview-warning" data-preview-status role="status"');
       expect(html).toContain('Mint status cannot be verified right now. You can still explore these previews.');
@@ -799,7 +858,7 @@ describe("open mint pages", () => {
     expect(html).toContain('data-wallet-proved="true"');
     expect(html).toContain('<form data-mint-form>');
     expect(html).toContain('data-submit-mint disabled><span>Continue mint');
-    expect(html).toContain('Approve the transaction in your wallet to reveal it.');
+    expect(html).toContain('Preparing your mint…');
     const submitted = assessmentPage({ ...ready, mint: { state: "pending" } });
     expect(submitted).toContain('Mint submitted. Waiting to reveal your signature…');
     expect(submitted).not.toContain('data-mint-form');
@@ -829,7 +888,8 @@ describe("open mint pages", () => {
     expect(html).toContain('<dt>Handle</dt><dd><a class="gallery-handle" href="/p/Agent_Art/variations">@Agent_Art</a></dd>');
     expect(html).toContain('<a class="mbti-link" href="/INTJ/">INTJ</a>');
     expect(html).toContain('<dt>Assessment</dt><dd>Grok · independent X Search assessment</dd>');
-    expect(html).toContain('The backend asked Grok to research public X posts');
+    expect(html).toContain('<div class="provenance-caveats"><p><strong class="open-preview-notice-label">Caveat</strong> MBTI is an artistic input, not a psychological diagnosis. Owning this token does not imply ownership or control of the X account.</p></div>');
+    expect(html).not.toContain('The backend asked Grok to research public X posts');
     expect(html).toContain('class="signature-provenance"');
     expect(html).toContain('SVG ↗');
     expect(html).not.toContain('data-mint-form');
@@ -878,7 +938,8 @@ describe("open mint pages", () => {
       expect(html).not.toContain('href="/dev/tools"');
     }
     const revealed = assessmentPage(minted, options);
-    expect(revealed).toContain('The MBTI shapes the signature’s expression.');
+    expect(revealed).toContain('<div class="provenance-caveats"><p><strong class="open-preview-notice-label">Caveat</strong> MBTI is an artistic input, not a psychological diagnosis. Owning this token');
+    expect(revealed).toContain('Owning this token does not imply ownership or control of the X account.');
     expect(revealed).not.toContain('<dt>Assessment</dt>');
   });
 

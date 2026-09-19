@@ -520,6 +520,7 @@ describe('preview and mint browser lifecycle', () => {
   it('does not auto-prompt for a ready result without a prior explicit intent', async () => {
     const test = setup({ walletProved: true }); await flush();
     expect(sends(test)).toEqual([]); expect(test.walletCalls).toEqual([]);
+    expect(test.elements['[data-assessment-code]'].dataset.progressRecovery).toBe('true');
     await test.elements['[data-mint-form]'].emit('submit'); await test.elements['[data-mint-form]'].emit('submit');
     expect(sends(test)).toHaveLength(1); expect(test.requests.some(r => r.path === '/api/assessments')).toBe(false);
   });
@@ -532,6 +533,7 @@ describe('preview and mint browser lifecycle', () => {
     const test = setup({ walletProved: true, storage: intent(), walletRequest: method => { if (method === 'eth_sendTransaction' && cancel) throw Object.assign(new Error('User rejected'), { code: 4001 }); } }); await flush();
     expect(test.storage.has('sg-open:intent:rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr')).toBe(false); expect(test.storage.has('sg-open:submission:rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr')).toBe(false);
     expect(test.elements['[data-mint-feedback]'].textContent).toContain('Cancelled');
+    expect(test.elements['[data-assessment-code]'].dataset.progressRecovery).toBe('true');
     cancel = false; await test.elements['[data-mint-form]'].emit('submit');
     expect(sends(test)).toHaveLength(2); expect(test.requests.some(r => r.path === '/api/assessments')).toBe(false);
   });
@@ -613,7 +615,7 @@ describe('preview and mint browser lifecycle', () => {
     const test = setup({ pending: true, walletProved: true, storage: intent(), api: path => path.startsWith('/api/assessments/') ? { handle: 'agent_art', tokenId: '123', status: 'ready', canMint: true, walletProvedForCode: false } : undefined }); await flush();
     await test.scheduled.shift()!(); expect(sends(test)).toEqual([]);
     expect(test.elements['[data-submit-mint]'].disabled).toBe(true);
-    expect(test.elements['[data-assessment-status]'].textContent).toContain('ready to mint');
+    expect(test.elements['[data-assessment-status]'].textContent).toBe('Connect your wallet to continue');
   });
   it('waits for confirmation without authorization if the handle is already confirming', async () => {
     const test = setup({ pending: true, walletProved: true, storage: intent(), api: path => path.startsWith('/api/assessments/') ? { handle: 'agent_art', tokenId: '123', status: 'ready', canMint: false, mint: { state: 'pending' } } : undefined }); await flush();

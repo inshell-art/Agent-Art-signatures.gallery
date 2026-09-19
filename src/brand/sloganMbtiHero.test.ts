@@ -10,7 +10,7 @@ import {
   SLOGAN_MBTI_HERO_SCRIPT_URL,
   SLOGAN_MBTI_HERO_SVG,
 } from "./sloganMbtiHero.js";
-import { INK_HOOK_QUESTION_MARK, OPEN_FLOW_QUESTION_MARK } from "./sloganQuestionMark.js";
+import { INK_HOOK_QUESTION_MARK, OPEN_FLOW_QUESTION_MARK, REBALANCED_INK_HOOK_QUESTION_MARK } from "./sloganQuestionMark.js";
 import { SLOGAN_MBTI_FRAMES, SLOGAN_MBTI_LAYOUT } from "./sloganMbtiFrames.js";
 
 const TYPES = ["ISTJ", "ISFJ", "INFJ", "INTJ", "ISTP", "ISFP", "INFP", "INTP"] as const;
@@ -74,21 +74,21 @@ function boot({ hidden = false, observer = true } = {}) {
 describe("eight-shape MBTI slogan hero", () => {
   it("declares the exact phrase, v2 source, eight geometric variants, and a 16-second loop", () => {
     expect(SLOGAN_MBTI_HERO_MANIFEST).toMatchObject({
-      version: "sg-slogan-mbti-1.2.3",
+      version: "sg-slogan-mbti-1.3.0",
       sourceRendererVersion: "sg-renderer-2.0.1",
-      displayText: "What_shape_do_you_go_by?",
+      displayText: "The_First_Agent_Artwork",
       frameCount: 8,
       durationMs: 16_000,
       transitionMs: 1_000,
       initialOffsetMs: 1_000,
-      punctuation: { id: "ink-hook", version: "sg-question-mark-ink-hook-1" },
+      punctuation: null,
     });
     expect(SLOGAN_MBTI_HERO_MANIFEST).not.toHaveProperty("sourceGr0kRaw");
     expect(SLOGAN_MBTI_HERO_MANIFEST).not.toHaveProperty("sourceGr0kScale");
   });
 
   it("widens the shared viewport with the upstream canvas while preserving height and aspect ratio", () => {
-    const width = SLOGAN_MBTI_LAYOUT.canonical_width - 40;
+    const width = SLOGAN_MBTI_LAYOUT.canonical_width - 70;
     expect(SLOGAN_MBTI_HERO_LAYOUT).toEqual({
       viewBox: `35 145 ${width} 150`,
       width: width * 3,
@@ -120,17 +120,21 @@ describe("eight-shape MBTI slogan hero", () => {
     expect(svg).not.toMatch(/data-slogan-frame="E[A-Z]{3}"/);
   });
 
-  it("keeps the selected Ink hook fixed at the expanded canvas edge outside the artwork frames", () => {
-    const svg = SLOGAN_MBTI_HERO_SVG;
-    expect(svg.split(INK_HOOK_QUESTION_MARK.svgMarkup)).toHaveLength(2);
-    expect(svg).not.toContain(OPEN_FLOW_QUESTION_MARK.svgMarkup);
-    expect(svg.match(/<path\b/g)).toHaveLength(10);
-    expect(svg).not.toMatch(/<circle\b/);
-    expect(svg).toContain(`data-punctuation-id="ink-hook" transform="${SLOGAN_MBTI_HERO_LAYOUT.punctuationTransform}"`);
-    expect(svg.indexOf(INK_HOOK_QUESTION_MARK.svgMarkup)).toBeGreaterThan(svg.lastIndexOf("data-slogan-frame="));
+  it("omits punctuation from the declarative slogan", () => {
+    expect(SLOGAN_MBTI_HERO_SVG).not.toContain("data-punctuation-id");
+    expect(SLOGAN_MBTI_HERO_SVG).not.toContain(REBALANCED_INK_HOOK_QUESTION_MARK.svgMarkup);
+    expect(SLOGAN_MBTI_HERO_SVG.match(/<path\b/g)).toHaveLength(8);
   });
 
-  it("locks the exact approved font-free Ink hook outline independently of renderer geometry", () => {
+  it("locks the exact approved font-free Rebalanced ink hook independently of renderer geometry", () => {
+    expect(Object.isFrozen(REBALANCED_INK_HOOK_QUESTION_MARK)).toBe(true);
+    expect(REBALANCED_INK_HOOK_QUESTION_MARK).toMatchObject({ id: "rebalanced-ink-hook", version: "sg-question-mark-rebalanced-ink-hook-1" });
+    expect(REBALANCED_INK_HOOK_QUESTION_MARK.svgMarkup.match(/<path\b/g)).toHaveLength(2);
+    expect(createHash("sha256").update(REBALANCED_INK_HOOK_QUESTION_MARK.svgMarkup).digest("hex"))
+      .toBe("959afaa6d6fe1e919576b1461cd4a01c32e1aa56735f111ce9ffad49b548b69a");
+  });
+
+  it("retains the previous font-free Ink hook unchanged for historical comparisons", () => {
     expect(Object.isFrozen(INK_HOOK_QUESTION_MARK)).toBe(true);
     expect(INK_HOOK_QUESTION_MARK).toMatchObject({ id: "ink-hook", version: "sg-question-mark-ink-hook-1" });
     expect(INK_HOOK_QUESTION_MARK.svgMarkup.match(/<path\b/g)).toHaveLength(2);
@@ -147,7 +151,7 @@ describe("eight-shape MBTI slogan hero", () => {
     expect(svg).not.toMatch(/matrix\(|scale\([^)]*[, ]+[^)]*\)/);
     expect(svg).not.toContain("NaN");
     expect(svg).not.toContain("Infinity");
-    expect(svg).not.toContain("What_shape_do_you_go_by?");
+    expect(svg).not.toContain("The_First_Agent_Artwork");
   });
 
   it("has a renderer-free runtime boundary rather than generating artwork in the browser", () => {

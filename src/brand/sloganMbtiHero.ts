@@ -1,34 +1,32 @@
 import { createHash } from "node:crypto";
 import { SLOGAN_MBTI_FRAMES, SLOGAN_MBTI_SOURCE, SLOGAN_MBTI_LAYOUT } from "./sloganMbtiFrames.js";
-import { INK_HOOK_QUESTION_MARK } from "./sloganQuestionMark.js";
 
 /** Brand presentation only. No assessment, renderer, or network call at runtime. */
 export const SLOGAN_MBTI_HERO_MANIFEST = Object.freeze({
-  version: "sg-slogan-mbti-1.2.3",
+  version: "sg-slogan-mbti-1.3.0",
   sourceRendererVersion: SLOGAN_MBTI_SOURCE.rendererVersion,
   displayText: SLOGAN_MBTI_SOURCE.displayText,
   frameCount: SLOGAN_MBTI_FRAMES.length,
   durationMs: 16_000,
   transitionMs: 1_000,
   initialOffsetMs: 1_000,
-  punctuation: Object.freeze({ id: INK_HOOK_QUESTION_MARK.id, version: INK_HOOK_QUESTION_MARK.version }),
+  punctuation: null,
   runtimeBoundary: "checked-in-shape-lock",
   palette: "currentColor follows site theme; I/E twins share geometry",
   layout: SLOGAN_MBTI_LAYOUT,
   frames: Object.freeze(SLOGAN_MBTI_FRAMES.map(({ mbti, pairedMbti, sha256 }) => Object.freeze({ mbti, pairedMbti, sha256 }))),
 });
 
-// One coordinate frame for the whole loop: shapes never resize or jump between
-// viewports. The separate, authored question mark remains a readable annotation.
-// Keep the same crop padding and punctuation size; extend the horizontal frame
-// by the upstream long-text canvas growth, never stretch the rendered curves.
+// One centered coordinate frame for the whole loop, with symmetric crop padding.
+// The historical punctuation transform remains available to the comparison pages;
+// the declarative homepage title has no punctuation.
 export const SLOGAN_MBTI_HERO_LAYOUT = Object.freeze({
-  viewBox: `35 145 ${SLOGAN_MBTI_LAYOUT.canonical_width - 40} 150`,
-  width: (SLOGAN_MBTI_LAYOUT.canonical_width - 40) * 3,
+  viewBox: `35 145 ${SLOGAN_MBTI_LAYOUT.canonical_width - 70} 150`,
+  width: (SLOGAN_MBTI_LAYOUT.canonical_width - 70) * 3,
   height: 450,
   punctuationTransform: `translate(${SLOGAN_MBTI_LAYOUT.canonical_width - 39} 195)`,
 });
-export const SLOGAN_MBTI_HERO_SVG = `<svg id="slogan-animation" viewBox="${SLOGAN_MBTI_HERO_LAYOUT.viewBox}" xmlns="http://www.w3.org/2000/svg" width="${SLOGAN_MBTI_HERO_LAYOUT.width}" height="${SLOGAN_MBTI_HERO_LAYOUT.height}" aria-hidden="true" focusable="false">${SLOGAN_MBTI_FRAMES.map(({ mbti, pairedMbti, d }, index) => `<g data-slogan-frame="${mbti}" data-mbti-pair="${mbti}/${pairedMbti}" class="slogan-mbti-frame slogan-mbti-frame-${index}"><path d="${d}" fill="currentColor"/></g>`).join("")}<g class="slogan-signature-punctuation" data-punctuation-id="${INK_HOOK_QUESTION_MARK.id}" transform="${SLOGAN_MBTI_HERO_LAYOUT.punctuationTransform}" aria-hidden="true">${INK_HOOK_QUESTION_MARK.svgMarkup}</g></svg>`;
+export const SLOGAN_MBTI_HERO_SVG = `<svg id="slogan-animation" viewBox="${SLOGAN_MBTI_HERO_LAYOUT.viewBox}" xmlns="http://www.w3.org/2000/svg" width="${SLOGAN_MBTI_HERO_LAYOUT.width}" height="${SLOGAN_MBTI_HERO_LAYOUT.height}" aria-hidden="true" focusable="false">${SLOGAN_MBTI_FRAMES.map(({ mbti, pairedMbti, d }, index) => `<g data-slogan-frame="${mbti}" data-mbti-pair="${mbti}/${pairedMbti}" class="slogan-mbti-frame slogan-mbti-frame-${index}"><path d="${d}" fill="currentColor"/></g>`).join("")}</svg>`;
 
 // Begin at the first crossfade, skipping the initial hold without changing the loop cadence.
 export const SLOGAN_MBTI_HERO_CSS = `

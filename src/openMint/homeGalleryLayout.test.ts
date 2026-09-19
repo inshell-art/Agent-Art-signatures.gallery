@@ -26,6 +26,81 @@ describe("home gallery width", () => {
       .toBe("width:100%;max-width:42rem;margin-inline:auto");
   });
 
+  it("keeps the guidance on one centered line, capped at 16px and fitting its container", () => {
+    expect(rules(OPEN_MINT_CSS).filter(rule => rule.selector.includes(".home-guidance")))
+      .toEqual([{
+        selector: ".open-mint .home-grid .home-guidance",
+        declarations: "font-size:min(16px,3.1cqi);line-height:1.5;text-align:center;white-space:nowrap;margin:0 0 .75rem",
+      }, {
+        selector: ".open-mint .home-grid .home-guidance>span",
+        declarations: "display:inline-block;max-width:100%;font:inherit",
+      }]);
+    expect(SITE_CSS).not.toContain(".home-guidance");
+    const home = homePage({}, [entry]);
+    expect(home.match(/class="home-guidance"/g)).toHaveLength(1);
+    expect(home).toContain('<p class="home-guidance"><span>Choose any X handle.</span>&nbsp; <span>Grok interprets it.</span>&nbsp; <span>Mint to reveal the signature.</span></p>');
+    expect(home).not.toMatch(/<(?:form|button|input)[^>]*class="[^"]*home-guidance/);
+    for (const html of [mbtiGalleryPage("INTJ", [entry]), collectionPage([entry])]) {
+      expect(html).not.toContain('class="home-guidance"');
+    }
+  });
+
+  it("makes each guidance phrase inherit its fitted parent rather than the shared 14px descendant reset", () => {
+    // The reset targets spans directly, so enlarging their parent alone is insufficient.
+    const reset = rules(SITE_CSS).find(rule => rule.selector.includes("body :not(svg,svg *)"));
+    expect(reset?.declarations).toContain("font-size:var(--ui-font-size)");
+    const phrases = rules(OPEN_MINT_CSS).find(rule => rule.selector === ".open-mint .home-grid .home-guidance>span");
+    expect(phrases?.declarations).toContain("font:inherit");
+    expect(phrases?.declarations).not.toMatch(/font-size:\s*(?:14px|var\(--ui-font-size\))/);
+  });
+
+  it("sets both the homepage Mint CTA and its label to 16px while retaining the shared 14px UI and 44px target", () => {
+    expect(rules(OPEN_MINT_CSS).filter(rule => rule.selector.includes(".home-mint-cta")))
+      .toEqual([{
+        selector: ".open-mint .home-grid .home-mint-cta,.open-mint .home-grid .home-mint-cta>span",
+        declarations: "font-size:16px",
+      }]);
+    expect(rules(SITE_CSS).find(rule => rule.selector === ":root")?.declarations)
+      .toContain("--ui-font-size:14px");
+    const target = rules(SITE_CSS).find(rule => rule.selector === ".auth-action")?.declarations;
+    expect(target).toContain("min-height:44px;min-width:44px");
+    expect(SITE_CSS).not.toContain("home-mint-cta");
+    const home = homePage({}, [entry]);
+    expect(home.match(/class="auth-action home-mint-cta"/g)).toHaveLength(1);
+    expect(home).toContain('<a class="auth-action home-mint-cta" href="/mint"><span>Mint a signature</span></a>');
+    for (const html of [mbtiGalleryPage("INTJ", [entry]), collectionPage([entry])]) {
+      expect(html).not.toContain("home-mint-cta");
+    }
+  });
+
+  it("centers the homepage guidance, primary CTA and disclosure on one axis without centering nested instructions", () => {
+    const currentRules = rules(OPEN_MINT_CSS);
+    expect(currentRules.find(rule => rule.selector === ".open-mint .home-grid .open-intro")?.declarations)
+      .toBe("display:grid;justify-items:center;gap:.5rem;text-align:center;container-type:inline-size");
+    expect(currentRules.find(rule => rule.selector === ".open-mint .home-grid .open-intro>.auth-actions")?.declarations)
+      .toBe("margin:0;justify-content:center");
+    expect(currentRules.filter(rule => /\.open-intro.*\.auth-actions/.test(rule.selector))
+      .map(rule => rule.selector)).toEqual([".open-mint .home-grid .open-intro>.auth-actions"]);
+    expect(currentRules.find(rule => rule.selector === ".open-mint .home-grid .open-handoff")?.declarations)
+      .toBe("width:100%;margin:0;text-align:start");
+    expect(currentRules.find(rule => rule.selector === ".open-mint .home-grid .open-handoff>summary")?.declarations)
+      .toContain("margin-inline:auto");
+    expect(SITE_CSS).not.toContain(".open-intro");
+  });
+
+  it("separates expanded preview instructions while retaining a visible keyboard focus for the disclosure", () => {
+    const currentRules = rules(OPEN_MINT_CSS);
+    expect(currentRules.find(rule => rule.selector === ".open-mint .home-grid .open-handoff-content")?.declarations)
+      .toBe("margin-top:1rem;padding-top:1rem;border-top:1px solid var(--line)");
+    expect(currentRules.find(rule => rule.selector === ".open-mint .home-grid .open-handoff-content>p:first-child")?.declarations)
+      .toBe("margin-top:0");
+    const focus = currentRules.find(rule => rule.selector === ".open-mint .home-grid .open-handoff>summary:focus-visible")?.declarations;
+    expect(focus).toContain("outline:2px solid var(--blue)");
+    expect(focus).toMatch(/outline-offset:\s*[1-9]/);
+    expect(rules(SITE_CSS).find(rule => rule.selector === ".auth-disclosure p")?.declarations)
+      .toContain("color:var(--muted)");
+  });
+
   it("lowers only the current homepage slogan by 24px while preserving its padded height and 896px width", () => {
     const currentRules = rules(OPEN_MINT_CSS);
     expect(currentRules.filter(rule => /\.intro-panel\b/.test(rule.selector)))
