@@ -17,6 +17,11 @@ export interface XIdentityResolver {
   readonly provenance: XIdentitySnapshot["provenance"];
   resolve(handle: string, execution?: AssessmentExecution): Promise<XIdentitySnapshot>;
 }
+/** Only post-receipt semantic validation uses this classification. HTTP/body,
+ * transport and receipt-storage failures must retain their original category. */
+export class XIdentityResponseInvalidError extends Error {
+  constructor() { super("X username verification returned an invalid or mismatched user."); this.name = "XIdentityResponseInvalidError"; }
+}
 
 export function validateXIdentity(value: unknown, expectedHandle: string): XIdentitySnapshot {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid X identity snapshot.");
@@ -56,10 +61,13 @@ export class XApiIdentityResolver implements XIdentityResolver {
         headers: { Authorization: `Bearer ${this.#token}`, Accept: "application/json" },
       }),
     }) as { data?: { id?: unknown; username?: unknown }; errors?: unknown } | null;
-    if (!payload || typeof payload !== "object" || Array.isArray(payload) || payload.errors !== undefined || !payload.data
-      || typeof payload.data !== "object" || Array.isArray(payload.data)) throw new Error("X username verification did not return an unambiguous user.");
-    return validateXIdentity({ canonicalHandle: handle, username: payload.data.username, userId: payload.data.id,
-      verifiedAt: this.#now().toISOString(), provenance: this.provenance, freshness: "verified-at-preparation" }, handle);
+    const verifiedAt = this.#now().toISOString();
+    try {
+      if (!payload || typeof payload !== "object" || Array.isArray(payload) || payload.errors !== undefined || !payload.data
+        || typeof payload.data !== "object" || Array.isArray(payload.data)) throw new XIdentityResponseInvalidError();
+      return validateXIdentity({ canonicalHandle: handle, username: payload.data.username, userId: payload.data.id,
+        verifiedAt, provenance: this.provenance, freshness: "verified-at-preparation" }, handle);
+    } catch { throw new XIdentityResponseInvalidError(); }
   }
 }
 

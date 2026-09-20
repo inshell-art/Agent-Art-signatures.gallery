@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DevelopmentXIdentityResolver, validateXIdentity, XApiIdentityResolver, X_IDENTITY_MAX_RESPONSE_BYTES, X_USER_LOOKUP_ENDPOINT } from "./xIdentity.js";
+import { DevelopmentXIdentityResolver, validateXIdentity, XApiIdentityResolver, XIdentityResponseInvalidError, X_IDENTITY_MAX_RESPONSE_BYTES, X_USER_LOOKUP_ENDPOINT } from "./xIdentity.js";
 import type { AssessmentExecution, ProviderReceipt } from "./assessmentOperations.js";
 
 const NOW = new Date("2026-09-16T00:00:00.000Z");
@@ -33,7 +33,7 @@ describe("authoritative X username lookup", () => {
     { data: { id: "1".repeat(21), username: "Alice_Bob_Key" } },
   ])("fails closed for missing, ambiguous or mismatched users: %j", async payload => {
     const fetch = transport(payload);
-    await expect(new XApiIdentityResolver({ bearerToken: "mock-token", fetch }).resolve("alice_bob_key")).rejects.toThrow();
+    await expect(new XApiIdentityResolver({ bearerToken: "mock-token", fetch }).resolve("alice_bob_key")).rejects.toThrow(XIdentityResponseInvalidError);
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
@@ -92,7 +92,7 @@ describe("authoritative X username lookup", () => {
     const { execution, receipts } = executionRecorder();
     const resolver = new XApiIdentityResolver({ bearerToken: "private-token", fetch: transport(payload) });
     if (payload === valid) await resolver.resolve("alice_bob_key", execution);
-    else await expect(resolver.resolve("alice_bob_key", execution)).rejects.toThrow("does not match");
+    else await expect(resolver.resolve("alice_bob_key", execution)).rejects.toThrow(XIdentityResponseInvalidError);
     expect(receipts).toHaveLength(1);
     expect(receipts[0]).toMatchObject({ leg: "x-identity", category: "success", httpStatus: 200, usageStatus: "missing", cost: { status: "unknown", currency: "USD", scale: 10 } });
     expect(JSON.stringify(receipts)).not.toMatch(/private-token|Ignored display name|Alice_Bob_Key/);
@@ -106,6 +106,13 @@ describe("authoritative X username lookup", () => {
     await expect(new XApiIdentityResolver({ bearerToken: "token", fetch }).resolve("alice_bob_key", execution)).rejects.toThrow("receipt unavailable");
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(execution.recordReceipt).toHaveBeenCalledTimes(1);
+  });
+  it.each(["transport", "body", "receipt"])("does not label %s failure as a semantic invalidity", async failure => {
+    const { execution } = executionRecorder();
+    if (failure === "receipt") vi.mocked(execution.recordReceipt).mockRejectedValue(new Error("receipt unavailable"));
+    const fetch = failure === "transport" ? vi.fn(async () => { throw new Error("transport failed"); }) as typeof globalThis.fetch
+      : failure === "body" ? vi.fn(async () => new Response("bad JSON")) as typeof globalThis.fetch : transport();
+    await expect(new XApiIdentityResolver({ bearerToken: "mock-token", fetch }).resolve("alice_bob_key", execution)).rejects.not.toBeInstanceOf(XIdentityResponseInvalidError);
   });
 
   it.each([
