@@ -17,6 +17,7 @@ import { OpenMintService, type SignatureArtifact, type SignatureRequest } from "
 import { OPEN_MINT_GALLERY_FIXTURES, galleryFixtureModel } from "./galleryFixtures.js";
 import { publicPreviewState } from "./previewState.js";
 import { openMintSupportUrl } from "./supportUrl.js";
+import { LOCAL_ROBOTS_TXT, PRIVATE_ROBOTS } from "./sharing.js";
 
 export interface OpenMintServerOptions {
   origin: string; fixture: boolean; service: OpenMintService; sessions: WalletSessions;
@@ -91,6 +92,8 @@ export function createOpenMintServer(options: OpenMintServerOptions) {
 
   const server = createServer(async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
+    // This is the local-only runtime, never an indexing activation switch.
+    res.setHeader("X-Robots-Tag", PRIVATE_ROBOTS);
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Referrer-Policy", "no-referrer");
     res.setHeader("X-Frame-Options", "DENY");
@@ -103,6 +106,7 @@ export function createOpenMintServer(options: OpenMintServerOptions) {
       if (!["GET", "POST"].includes(req.method ?? "")) throw new PublicError(405, "METHOD_NOT_ALLOWED", "Method not allowed.");
       const path = url.pathname;
       if (req.method === "GET") {
+        if (path === "/robots.txt") return send(res, 200, LOCAL_ROBOTS_TXT, "text/plain; charset=utf-8");
         if (options.fixture && path === SLOGAN_WORDING_CSS_PATH) return send(res, 200, SLOGAN_WORDING_CSS, "text/css; charset=utf-8");
         if (options.fixture && path === SLOGAN_WORDING_PATH) return send(res, 200, sloganWordingStudyPage(cssUrl));
         if (options.fixture && path === QUESTION_MARK_REVEAL_CSS_PATH) return send(res, 200, QUESTION_MARK_REVEAL_CSS, "text/css; charset=utf-8");

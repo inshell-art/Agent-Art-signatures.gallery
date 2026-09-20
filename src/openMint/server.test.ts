@@ -252,6 +252,31 @@ async function recordedGrokFixture() {
   return { ...test, owner, assessment, ...request };
 }
 
+describe("local-only crawl policy", () => {
+  it("serves disallow-all robots before session creation or service work", async () => {
+    const f = await fixture(), session = vi.spyOn(f.sessions, "session"), client = f.client();
+    const response = await client.request("/robots.txt");
+    expect(response.status).toBe(200);
+    expect(response.text).toBe("User-agent: *\nDisallow: /\n");
+    expect(response.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+    expect(response.headers.get("x-robots-tag")).toBe("noindex, nofollow, noarchive, nosnippet");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.has("set-cookie")).toBe(false); expect(client.cookie).toBe("");
+    expect(session).not.toHaveBeenCalled(); expect(f.assess).not.toHaveBeenCalled(); expect(f.network.state).not.toHaveBeenCalled();
+  });
+  it("keeps every local page, asset, API and error response noindex without changing page markup", async () => {
+    const f = await fixture({ offline: true }), client = f.client();
+    for (const path of ["/", "/mint", "/me", "/p/Alice/INTJ", "/preview/Alice/INTJ.svg", "/api/session", "/api/unknown", "/missing-page"]) {
+      const response = await client.request(path);
+      expect(response.headers.get("x-robots-tag"), path).toBe("noindex, nofollow, noarchive, nosnippet");
+      expect(response.text).not.toMatch(/rel="canonical"|property="og:|name="twitter:/);
+    }
+    const wrongHost = await client.request("/robots.txt", { headers: { Host: "other.example" } });
+    expect(wrongHost.status).toBe(421); expect(wrongHost.headers.get("x-robots-tag")).toContain("noindex");
+    expect(f.assess).not.toHaveBeenCalled();
+  });
+});
+
 describe("open mint HTTP boundary", () => {
   it("serves the Reveal question-mark comparisons and CSS without sessions or assessment under the existing CSP", async () => {
     const test = await fixture();
