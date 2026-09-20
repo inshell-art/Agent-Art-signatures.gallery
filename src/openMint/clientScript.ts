@@ -190,13 +190,29 @@ export const OPEN_MINT_CLIENT_SCRIPT = String.raw`(() => {
     quantity(context.blockNumber);
     return context;
   };
+  const configuredLocalRpc = state => {
+    if (!local || expectedChain(state) !== '0x7a69' || typeof state.rpcUrl !== 'string') return null;
+    try {
+      const rpc = new URL(state.rpcUrl);
+      return ['localhost', '127.0.0.1', '[::1]'].includes(rpc.hostname) && ['http:', 'https:'].includes(rpc.protocol) && !rpc.username && !rpc.password && !rpc.search && !rpc.hash ? rpc.href : null;
+    } catch { return null; }
+  };
   const verifyNetwork = async (ethereum, state, context) => {
     const generation = walletGeneration;
     const networkLabel = one('[data-mint-network]'); if (networkLabel && !stopped) networkLabel.hidden = true;
     validateNetwork(context, state);
-    const block = await ethereum.request({ method: 'eth_getBlockByNumber', params: [context.blockNumber, false] });
-    if (!block || block.number !== context.blockNumber || !sameAddress(block.hash, context.blockHash) || asChain(await ethereum.request({ method: 'eth_chainId' })) !== expectedChain(state)) throw Object.assign(new Error(local && state.rpcUrl ? 'Your wallet is connected to a different local chain. Set its RPC to ' + state.rpcUrl + ', then reconnect.' : 'Your wallet is connected to a different chain. Check its RPC and reconnect.'), { code: 'WALLET_NETWORK_MISMATCH' });
-    if (generation !== walletGeneration) throw Object.assign(new Error('Your wallet changed during the network check. Reconnect before continuing.'), { code: 'WALLET_NETWORK_MISMATCH' });
+    const rpc = configuredLocalRpc(state);
+    const proofRead = async request => {
+      try { return await ethereum.request(request); }
+      catch (error) {
+        if (error?.code === 4001 || error?.code === 'ACTION_REJECTED') throw error;
+        if (generation !== walletGeneration) throw Object.assign(new Error('Your wallet changed during the network check. Reconnect before continuing.'), { code: 'MINT_NETWORK_UNAVAILABLE' });
+        throw Object.assign(new Error('Cannot verify your wallet RPC.' + (rpc ? ' Configured local RPC: ' + rpc + '.' : '')), { code: 'MINT_NETWORK_UNAVAILABLE' });
+      }
+    };
+    const block = await proofRead({ method: 'eth_getBlockByNumber', params: [context.blockNumber, false] });
+    if (!block || block.number !== context.blockNumber || !sameAddress(block.hash, context.blockHash) || asChain(await proofRead({ method: 'eth_chainId' })) !== expectedChain(state)) throw Object.assign(new Error(rpc ? 'Your wallet is connected to a different local chain. Set its RPC to ' + rpc + ', then reconnect.' : 'Your wallet is connected to a different chain. Check its RPC and reconnect.'), { code: 'WALLET_NETWORK_MISMATCH' });
+    if (generation !== walletGeneration) throw Object.assign(new Error('Your wallet changed during the network check. Reconnect before continuing.'), { code: 'MINT_NETWORK_UNAVAILABLE' });
     if (networkLabel && !stopped) { networkLabel.textContent = 'Verified mint network: chain ' + BigInt(expectedChain(state)).toString() + '.'; networkLabel.hidden = false; }
   };
   const walletUnchanged = async (ethereum, state, address, generation, requireVerified = true) => {
@@ -345,6 +361,8 @@ export const OPEN_MINT_CLIENT_SCRIPT = String.raw`(() => {
       if (stopped || submittedHash !== hash || inspection !== inspectionGeneration) return false;
       if (error?.code === 'WALLET_NETWORK_MISMATCH') {
         pendingFeedback('Transaction checking is paused because your wallet is on a different mint network. Restore the correct wallet RPC/network; do not submit another mint while this transaction is unresolved.', 'Switch back to the mint network to check this transaction.');
+      } else if (error?.code === 'MINT_NETWORK_UNAVAILABLE') {
+        pendingFeedback(errorText(error) + ' Do not submit another mint while this transaction is unresolved.', 'Cannot verify the wallet RPC. Transaction checking will retry.');
       } else {
         message('[data-poll-feedback]', 'Transaction checking is temporarily unavailable. This page will retry. Do not submit another mint. Transaction: ' + hash);
       }

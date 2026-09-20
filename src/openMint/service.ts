@@ -120,15 +120,19 @@ export class OpenMintService {
       }
       const recovering = cached && existing;
       if (!recovering && active.length >= 10) throw new PublicError(429, "REQUEST_LIMIT", "Please finish an existing request first.");
+      const profileVersion = this.options.assessmentProfileVersion ?? (this.options.fixture ? FIXTURE_PROFILE_VERSION : GROK_PILOT_PROFILE.id);
       let attemptId = (await this.operations.get(handle))?.id;
       if (!cached && !joining) {
-        // A durable pending record is not evidence of live work. In particular, a failed
-        // terminal write or a restarted process must never create a free paid retry.
-        if (attemptId || requests.some(([, request]) => request.handle === handle)) {
-          throw new PublicError(409, "ASSESSMENT_RETRY_BLOCKED", ASSESSMENT_FAILED, { reference: attemptId, category: "assessment" });
-        }
+        // Only a completed, separately approved operator recovery may advance a
+        // failed handle. Old requests and their diagnostic references stay intact.
         try {
-          const attempt = await this.operations.admit(handle, this.options.assessmentProfileVersion ?? (this.options.fixture ? FIXTURE_PROFILE_VERSION : GROK_PILOT_PROFILE.id));
+          const staged = await this.operations.stagedRecovery(handle, profileVersion, true);
+          // A durable pending record is not evidence of live work. In particular, a failed
+          // terminal write or a restarted process must never create a free paid retry.
+          if (!staged && (attemptId || requests.some(([, request]) => request.handle === handle))) {
+            throw new PublicError(409, "ASSESSMENT_RETRY_BLOCKED", ASSESSMENT_FAILED, { reference: attemptId, category: "assessment" });
+          }
+          const attempt = staged ?? await this.operations.admit(handle, profileVersion);
           attemptId = attempt.id;
         } catch (error) {
           if (!(error instanceof AssessmentOperationsError)) throw error;
@@ -146,26 +150,26 @@ export class OpenMintService {
       await this.options.store.put(`request:${request.code}`, request);
       this.#requirePreparationWallet(session);
       if (session.wallet !== wallet || session.generation !== generation) throw new PublicError(409, "WALLET_CHANGED", "Your wallet changed. Connect it again before preparing a mint.");
-      const assessment = cached ? Promise.resolve(cached) : joining ?? this.#startAssessment(handle);
+      const assessment = cached ? Promise.resolve(cached) : joining ?? this.#startAssessment(handle, attemptId);
       const operation = this.#complete(request, assessment).finally(() => { this.#jobs.delete(operation); });
       this.#jobs.add(operation);
       return request;
     });
   }
-  #startAssessment(handle: string): Promise<Assessment> {
+  #startAssessment(handle: string, attemptId?: string): Promise<Assessment> {
     const operation = (async () => {
       try {
-        const execution = await this.operations.execution(handle);
+        const execution = await this.operations.execution(handle, attemptId);
         const assessment = await this.options.assessments!.assess(handle, execution);
         return assessment;
       } catch (error) {
         if (error instanceof ProviderResponseInvalidError) {
-          await this.operations.execution(handle).then(execution => execution.recordOutcome({ kind: "invalid" })).catch(() => undefined);
+          await this.operations.execution(handle, attemptId).then(execution => execution.recordOutcome({ kind: "invalid" })).catch(() => undefined);
         }
         const attempt = await this.operations.get(handle).catch(() => undefined);
         const category = error instanceof AssessmentPersistenceError || (attempt?.version === 1 && attempt.outcome === "accepted") ? "storage"
           : attempt?.version === 1 && attempt.phases.xDispatchedAt !== undefined && attempt.phases.xVerifiedAt === undefined ? "identity" : "provider";
-        await this.operations.fail(handle, category).catch(() => undefined);
+        await this.operations.fail(handle, category, attemptId).catch(() => undefined);
         throw error;
       }
     })().finally(() => { this.#assessing.delete(handle); });
@@ -180,15 +184,15 @@ export class OpenMintService {
       // reference only; this never dispatches a provider or changes the accepted bytes.
       const attempt = await this.operations.get(request.handle);
       if (attempt?.version === 1 && attempt.outcome === "accepted" && !attempt.acceptedAssessment) {
-        await (await this.operations.execution(request.handle)).assessmentPersisted(assessment);
+        await (await this.operations.execution(request.handle, request.attemptId)).assessmentPersisted(assessment);
       }
       await this.#locks.run(request.handle, () => this.#artifact(assessment, assessment.xIdentity?.username ?? request.requestedHandle ?? request.handle));
-      if (attempt?.version === 1) await this.operations.artifactOutcome(request.handle, "prepared");
+      if (attempt?.version === 1) await this.operations.artifactOutcome(request.handle, "prepared", request.attemptId);
       await this.options.store.put(`request:${request.code}`, { ...request, status: "ready", assessmentId: assessment.id });
     } catch (error) {
       // Provider responses and credentials are never exposed in browser errors or logs.
       const cached = await this.options.assessments!.get(request.handle).catch(() => undefined);
-      if (cached) await this.operations.artifactOutcome(request.handle, "failed").catch(() => undefined);
+      if (cached) await this.operations.artifactOutcome(request.handle, "failed", request.attemptId).catch(() => undefined);
       await this.options.store.put(`request:${request.code}`, { ...request, status: "failed",
         errorCategory: cached ? "preparation-interrupted" : error instanceof AssessmentAbstainedError ? "assessment-abstained" : "assessment-blocked",
         error: cached ? "Your assessment is saved, but mint preparation was interrupted. Return to mint to reuse the same result."
@@ -200,7 +204,11 @@ export class OpenMintService {
     for (const [key] of await this.options.store.entries("attempt:")) {
       const handle = key.slice("attempt:".length), attempt = await this.operations.get(handle);
       if (attempt?.version === 1 && (attempt.outcome === "pending" || (attempt.outcome === "accepted" && !attempt.acceptedAssessment))) {
-        await this.operations.fail(handle, "interrupted");
+        const profileVersion = this.options.assessmentProfileVersion ?? (this.options.fixture ? FIXTURE_PROFILE_VERSION : GROK_PILOT_PROFILE.id);
+        // A staged recovery has no dispatch and still needs fresh wallet proof +
+        // explicit browser intent. Merely restarting must not consume that grant.
+        if (await this.operations.stagedRecovery(handle, profileVersion)) continue;
+        await this.operations.fail(handle, "interrupted", attempt.id);
       }
     }
     for (const [key, request] of await this.options.store.entries<SignatureRequest>("request:")) {

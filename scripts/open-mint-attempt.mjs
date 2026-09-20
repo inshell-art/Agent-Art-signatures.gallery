@@ -6,14 +6,16 @@ import { AssessmentOperations, AssessmentOperationsError } from "../src/openMint
 
 const MAX_BYTES = 8 * 1024 * 1024;
 
+const PREFIXES = ["attempt:", "receipt:", "budget:", "recovery:", "recoveryattempt:", "recoveryhead:", "recoverylink:"];
+
 /** Inspection deliberately does not use FileKeyValueStore.create or acquire a writer lock. */
-export async function inspectAttempt(directory, reference) {
+export async function readOnlyOperationsStore(directory) {
   if (typeof directory !== "string" || !isAbsolute(directory) || resolve(directory) === "/") throw new Error("Invalid records directory.");
   const info = await lstat(directory);
   if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Invalid records directory.");
   const store = {
     async get(key) {
-      if (!/^(?:attempt|receipt|budget):[A-Za-z0-9_-]{1,100}$/.test(key)) throw new Error("Invalid inspection key.");
+      if (!/^[a-z]+:[A-Za-z0-9_-]{1,100}$/.test(key) || !PREFIXES.some(prefix => key.startsWith(prefix))) throw new Error("Invalid inspection key.");
       let file;
       try { file = await open(join(directory, `${key.replace(":", "-")}.json`), constants.O_RDONLY | constants.O_NOFOLLOW); }
       catch (error) { if (error?.code === "ENOENT") return undefined; throw error; }
@@ -27,7 +29,7 @@ export async function inspectAttempt(directory, reference) {
       } finally { await file.close(); }
     },
     async entries(prefix) {
-      if (!["attempt:", "receipt:", "budget:"].includes(prefix)) throw new Error("Invalid inspection prefix.");
+      if (!PREFIXES.includes(prefix)) throw new Error("Invalid inspection prefix.");
       const names = (await readdir(directory)).filter(name => name.startsWith(prefix.replace(":", "-")) && name.endsWith(".json")).sort();
       const entries = [];
       for (const name of names) {
@@ -38,7 +40,11 @@ export async function inspectAttempt(directory, reference) {
     },
     async put() { throw new Error("Inspection is read-only."); },
   };
-  return new AssessmentOperations({ store }).report(reference);
+  return store;
+}
+
+export async function inspectAttempt(directory, reference) {
+  return new AssessmentOperations({ store: await readOnlyOperationsStore(directory) }).report(reference);
 }
 
 async function main(args) {

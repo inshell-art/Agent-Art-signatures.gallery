@@ -16,7 +16,7 @@ import { formalSignatureRenderer } from "../v1/renderer.js";
 import { renderSignatureSvg } from "../algorithmV2/index.js";
 import { XApiIdentityResolver, type XIdentityResolver } from "./xIdentity.js";
 import { GROK_DEFAULT_MODEL, GrokAssessmentProvider } from "./grok.js";
-import { AssessmentOperations } from "./assessmentOperations.js";
+import { AssessmentOperations, type AssessmentRecoveryCommand } from "./assessmentOperations.js";
 
 // Service tests exercise real locked SVG rendering and byte commitments. Raster rendering
 // is covered by the renderer suite; substituting deterministic bytes keeps race tests fast.
@@ -295,6 +295,88 @@ describe("real mint preparation X spelling snapshot", () => {
     const identityResolver = options.omitResolver ? undefined : new XApiIdentityResolver({ bearerToken: "mock-test-token", fetch: xFetch, now: () => new Date(NOW) });
     return { ...setup({ ...options, provider, identityResolver, fixture: false }), xFetch, grokFetch, identityResolver };
   }
+  async function rejectedPilot() {
+    vi.spyOn(Date, "now").mockReturnValue(NOW);
+    const runtime = realSetup();
+    vi.mocked(runtime.xFetch).mockResolvedValueOnce(new Response(JSON.stringify({ title: "Payment Required" }), { status: 402 }));
+    const request = await runtime.service.request("alice", runtime.session);
+    await runtime.service.idle();
+    expect((await runtime.service.getRequest(request.code)).status).toBe("failed");
+    expect(runtime.grokFetch).not.toHaveBeenCalled();
+    const source = await runtime.service.operations.get("alice");
+    if (!source || source.version !== 1) throw new Error("Expected rejected attempt");
+    const command: AssessmentRecoveryCommand = { version: 1, sourceAttemptId: source.id, idempotencyKey: "test-recovery",
+      operatorReference: "test-operator", approvalReference: "test-separate-paid-approval", rejectionEvidenceReference: "test-http402",
+      billing: { actualCostUsdTicks: "0", evidenceReference: "test-explicit-zero-billing-review" },
+      profileVersion: source.profileVersion, reservationUsdTicks: "10000000000" };
+    const preview = await runtime.service.operations.previewRecovery(command);
+    const staged = await runtime.service.operations.stageRecovery(command, preview.reviewDigest);
+    const restarted = new OpenMintService({ ...runtime.service.options,
+      operations: new AssessmentOperations({ ...runtime.service.operations.options }),
+      assessments: new AssessmentCoordinator({ provider: runtime.source, repository: runtime.repository, identityResolver: runtime.identityResolver, now: () => new Date(NOW) }) });
+    return { ...runtime, request, sourceAttempt: source, command, staged, restarted };
+  }
+  it("requires explicit wallet intent after offline recovery, preserves the failed request, and reuses the one accepted result", async () => {
+    const runtime = await rejectedPilot();
+    await runtime.restarted.recoverInterruptedRequests();
+    expect((await runtime.restarted.getRequest(runtime.request.code)).status).toBe("failed");
+    expect(runtime.xFetch).toHaveBeenCalledTimes(1); expect(runtime.grokFetch).not.toHaveBeenCalled();
+    const session = runtime.connectedSession();
+    delete session.walletProof;
+    await expectCode(runtime.restarted.request("alice", session), "WALLET_PROOF_REQUIRED");
+    expect(runtime.xFetch).toHaveBeenCalledTimes(1);
+    runtime.prove(undefined, session);
+    const next = await runtime.restarted.request("ALIce", session);
+    expect(next.attemptId).toBe(runtime.staged.attemptId);
+    expect(next.code).not.toBe(runtime.request.code);
+    await runtime.restarted.idle();
+    expect((await runtime.restarted.getRequest(next.code)).status).toBe("ready");
+    expect(runtime.network.sign).not.toHaveBeenCalled();
+    expect(runtime.xFetch).toHaveBeenCalledTimes(2); expect(runtime.grokFetch).toHaveBeenCalledTimes(1);
+    expect(await runtime.store.get("attempt:alice")).toEqual(runtime.sourceAttempt);
+    expect((await runtime.restarted.getRequest(runtime.request.code)).status).toBe("failed");
+    const cached = await runtime.restarted.request("alice", runtime.connectedSession());
+    await runtime.restarted.idle();
+    expect((await runtime.restarted.getRequest(cached.code)).assessmentId).toBe((await runtime.restarted.getRequest(next.code)).assessmentId);
+    expect(runtime.xFetch).toHaveBeenCalledTimes(2); expect(runtime.grokFetch).toHaveBeenCalledTimes(1);
+  });
+  it("preserves an undispatched grant while generation is disabled and permits no provider calls", async () => {
+    const runtime = await rejectedPilot();
+    runtime.restarted.operations.options.generationEnabled = false;
+    await runtime.restarted.recoverInterruptedRequests();
+    await expectCode(runtime.restarted.request("alice", runtime.connectedSession()), "GENERATION_DISABLED");
+    expect(await runtime.restarted.operations.stagedRecovery("alice", runtime.command.profileVersion)).toMatchObject({ id: runtime.staged.attemptId, phases: {} });
+    expect(runtime.xFetch).toHaveBeenCalledTimes(1); expect(runtime.grokFetch).not.toHaveBeenCalled();
+  });
+  it("does not turn a dispatched recovery interrupted by restart into another retry", async () => {
+    const runtime = await rejectedPilot();
+    await (await runtime.restarted.operations.execution("alice", runtime.staged.attemptId)).beforeDispatch("x-identity");
+    await runtime.restarted.recoverInterruptedRequests();
+    expect(await runtime.restarted.operations.get("alice")).toMatchObject({ id: runtime.staged.attemptId, outcome: "uncertain-after-dispatch" });
+    await expectCode(runtime.restarted.request("alice", runtime.connectedSession()), "ASSESSMENT_RETRY_BLOCKED");
+    expect(runtime.xFetch).toHaveBeenCalledTimes(1); expect(runtime.grokFetch).not.toHaveBeenCalled();
+  });
+  it("blocks further attempts when the one recovered X request is rejected again", async () => {
+    const runtime = await rejectedPilot();
+    vi.mocked(runtime.xFetch).mockResolvedValueOnce(new Response(JSON.stringify({ title: "Payment Required" }), { status: 402 }));
+    const next = await runtime.restarted.request("alice", runtime.connectedSession()); await runtime.restarted.idle();
+    expect((await runtime.restarted.getRequest(next.code)).status).toBe("failed");
+    await expectCode(runtime.restarted.request("alice", runtime.connectedSession()), "ASSESSMENT_RETRY_BLOCKED");
+    await expect(runtime.restarted.operations.previewRecovery({ ...runtime.command, sourceAttemptId: runtime.staged.attemptId, idempotencyKey: "another" })).rejects.toThrow();
+    expect(runtime.xFetch).toHaveBeenCalledTimes(2); expect(runtime.grokFetch).not.toHaveBeenCalled();
+  });
+  it("retains the grant if request persistence fails before any provider dispatch", async () => {
+    const runtime = await rejectedPilot();
+    const put = runtime.store.put.bind(runtime.store);
+    const failure = vi.spyOn(runtime.store, "put").mockImplementation(async (key, value) => {
+      if (key.startsWith("request:")) throw new Error("disk full");
+      return put(key, value);
+    });
+    await expect(runtime.restarted.request("alice", runtime.connectedSession())).rejects.toThrow("disk full");
+    failure.mockRestore();
+    expect(await runtime.restarted.operations.stagedRecovery("alice", runtime.command.profileVersion)).toMatchObject({ id: runtime.staged.attemptId, phases: {} });
+    expect(runtime.xFetch).toHaveBeenCalledTimes(1); expect(runtime.grokFetch).not.toHaveBeenCalled();
+  });
   it("renders X-returned case, binds the account assessment and signs the unchanged lowercase handle key", async () => {
     const runtime = realSetup();
     const request = await runtime.ready("@aLiCe");

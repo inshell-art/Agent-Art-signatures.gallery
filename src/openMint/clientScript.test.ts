@@ -807,6 +807,101 @@ describe('preview and mint browser lifecycle', () => {
     expect(sends(test)).toEqual([]);
     expect(test.elements[action === 'assess' ? '[data-request-feedback]' : '[data-mint-feedback]'].textContent).toContain('Set its RPC to http://127.0.0.1:8545');
   });
+  it.each(['connect', 'assess', 'mint'].flatMap(action => [undefined, 4902].map(code => ({ action, code }))))('gives configured local RPC guidance before $action when the same-chain proof read rejects with $code', async ({ action, code }) => {
+    const test = setup({ local: true, entry: action !== 'mint', walletProved: action !== 'connect', walletRequest: method => {
+      if (method === 'eth_getBlockByNumber') throw Object.assign(new Error('viem transport failed at http://127.0.0.1:18549/private-token'), { code });
+    } }); await flush();
+    test.state.rpcUrl = 'http://127.0.0.1:18560';
+    await test.elements[action === 'connect' ? '[data-connect-wallet]' : action === 'assess' ? '[data-assessment-request]' : '[data-mint-form]'].emit(action === 'connect' ? 'click' : 'submit');
+    const copy = test.elements[action === 'assess' ? '[data-request-feedback]' : '[data-mint-feedback]'].textContent;
+    expect(copy).toContain('Cannot verify your wallet RPC');
+    expect(copy).toContain('Configured local RPC: http://127.0.0.1:18560/');
+    expect(copy).toContain('Check the configured network/RPC in your wallet, then reconnect');
+    expect(copy.match(/reconnect/g)).toHaveLength(1);
+    expect(copy).not.toMatch(/18549|private-token|viem|different.*chain/);
+    expect(test.requests.filter(request => request.init.method === 'POST')).toEqual([]);
+    expect(test.walletCalls.filter(call => call.method === 'eth_getBlockByNumber')).toHaveLength(1);
+    expect(test.walletCalls.filter(call => ['personal_sign', 'eth_sendTransaction', 'wallet_addEthereumChain', 'wallet_switchEthereumChain'].includes(call.method))).toEqual([]);
+    expect(test.scheduled).toEqual([]);
+    expect(test.storage.has(SUBMISSION_KEY)).toBe(false);
+  });
+  it.each([4001, 'ACTION_REJECTED'])('preserves wallet rejection %s during a network proof read', async code => {
+    const test = setup({ local: true, entry: true, walletRequest: method => { if (method === 'eth_getBlockByNumber') throw Object.assign(new Error('Rejected'), { code }); } }); await flush();
+    await test.elements['[data-connect-wallet]'].emit('click');
+    expect(test.elements['[data-mint-feedback]'].textContent).toContain('Cancelled in your wallet');
+    expect(test.elements['[data-mint-feedback]'].textContent).not.toContain('Cannot verify');
+    expect(test.requests.filter(request => request.init.method === 'POST')).toEqual([]);
+    expect(test.walletCalls.filter(call => ['personal_sign', 'eth_sendTransaction', 'wallet_addEthereumChain', 'wallet_switchEthereumChain'].includes(call.method))).toEqual([]);
+  });
+  it.each(['https://localhost:18560', 'http://[::1]:18560'])('allows only a configured loopback endpoint in local proof-read guidance: %s', async rpcUrl => {
+    const test = setup({ local: true, walletProved: true, walletRequest: method => { if (method === 'eth_getBlockByNumber') throw new Error('Raw transport details'); } }); await flush(); test.state.rpcUrl = rpcUrl;
+    await test.elements['[data-mint-form]'].emit('submit');
+    expect(test.elements['[data-mint-feedback]'].textContent).toContain('Configured local RPC: ' + new URL(rpcUrl).href);
+    expect(sends(test)).toEqual([]);
+  });
+  it.each(['http://localhost.evil.test:18560', 'https://rpc.example.test/private-token', 'http://user:secret@127.0.0.1:18560', 'http://127.0.0.1:18560?token=secret', 'http://127.0.0.1:18560#secret', 'ftp://localhost:18560', 'not-a-url'])('omits unsafe configured RPC details from proof-read guidance: %s', async rpcUrl => {
+    const test = setup({ local: true, walletProved: true, walletRequest: method => { if (method === 'eth_getBlockByNumber') throw new Error('Raw transport details http://private.example/token'); } }); await flush(); test.state.rpcUrl = rpcUrl;
+    await test.elements['[data-mint-form]'].emit('submit');
+    const copy = test.elements['[data-mint-feedback]'].textContent;
+    expect(copy).toContain('Cannot verify your wallet RPC');
+    expect(copy).not.toContain(rpcUrl);
+    expect(copy).not.toMatch(/Configured local RPC|private|secret|Raw transport/);
+    expect(test.requests.filter(request => request.init.method === 'POST')).toEqual([]);
+  });
+  it('keeps loopback RPC guidance out of non-local deployments', async () => {
+    const test = setup({ walletProved: true, walletRequest: method => { if (method === 'eth_getBlockByNumber') throw new Error('Connection refused'); } }); await flush();
+    await test.elements['[data-mint-form]'].emit('submit');
+    expect(test.elements['[data-mint-feedback]'].textContent).toContain('Cannot verify your wallet RPC');
+    expect(test.elements['[data-mint-feedback]'].textContent).not.toMatch(/127\.0\.0\.1|Configured local RPC/);
+  });
+  it('also contains a transport error from the proof chain recheck', async () => {
+    let chainReads = 0;
+    const test = setup({ local: true, walletProved: true, walletRequest: method => { if (method === 'eth_chainId' && ++chainReads === 3) throw new Error('Raw recheck error'); } }); await flush(); test.state.rpcUrl = 'http://127.0.0.1:18560';
+    await test.elements['[data-mint-form]'].emit('submit');
+    expect(test.elements['[data-mint-feedback]'].textContent).toContain('Configured local RPC: http://127.0.0.1:18560/');
+    expect(test.elements['[data-mint-feedback]'].textContent).not.toContain('Raw recheck');
+    expect(test.requests.filter(request => request.init.method === 'POST')).toEqual([]);
+    expect(sends(test)).toEqual([]);
+  });
+  it.each(['wallet-change', 'pagehide'])('does not give stale endpoint advice after %s during a failed proof read', async event => {
+    let reject!: (error: unknown) => void;
+    const read = new Promise((_, no) => { reject = no; });
+    const test = setup({ local: true, walletProved: true, walletRequest: method => method === 'eth_getBlockByNumber' ? read : undefined }); await flush();
+    const submission = test.elements['[data-mint-form]'].emit('submit'); await flush();
+    if (event === 'wallet-change') test.walletEvents.chainChanged('0x1'); else test.globalEvents.pagehide({});
+    const before = test.elements['[data-mint-feedback]'].textContent;
+    reject(new Error('Raw stale read')); await submission;
+    if (event === 'wallet-change') expect(test.elements['[data-mint-feedback]'].textContent).toContain('wallet changed during the network check');
+    else expect(test.elements['[data-mint-feedback]'].textContent).toBe(before);
+    expect(test.elements['[data-mint-feedback]'].textContent).not.toMatch(/Raw stale|Configured local RPC|different.*chain/);
+    expect(test.elements['[data-mint-network]'].hidden).toBe(true);
+    expect(test.requests.filter(request => request.init.method === 'POST')).toEqual([]);
+    expect(sends(test)).toEqual([]);
+  });
+  it('keeps a submitted transaction guarded and shows local guidance when its network proof is unavailable', async () => {
+    const test = setup({ local: true, walletProved: true, storage: savedSubmission(), walletRequest: method => { if (method === 'eth_getBlockByNumber') throw new Error('Raw unavailable RPC'); } }); await flush(); test.state.rpcUrl = 'http://127.0.0.1:18560'; await tick(test, 100);
+    expect(test.elements['[data-mint-feedback]'].textContent).toContain('Configured local RPC: http://127.0.0.1:18560/');
+    expect(test.elements['[data-mint-feedback]'].textContent).toContain('Do not submit another mint');
+    expect(test.elements['[data-mint-transaction]'].textContent).toContain(HASH);
+    expect(test.elements['[data-submit-mint]'].disabled).toBe(true);
+    expect(test.storage.has(SUBMISSION_KEY)).toBe(true);
+    expect(test.requests.some(request => request.path === '/api/mints/authorize')).toBe(false);
+    expect(test.walletCalls.filter(call => ['personal_sign', 'eth_sendTransaction', 'wallet_addEthereumChain', 'wallet_switchEthereumChain'].includes(call.method))).toEqual([]);
+  });
+  it('preserves the existing explicit-connect unknown-chain 4902 add flow', async () => {
+    let chain = '0x1', added = false;
+    const test = setup({ local: true, entry: true, walletRequest: method => {
+      if (method === 'eth_chainId') return chain;
+      if (method === 'wallet_switchEthereumChain') { if (!added) throw Object.assign(new Error('Unknown chain'), { code: 4902 }); chain = '0x7a69'; return null; }
+      if (method === 'wallet_addEthereumChain') { added = true; return null; }
+    } }); await flush(); test.state.rpcUrl = 'http://127.0.0.1:18560';
+    await test.elements['[data-connect-wallet]'].emit('click');
+    expect(test.walletCalls.filter(call => call.method === 'wallet_addEthereumChain')).toHaveLength(1);
+    expect(test.walletCalls.find(call => call.method === 'wallet_addEthereumChain')?.params).toMatchObject([{ chainId: '0x7a69', rpcUrls: ['http://127.0.0.1:18560/'] }]);
+    expect(test.requests.some(request => request.path === '/api/wallet/challenge')).toBe(true);
+    expect(test.requests.some(request => request.path === '/api/assessments')).toBe(false);
+    expect(sends(test)).toEqual([]);
+  });
   it.each([null, { number: '0x9', hash: BLOCK_HASH }])('fails closed when the wallet cannot confirm the trusted block %#', async block => {
     const test = setup({ walletProved: true, walletRequest: method => method === 'eth_getBlockByNumber' ? block : undefined }); await flush();
     await test.elements['[data-mint-form]'].emit('submit');

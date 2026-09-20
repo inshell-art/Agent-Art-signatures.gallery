@@ -54,14 +54,62 @@ The command only opens existing records for reading; it does not create director
 
 `automaticRetryAllowed` is always false. There is deliberately no reset, delete, release or retry CLI flag.
 
-## Reviewed recovery contract for E21 — not implemented in M1
+## Narrow offline recovery — E21 increment brought forward for E10
 
-A future recovery action must have a dry-run report, authenticated operator identity, immutable evidence references and an explicit approval for any additional paid dispatch. It must prove the original attempt never dispatched Grok using phase history and independent provider/billing evidence. A missing receipt, timeout, failed request or old `failed` status is insufficient proof. X dispatch and possible X charges must be reconciled separately.
+`scripts/open-mint-recovery.mjs` implements exactly one additional linked admission after the original real one-attempt pilot failed on an observed X HTTP 402 response, before identity acceptance or any Grok dispatch. This is not a general retry/reset tool and does not complete public E21 operations. It has no provider, wallet, chain, credential-loader or public admin dependency.
 
-The approved operation must link a new attempt and budget reservation to the original immutable attempt, append an audit record, and bind an idempotency identifier to the exact action/evidence/approval. Repeating the same operation returns the existing result, not another dispatch. Conflicting idempotency reuse fails. Accepted canonical assessments can never be rerolled. Unknown Grok dispatch, unknown billing or uncertain result publication keeps recovery blocked. No record deletion, blanket counter reset or budget release may substitute for this review.
+Eligibility requires the original immutable attempt, its single X receipt, matching admission reservation/profile and consistent phase timestamps. Missing/ambiguous receipts, timeouts, legacy/fixture records, accepted results, any Grok evidence, other attempts or a previous recovery fail closed. Canonical assessment files prohibit new grants. An exact already-committed grant stays idempotently inspectable after its canonical result is saved; it never becomes a new allowance.
 
-Until that operation is reviewed and implemented, stop and inspect; even a proven pre-Grok failure cannot be user-retried during the one-attempt pilot.
+The operator must separately review the rejection and billing, including an affirmative amount backed by an evidence reference even if the amount is zero. General provider pricing or a credit purchase alone is not account-specific reconciliation. The original receipt remains `unknown` when that is what the provider supplied. Operator reconciliation is appended separately; it never forges a provider charge or rewrites history.
+
+An operator-owned JSON command has exactly these fields:
+
+```json
+{
+  "version": 1,
+  "sourceAttemptId": "01234567-89ab-4cde-8fab-0123456789ab",
+  "idempotencyKey": "unique-reviewed-recovery-id",
+  "operatorReference": "operator-record-id",
+  "approvalReference": "separate-additional-paid-attempt-approval-id",
+  "rejectionEvidenceReference": "verified-x-rejection-evidence-id",
+  "billing": {
+    "actualCostUsdTicks": "REPLACE_WITH_RECONCILED_INTEGER",
+    "evidenceReference": "account-specific-billing-evidence-id"
+  },
+  "profileVersion": "sg-grok-mbti-2026-09-19-v1",
+  "reservationUsdTicks": "10000000000"
+}
+```
+
+The placeholder amount deliberately fails validation. References identify privately retained evidence, not raw credentials, invoices, provider bodies or mint capability URLs. OS access to the local repository/data is the operator authentication boundary; reference strings are audit assertions, not independently verified external approvals. This must not be exposed as an HTTP endpoint. Public operator authentication remains E21 work.
+
+1. Obtain approval for **one additional X lookup and at most one Grok request**, with no automatic retries; reconcile the rejected lookup's billing. Implementation permission is not that additional spend approval.
+2. Review using absolute existing paths (no directories, locks or records are created):
+
+   ```sh
+   node --import tsx scripts/open-mint-recovery.mjs \
+     --data-dir /absolute/path/to/the-existing-pilot \
+     --command /absolute/path/to/reviewed-recovery.json
+   ```
+
+3. Preserve a backup and stop the app gracefully. Keep generation disabled. Never remove its writer lock manually or reset Anvil. Apply the exact reviewed digest with the same command:
+
+   ```sh
+   node --import tsx scripts/open-mint-recovery.mjs \
+     --data-dir /absolute/path/to/the-existing-pilot \
+     --command /absolute/path/to/reviewed-recovery.json \
+     --apply --review-digest EXACT_DRY_RUN_SHA256
+   ```
+
+4. Apply requires the application's exclusive writer lock and current unexpired pilot profile. It stages authority only and reports `dispatchAllowed:false`. The CLI deliberately retains the $1 reservation and $1 exposure envelope: a nonzero reconciled original charge needs a separately reviewed exposure change, not a fabricated zero.
+5. Inspect both attempt IDs. After an authorized restart with approved generation settings, a fresh wallet-proved explicit mint request may consume the staged attempt. A page read, browser reload, startup or dry-run never dispatches it. Pricing expiry, kill switch, allowlist, chain/wallet checks and persistence failures still block calls.
+
+Durable order is immutable `recovery:<id>` audit → `recoverylink:<source-id>` → appended reservation → incremented daily counter → `recoveryattempt:<new-id>` → `recoveryhead:<handle>`. The head is the commit point. Each intermediate failure is fail-closed and resumable with the **same** command/digest; replay never appends another allowance. Original attempt/receipt bytes and the original reservation remain intact. All callbacks are fenced to their attempt ID. An interrupted dispatched recovery, another rejection or uncertain Grok response cannot obtain a chained recovery.
+
+No recovery has been applied to the real September 20 pilot merely by landing this implementation. Its external billing/retry gates remain recorded in the pilot report.
 
 ## Offline evidence
 
 `src/openMint/assessmentOperations.test.ts` exercises admission races, limits, kill-switch activation between legs, conservative legacy reads, malformed counters/records, bounded receipt data, unknown/estimated/overrun costs, separate artifact recovery, and faults before and after every durable lifecycle write. File-store restart tests preserve result references and unresolved exposure. All provider activity in these tests is simulated; they establish no live compatibility or observed provider cost.
+
+`assessmentRecovery.test.ts` covers every recovery-write crash boundary, idempotence, source immutability, stale callback fences and policy checks. `assessmentRecoveryCli.test.ts` covers no-write dry runs, exclusive locks, input/filesystem boundaries and replay after success. Service tests exercise real adapters with mocked transports: rejected X → staged recovery → explicit wallet request → one accepted assessment; generation-disabled/restarted reads do not dispatch, and a second rejection stays blocked.

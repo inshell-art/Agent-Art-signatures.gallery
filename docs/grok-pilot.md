@@ -1,8 +1,16 @@
 # One-attempt paid Grok pilot
 
+**Latest result — September 20:** The approved attempt stopped at the X identity lookup with **HTTP 402**. No Grok call, accepted assessment or mint occurred. Preserve the failed attempt and no-retry guard; account billing review and separately approved recovery are required. See the [live pilot report](validation/e10-pilot-2026-09-20.md). The preparation notes below are historical; they do not authorize a second attempt.
+
 Prepared and documentation checked: **2026-09-19**. This is the E09 operator handoff for E10. The implementation and mocked checks exist; no live X lookup, xAI inference, account entitlement check, credit purchase or billing change has been performed. No paid call or wallet transaction is authorized by this document.
 
-The local read-only preflight on this date reported `xaiConfigured:false`, `xConfigured:false`, generation disabled and no record files in the default real namespace. The user delegated target selection; **`@karpathy` (canonical `karpathy`)** was selected, and the user replied “nice, pls keep going.” Both server credentials remain absent, so no paid dispatch can proceed. The target is recorded here, not enabled in runtime configuration. An absent credential is a configuration finding; it says nothing about whether the user's accounts have access. Apply the exact spending envelope below at the launch gate; target approval is not a guarantee of a $1 bill cap.
+The September 19 local read-only preflight reported both credentials absent. The user delegated target selection; **`@karpathy` (canonical `karpathy`)** was selected, and the user replied “nice, pls keep going.” On **September 20**, a new read-only preflight found the privately saved xAI key and successfully mapped the existing shared X bearer token into the child process environment: `xaiConfigured:true`, `xConfigured:true`. No secret values were printed or copied into tracked files. The ignored local environment file has mode `0600`. This confirms configuration presence only, not account access, validity or entitlement.
+
+The September 20 candidate configuration uses `.local/open-mint/grok-pilot-20260920/`, app port `3020`, RPC port `18560`, and origin `http://127.0.0.1:3020`; the candidate namespace did not exist and no listeners were reported on those ports. The shared X token mapping was transient for preflight, not a secret copied into local or tracked configuration.
+
+**Launch approval, September 20:** After being asked to approve one X lookup and at most one Grok request for `@karpathy`, no retries, a $1 application reservation that is **not a guaranteed billing cap**, and a separately user-approved Anvil mint, the user replied **“approve.”** This authorizes the exact envelope below. The normal browser wallet-proof and explicit Mint & reveal gate remain in place; no developer-wallet or developer-mint shortcut is to be used for this pilot. The isolated launcher may enable generation for the approved handle. Starting it does not itself dispatch either provider.
+
+**Runtime ready, September 20:** The approved configuration passed preflight with no blockers. Renderer locks and offline contract build passed. The isolated app started at `http://127.0.0.1:3020` with real Grok/X providers and its own Anvil RPC `http://127.0.0.1:18560` (chain ID `31337`). Read-only HTTP checks returned 200 for `/mint?handle=karpathy`, confirmed the prefilled target and local RPC, and found zero attempt records. No X/Grok request or mint transaction had occurred at this checkpoint. The local contract was deployed as normal isolated-chain setup, without resetting other chains. Browser wallet proof and the user's explicit Mint & reveal action are the next steps; do not run the operator-only assessment shortcut or the developer mint endpoint in parallel.
 
 ## Approval envelope
 
@@ -71,7 +79,7 @@ The [attempt ledger](../src/openMint/assessmentOperations.ts) persists dispatch 
 
 The xAI [cost contract](https://docs.x.ai/developers/cost-tracking) reports total request cost in `usage.cost_in_usd_ticks`, including its internal tools; one USD is `10^10` ticks. The [Responses schema](https://docs.x.ai/developers/rest-api-reference/inference/responses.md) also permits `cost_in_nano_usd`; the parser multiplies validated integer nano-USD by 10 exactly. Disagreement between both fields is unknown billing. Missing/invalid values never become zero, and citation counts never substitute for a billing meter.
 
-X lookup responses have no implemented authoritative per-request cost field. The X receipt therefore remains `unknown`, even after a successful user lookup; the documented $0.010 rate is planning evidence, not an observed charge. A successful full pilot can consequently remain `unresolved`/`operator-review` in the local accounting report. Consult the provider consoles for reconciliation evidence; the current tooling cannot approve a retry or mutate a receipt to settle it.
+X lookup responses have no implemented authoritative per-request cost field. The X receipt therefore remains `unknown`, even after a successful user lookup; the documented $0.010 rate is planning evidence, not an observed charge. A successful full pilot can consequently remain `unresolved`/`operator-review` in the local accounting report. Consult the provider consoles for reconciliation evidence. Tooling cannot approve spending or mutate a receipt; the narrow recovery command records separately reviewed operator evidence only.
 
 Inspect a safe attempt reference without credentials or generation permission:
 
@@ -87,7 +95,7 @@ Stop on X lookup failure, wrong subject/model, abstention, invalid output, malfo
 
 For a generation kill switch, stop the app gracefully and restart with `OPEN_MINT_GENERATION_ENABLED=0`; editing `.env.local` alone does not update a running process's environment. Saved verified assessments and existing artifacts remain readable and eligible for their existing recovery/authorization policy without either generation credential. The switch cannot recall an already dispatched provider request. Do not reset budgets, delete guards, reroll results or create a replacement namespace to bypass a failed attempt.
 
-The deferred E21 recovery operation must require phase and billing evidence proving any pre-Grok failure, linkage to the original attempt, an idempotent audit record and explicit approval for further paid dispatch. This pilot has no recovery command that releases uncertain spending or enables a repeat attempt.
+The [narrow offline recovery command](assessment-operations.md#narrow-offline-recovery--e21-increment-brought-forward-for-e10) now implements one linked recovery for the original X HTTP 402 failure only. It requires phase/rejection evidence, account-specific billing reconciliation and separate approval for further paid dispatch; it stages without calling either provider. It cannot release uncertain spending, reroll an accepted result or grant chained retries. No recovery has been applied to the real pilot and no additional provider call has been made as part of this implementation.
 
 ## Local evidence and live report
 
