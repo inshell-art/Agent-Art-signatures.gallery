@@ -1,10 +1,10 @@
 # Public open-mint architecture proposal
 
-Status: **Ethereum Sepolia approved as the staging target on 2026-09-20; architecture and remaining operating decisions are under review. Local interface/schema work may proceed.**
+Status: **Ethereum Sepolia and `https://staging.signatures.gallery` approved as the staging target/origin on 2026-09-20; remaining operating decisions are under review. Local integration work may proceed.**
 
 Recorded: 2026-09-20. Scope: E16 and the implementation boundaries for E17–E22 in [the development plan](development-plan.md). This document does not complete E16's review, authorize paid dispatch, select an account/vendor, provision infrastructure, deploy a contract, or authorize a public transaction. The current local startup refusal remains in force until its reviewed replacement exists.
 
-User decision: “yes, use Ethereum Sepolia as staging target.” This selects Ethereum Sepolia, not another chain's Sepolia deployment. RPC accounts, finality policy, origin, infrastructure, key custody, deployment/funding and production authorization remain separate decisions. Do not infer an existing deployment or populate unknown chain/deployment hashes from this approval.
+User decisions: “yes, use Ethereum Sepolia as staging target” and “agree with staging.signatures.gallery.” The exact intended origin is `https://staging.signatures.gallery`, on Ethereum Sepolia (`11155111`), not another chain's Sepolia deployment. These decisions do not provision DNS/TLS/hosting. RPC accounts, finality policy, infrastructure, key custody, deployment/funding and production authorization remain separate decisions. Do not infer an existing deployment or populate unknown chain/deployment hashes from this approval.
 
 ## 1. Proposed minimum topology
 
@@ -230,7 +230,7 @@ The following are actual user/operating decisions, not inferred approvals:
 | --- | --- | --- |
 | Hosting/operator, PostgreSQL account/location, spending/retention and recovery targets | Provisioning and public operation | Schema, repository interfaces, disposable local tests and backup format |
 | Ethereum Sepolia selected; RPC accounts, finality/confidence policy and funds still needed | Public deployment/rehearsal | Sepolia-targeted configuration design, manifest schema, chain mocks and reorg tests |
-| Public app/artifact origins, URI profile, pin/storage accounts, replication and long-term ownership | Freezing public metadata or uploading it | Serializer/CID adapters, exact-byte fixtures and dry-run publication |
+| App staging origin selected: https://staging.signatures.gallery; artifact URI profile, pin/storage accounts, replication and long-term ownership remain | Freezing public metadata or uploading it | Serializer/CID adapters, exact-byte fixtures and dry-run publication |
 | Signer custody; deployer/admin/manager/pauser/revoker owners and role separation | Key setup, signing in a public environment or deployment | Restricted signer interface, signature tests and role manifest validation |
 | Wallet/device support, support/escalation destination and claim wording | Public acceptance/content completion | Existing EOA flow and E13/E14/E12 work within its current scope |
 | Any local-assessment/image reuse or historical import | Import or new binding from local data | Read-only migration design; no source data is touched |

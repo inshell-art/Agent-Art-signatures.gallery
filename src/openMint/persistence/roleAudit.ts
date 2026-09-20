@@ -1,11 +1,10 @@
-import { FOUNDATION_RUNTIME_PRIVILEGES } from "./runtimeRole.js";
+import { FOUNDATION_RUNTIME_PRIVILEGES, PREPARATION_RUNTIME_PRIVILEGES, type RuntimeTablePrivileges } from "./runtimeRole.js";
 
 /** Connected, bounded catalog-read interface. The caller owns connection/auth
  * and statement timeout. This module never connects, SETs, grants, or writes. */
 export interface RoleAuditConnection {
   query(sql: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[] }>;
 }
-const expected = JSON.stringify(FOUNDATION_RUNTIME_PRIVILEGES);
 
 const CHECKS = ["postgresVersion", "identity", "restrictedRoles", "noRoleDelegation", "noOwnership", "noCreation",
   "noSecurityDefiner", "noParameterEscalation", "foundationLayout", "requiredPrivileges", "noExtraPrivileges", "noGrantOptions"] as const;
@@ -15,6 +14,9 @@ export interface FoundationRoleAudit {
   readonly ok: boolean;
   readonly checks: Readonly<Record<FoundationRoleCheck, boolean>>;
   readonly failedChecks: readonly FoundationRoleCheck[];
+}
+export interface PreparationRoleAudit extends Omit<FoundationRoleAudit, "scope"> {
+  readonly scope: "open-mint-preparation-role-v1";
 }
 export class DatabaseRoleAuditError extends Error {
   constructor() { super("Foundation database role audit unavailable or rejected."); this.name = "DatabaseRoleAuditError"; }
@@ -77,6 +79,14 @@ SELECT
 /** Audits catalog capabilities, not the integrity of stored application data or
  * full resistance to a compromised SQL client. Read-only; no public startup. */
 export async function auditFoundationRole(connection: RoleAuditConnection): Promise<FoundationRoleAudit> {
+  return Object.freeze({ scope: "open-mint-foundation-role-v1", ...await auditPrivileges(connection, FOUNDATION_RUNTIME_PRIVILEGES) });
+}
+/** Same catalog safeguards, explicitly including the request/publication/issuer
+ * extension tables. Does not certify arbitrary future tables or projection. */
+export async function auditPreparationRole(connection: RoleAuditConnection): Promise<PreparationRoleAudit> {
+  return Object.freeze({ scope: "open-mint-preparation-role-v1", ...await auditPrivileges(connection, PREPARATION_RUNTIME_PRIVILEGES) });
+}
+async function auditPrivileges(connection: RoleAuditConnection, profile: readonly RuntimeTablePrivileges[]): Promise<Omit<FoundationRoleAudit, "scope">> {
   try {
     // Probe only built-ins before resolving any cast, operator, or catalog
     // expression. Connection setup is explicit and outside this read-only API.
@@ -86,13 +96,13 @@ export async function auditFoundationRole(connection: RoleAuditConnection): Prom
     const milliseconds = timeout ? Number(timeout[1]) * (timeout[2] === "s" ? 1000 : 1) : NaN;
     if (probe.rows.length !== 1 || typeof settings.version !== "string" || !/^16\d{4}$/.test(settings.version)
       || settings.path !== "pg_catalog" || !Number.isSafeInteger(milliseconds) || milliseconds < 1 || milliseconds > 5000) throw new DatabaseRoleAuditError();
-    const result = await connection.query(AUDIT_SQL, [expected]);
+    const result = await connection.query(AUDIT_SQL, [JSON.stringify(profile)]);
     if (result.rows.length !== 1) throw new DatabaseRoleAuditError();
     const row = result.rows[0];
     if (Object.keys(row).sort().join(",") !== [...CHECKS].sort().join(",") || CHECKS.some(key => typeof row[key] !== "boolean")) throw new DatabaseRoleAuditError();
     const checks = Object.freeze(Object.fromEntries(CHECKS.map(key => [key, row[key]]))) as Readonly<Record<FoundationRoleCheck, boolean>>;
     const failedChecks = Object.freeze(CHECKS.filter(key => !checks[key]));
-    return Object.freeze({ scope: "open-mint-foundation-role-v1", ok: failedChecks.length === 0, checks, failedChecks });
+    return Object.freeze({ ok: failedChecks.length === 0, checks, failedChecks });
   } catch { throw new DatabaseRoleAuditError(); }
 }
 

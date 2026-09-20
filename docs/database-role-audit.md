@@ -1,4 +1,4 @@
-# Read-only PostgreSQL foundation-role audit
+# Read-only PostgreSQL runtime-role audits
 
 `src/openMint/persistence/roleAudit.ts` inspects an already connected PostgreSQL role. It does not create accounts, connect to a database, apply migrations, alter settings, issue grants/revokes, or enable public startup. `auditFoundationRole` returns a finite frozen capability report; `requireFoundationRole` throws if any check fails. Connection/catalog failures throw a generic `DatabaseRoleAuditError` without retaining raw errors, role names, database names, credentials, URLs or SQL responses.
 
@@ -19,11 +19,13 @@ Do not share this connection with concurrent operations that can change session 
 
 `FOUNDATION_RUNTIME_PRIVILEGES` in `runtimeRole.ts` is the one deeply frozen allowlist used by both grant generation and auditing. It includes `assessment_terminals` SELECT/INSERT, with no terminal-update privilege. Changing the foundation schema or intended privilege surface requires updating and reviewing that shared definition and its tests.
 
+`PREPARATION_RUNTIME_PRIVILEGES` extends that list explicitly for private requests, publication and authorization. `preparationRuntimeGrants` and `auditPreparationRole` share this second frozen definition. Its report scope is `open-mint-preparation-role-v1`; the existing `foundationLayout` check key covers the entire selected table profile. Operator-controlled request/publication/issuance profiles remain read-only; authorization updates are limited to state and signing epoch. No nonce, expiry, artifact, signature or reservation-head rewriting is granted. The complete durable HTTP preparation/restart test logs in directly as this restricted role, and additional tests reject excess nonce-update grants.
+
 ## Limits
 
 This is a **point-in-time capability audit**. A later grant, role-membership/attribute change, ownership change, function addition, schema migration or connection replacement can invalidate the result immediately. Re-audit after such changes and at a future reviewed startup boundary; the returned report is diagnostic evidence, not a durable permission token.
 
-The exact table/column allowlist covers the foundation only. Request, publication, issuance and projection extensions need separate reviewed capability profiles; this audit neither approves nor completely audits their grants. Global escalation checks are intentionally conservative, but the module is not an exhaustive sandbox for every PostgreSQL extension or external service privilege. It does not verify stored assessments, trigger/function body integrity, migration checksums, server binary trust, backup freshness or replica failover safety.
+Each audit covers only its named table/column profile: foundation, or foundation plus preparation extensions. Projection and future extensions still require separately reviewed capability profiles. Global escalation checks are intentionally conservative, but the module is not an exhaustive sandbox for every PostgreSQL extension or external service privilege. It does not verify stored assessments, trigger/function body integrity, migration checksums, server binary trust, backup freshness or replica failover safety.
 
 The runtime legitimately inserts evidence and updates operational state. These privileges do not prevent a compromised SQL client from fabricating application data. Namespace-qualified queries are not row-level security. The audit is no substitute for distinct migration/operator/runtime credentials, separate staging/production databases, restricted network access, credential custody and the exclusive-writer/application validation boundaries. No role or hosting choice is approved by a passing test.
 

@@ -226,7 +226,7 @@ describe("read-only signed authorization gate", () => {
 });
 
 describe("bounded actual viem HTTP read adapter (mock fetch only)", () => {
-  function transport(fetchFn?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>) {
+  function transport(fetchFn?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>, timeoutMs = 50) {
     const f = fixture();
     const requests: { method: PublicChainReadMethod; params: unknown[] }[] = [];
     const fetchRpc = vi.fn(fetchFn ?? (async (_url, init) => {
@@ -234,11 +234,12 @@ describe("bounded actual viem HTTP read adapter (mock fetch only)", () => {
       const result = await f.rpcs[0].request(body.method, body.params, init!.signal!);
       return Response.json({ jsonrpc: "2.0", id: body.id, result });
     }));
-    const rpc = createPublicChainHttpRpc({ id: "http-0", url: "https://rpc.example.org/", timeoutMs: 50, maxResponseBytes: 4096, fetchFn: fetchRpc });
+    const rpc = createPublicChainHttpRpc({ id: "http-0", url: "https://rpc.example.org/", timeoutMs, maxResponseBytes: 4096, fetchFn: fetchRpc });
     return { ...f, rpc, requests, fetchRpc };
   }
   it("preserves EIP-1898 selectors through viem JSON-RPC and ABI decoding", async () => {
-    const f = transport(), gate = new PublicChainGate(f.config, [f.rpc, f.rpcs[1]], () => f.expected().now);
+    // ABI conformance is not a 50 ms latency benchmark under parallel coverage.
+    const f = transport(undefined, 1000), gate = new PublicChainGate(f.config, [f.rpc, f.rpcs[1]], () => f.expected().now);
     expect(readPublicChainEligibility(await gate.preflight(input()), f.expected()).contract).toBe(contract);
     expect(f.requests).toHaveLength(14);
     for (const request of f.requests.filter(request => ["eth_getCode", "eth_call"].includes(request.method))) {

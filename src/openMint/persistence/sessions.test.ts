@@ -55,6 +55,20 @@ async function harness(verifySignature?: Parameters<typeof PostgresWalletSession
 }
 
 describe("durable wallet sessions", () => {
+  it("looks up required sessions without allocation or renewal and rejects ambiguous cookies", async () => {
+    const h = await harness();
+    for (const cookie of [undefined, "sg_open_session=invalid", `sg_open_session=${opaqueCode()}`]) {
+      await expect(h.sessions.requireSession(cookie)).rejects.toMatchObject({ code: "SESSION_REQUIRED" });
+    }
+    expect(h.state().sessions.size).toBe(0);
+    const { session } = await h.sessions.session(), cookie = h.sessions.cookie(session);
+    expect(await h.sessions.requireSession(cookie)).toEqual(session);
+    await expect(h.sessions.requireSession(`${cookie}; sg_open_session=${opaqueCode()}`)).rejects.toThrow("Ambiguous");
+    await expect(h.sessions.session(`${cookie}; sg_open_session=${session.id}`)).rejects.toThrow("Ambiguous");
+    h.advance(86_400_000);
+    await expect(h.sessions.requireSession(cookie)).rejects.toMatchObject({ code: "SESSION_REQUIRED" });
+    expect(h.state().sessions.size).toBe(1);
+  });
   it("validates immutable origin/chain profile and capability shape", async () => {
     const h = await harness();
     for (const invalid of ["https://signatures.example/", "https://user@signatures.example", "http://signatures.example", "not a URL"]) {

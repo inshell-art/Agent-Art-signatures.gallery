@@ -89,4 +89,6 @@ Worker tests additionally cover concurrent explicit execution, accepted reuse wi
 
 ## Still required for E17
 
+Update: [durable private HTTP integration](durable-http-integration.md) now composes these adapters, publication and issuance over loopback under a restricted preparation-role login. Private status and mutations no longer allocate replacement sessions, and restart reuse is HTTP-tested. The active file-backed application and public startup refusal remain unchanged. `preparationRuntimeGrants` / `auditPreparationRole` cover the exact request/publication/issuance extensions; projection/future-role coverage is still separate.
+
 Local reserve-before-signing and frozen-artifact composition are now tested separately; public issuance, expired-reservation replacement/reconciliation and active integration remain unfinished. Also required: bounded render/publication job claiming/completion and crash recovery; reviewed operator reconciliation; pooled validated read-only operation when the writer is unhealthy; retention/backup/restore and upgrade tooling; extension-role/provisioning tests; and explicit active-service/async-session integration. The current public startup refusal and local pilot isolation must remain until those gates are reviewed. Passing the composed local test does not complete E17 or E18's public integration.

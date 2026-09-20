@@ -1,4 +1,4 @@
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import canonicalize from "canonicalize";
 import { getAddress, type Address, type Hex } from "viem";
@@ -203,6 +203,20 @@ export class PostgresAuthorizationIssuer {
       await tx.query("INSERT INTO open_mint.authorization_heads(namespace_id,deployment_id,handle,authorization_id) VALUES($1,$2,$3,$4)", [value.namespaceId, value.deploymentId, value.handle, value.id]);
       const end = await this.#context(tx, input); this.#chain(input, request, end.policy, end.now, authorization.nonce);
       return deepFreeze(value);
+    });
+  }
+  /** Select the exact saved reservation nonce for a fresh backend preflight,
+   * or a candidate for first issuance. Read-only; neither reserves nor signs. */
+  async preflightNonce(value: Omit<IssuanceIntent, "eligibility">): Promise<Hex> {
+    const input = capture({ ...value, eligibility: undefined });
+    return this.writer.transaction(async tx => {
+      const { request } = await this.#context(tx, input), row = await this.#head(tx, request.handle);
+      if (!row) return `0x${randomBytes(32).toString("hex")}` as Hex;
+      const saved = this.#decode(row);
+      if (saved.requestId !== request.request_id || saved.sessionHash !== input.sessionHash || saved.generation !== input.sessionGeneration) {
+        blocked("MINT_RESERVED", "This handle has a preserved authorization reservation.");
+      }
+      return saved.authorization.nonce;
     });
   }
   /** Private backend operation; returned unsigned bytes grant no mint authority. */

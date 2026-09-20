@@ -34,6 +34,8 @@ function objectKind(row: Stored, object: PublicObject): Kind {
  * signer, migration runner or permission to enable a public runtime. */
 export class PostgresPublicationJournal implements PublicPublicationJournal {
   private constructor(readonly writer: ExclusiveWriter, private readonly profile: Readonly<Profile>) {}
+  get namespaceId(): string { return this.profile.namespaceId; }
+  get origin(): string { return this.profile.origin; }
   static async open(writer: ExclusiveWriter, input: Profile): Promise<PostgresPublicationJournal> {
     const profile = Object.freeze({ ...input });
     publicArtworkOrigin(profile.origin);

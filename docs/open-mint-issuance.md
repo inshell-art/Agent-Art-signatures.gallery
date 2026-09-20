@@ -1,6 +1,6 @@
 # Durable authorization reservation foundation
 
-This is a separate, offline-tested E17 increment. It is **not wired to the active service or HTTP routes**. `PostgresAuthorizationIssuer.open` refuses anything except the `local-real` / `grok` namespace on chain `31337`, even if an issuance profile is enabled. Public runtime and production refusal are unchanged. No public deployment, provider call or real custody signer was used to validate this work.
+This is an offline-tested E17 increment, now composed by the [local durable HTTP integration](durable-http-integration.md), but **not wired to the active file-backed app or public startup**. `PostgresAuthorizationIssuer.open` refuses anything except the `local-real` / `grok` namespace on chain `31337`, even if an issuance profile is enabled. Public runtime and production refusal are unchanged. No public deployment, provider call or real custody signer was used to validate this work.
 
 ## Database and authority boundaries
 
@@ -11,7 +11,7 @@ Apply `persistence/authorization-schema.sql` only after the base, requests and p
 - `authorization_heads`: one permanent handle/deployment reservation. This increment deliberately has no replacement/delete operation.
 - `authorization_signatures`: insert-only exact canonical signature bytes. Identical bytes are idempotent; conflicting bytes fail closed.
 
-Tables and new trigger functions explicitly revoke `PUBLIC` privileges. This migration does not grant a runtime role access. The foundation-only runtime grant template is not an issuance grant: a future least-privilege issuance migration needs its own review. Migration ownership, trigger disablement and direct administrative SQL are outside the runtime threat boundary.
+Tables and new trigger functions explicitly revoke `PUBLIC` privileges. This migration does not grant a runtime role access. The separate `preparationRuntimeGrants` template and `auditPreparationRole` now include issuance, with direct restricted-login HTTP integration tests; the foundation-only template remains unchanged in scope. Migration ownership, trigger disablement and direct administrative SQL are outside the runtime threat boundary.
 
 All database operations use the existing pinned `ExclusiveWriter`: one session advisory-lock owner, monotonic writer epoch, durable commits, no transparent reconnect/retry. A failed or ambiguous COMMIT acknowledgement cannot return authority or start the next external step. A new owner must explicitly reopen the adapter after the old connection releases its lock.
 
@@ -28,7 +28,9 @@ The trusted backend supplies explicit mint consent, the original session token a
 7. Locally verify the returned signature against the precise typed data and pinned authorizer, including canonical ECDSA restrictions. Persist identical signature bytes and `signing → signed` atomically. A timeout, exception or invalid signature preserves `unknown`; a storage failure can leave `signing`. Neither state is automatically retried, cleared or replaced. A late signer response after timeout is ignored.
 8. Before release, recheck the live session/generation/proof, request, kill switch, reservation head, exact completed publication, witness freshness and deadline in another transaction. A session change during signing prevents release, but a received valid signature is still saved: potentially created authority must not disappear from accounting. Replaying a valid signed record re-verifies the stored signature and does not call the signer again.
 
-The result of `reserve`/`issue` is an **internal backend value**, not a safe HTTP response. It includes private request/session hashes and assessment identifiers. A future route must produce an allowlisted transaction projection, retain existing generation guards and never log or expose the whole reservation. This module does not construct or submit a wallet transaction, collect transaction hints, or prove a mint succeeded.
+The result of `reserve`/`issue` is an **internal backend value**, not a safe HTTP response. It includes private request/session hashes and assessment identifiers. The local durable route constructs an allowlisted calldata response using the shared OpenSignatures ABI; it never exposes the whole reservation. It does not yet supply the active browser's chain/transaction-nonce/simulation context, collect transaction hints, broadcast or prove a mint succeeded.
+
+`preflightNonce` checks current request/session/consent and returns the original reservation nonce for its exact owner context, or a new candidate when no head exists. It performs no reservation write or signing. The coordinator uses that nonce to obtain fresh backend chain eligibility; `issue` then rechecks it against the locked reservation. Concurrent candidates cannot overwrite an existing head. This is an internal operation, not a browser nonce-selection endpoint.
 
 ## Conservative recovery behavior
 

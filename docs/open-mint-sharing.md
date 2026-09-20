@@ -1,6 +1,6 @@
 # Open-mint sharing and indexing boundary
 
-This is a bounded E22 policy foundation, not public indexing activation. Ethereum Sepolia is the selected staging network; no public origin, sitemap, crawler integration or public server startup has been selected or enabled. Staging remains noindex.
+This is a bounded E22 policy foundation, not public indexing activation. Ethereum Sepolia and `https://staging.signatures.gallery` are the selected staging network/origin. No DNS/hosting, sitemap, crawler integration or public server startup has been enabled. Staging remains noindex.
 
 ## Active local runtime
 

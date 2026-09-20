@@ -196,12 +196,19 @@ describe("explicit durable assessment worker", () => {
       execution = hooks; arrived(); await delayed;
       return { handle, mbti: "INTJ", model: h.provider.model, providerResponseId: "development-fixture:late", sourceUrls: [], xUserId: identity!.userId };
     });
-    const pending = new PostgresAssessmentWorker(h.requests, { ...h.options, timeoutMs: 30 }).run(h.input); await arrivedPromise;
-    await expect(pending).resolves.toMatchObject({ outcome: { kind: "uncertain", phase: "grok" } });
-    await expect(execution!.recordReceipt(receipt("grok"))).rejects.toThrow("deadline exceeded");
-    await expect(execution!.identityVerified(identity())).rejects.toThrow("deadline exceeded");
-    release(); await new Promise(resolve => setTimeout(resolve, 0));
-    expect(h.state.accepted).toBeUndefined(); expect(h.state.receipt.has("grok")).toBe(false);
+    // Advance only after Grok is reached; CPU load must not move the timeout to an earlier phase.
+    let elapsed = 0;
+    const monotonic = vi.spyOn(performance, "now").mockImplementation(() => elapsed);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const pending = new PostgresAssessmentWorker(h.requests, { ...h.options, timeoutMs: 30 }).run(h.input); await arrivedPromise;
+      elapsed = 31; await vi.advanceTimersByTimeAsync(31);
+      await expect(pending).resolves.toMatchObject({ outcome: { kind: "uncertain", phase: "grok" } });
+      await expect(execution!.recordReceipt(receipt("grok"))).rejects.toThrow("deadline exceeded");
+      await expect(execution!.identityVerified(identity())).rejects.toThrow("deadline exceeded");
+      release(); await vi.advanceTimersByTimeAsync(0);
+      expect(h.state.accepted).toBeUndefined(); expect(h.state.receipt.has("grok")).toBe(false);
+    } finally { release(); monotonic.mockRestore(); vi.useRealTimers(); }
   });
   it("checks elapsed monotonic time even before the timer can run", async () => {
     const h = await harness(), spy = vi.spyOn(performance, "now").mockImplementation(() => h.events.includes("claim") ? 2000 : 0);

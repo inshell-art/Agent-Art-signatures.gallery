@@ -21,19 +21,46 @@ export const FOUNDATION_RUNTIME_PRIVILEGES = Object.freeze(([
 ] as const).map(([name, columns, insert, updates]) => Object.freeze({ name, columns: Object.freeze(columns.split(" ").sort()), insert,
   updates: Object.freeze(updates ? updates.split(" ") : []) })));
 
+export interface RuntimeTablePrivileges { readonly name: string; readonly columns: readonly string[]; readonly insert: boolean; readonly updates: readonly string[] }
+/** Preparation API only. No projection/rollback, migration, operator-policy or
+ * recovery privileges are implicitly included in this separate profile. */
+export const PREPARATION_RUNTIME_PRIVILEGES: readonly RuntimeTablePrivileges[] = Object.freeze([
+  ...FOUNDATION_RUNTIME_PRIVILEGES,
+  ...([
+    ["request_profiles", "namespace_id deployment_id chain_id contract_address genesis_hash runtime_code_hash authorizer deployment_block deployment_block_hash max_evidence_age_ms max_block_age_ms max_future_skew_ms", false, ""],
+    ["requests", "namespace_id request_id code_hash deployment_id session_hash session_generation wallet handle requested_handle created_at expires_at attempt_id assessment_id owner_epoch preflight_observed_at preflight_valid_until preflight_block_number preflight_block_hash preflight_nonce", true, ""],
+    ["publication_profiles", "namespace_id origin destination source", false, ""],
+    ["public_artifacts", "namespace_id handle digest header svg png metadata", true, ""],
+    ["publication_observations", "namespace_id digest object_kind phase identity observed_at", true, ""],
+    ["completed_publications", "namespace_id digest completed_at", true, ""],
+    ["issuance_profiles", "namespace_id deployment_id enabled lifetime_seconds signer_timeout_ms max_evidence_age_ms max_block_age_ms max_future_skew_ms", false, ""],
+    ["authorizations", "namespace_id authorization_id deployment_id handle request_id session_hash session_generation recipient assessment_id artifact_digest nonce authorization_digest issued_at deadline payload state signing_epoch", true, "state signing_epoch"],
+    ["authorization_heads", "namespace_id deployment_id handle authorization_id", true, ""],
+    ["authorization_signatures", "namespace_id authorization_id signature recorded_at", true, ""],
+  ] as const).map(([name, columns, insert, updates]) => Object.freeze({ name, columns: Object.freeze(columns.split(" ").sort()), insert,
+    updates: Object.freeze(updates ? updates.split(" ") : []) })),
+]);
+
 /** Reviewed grant template for the foundation schema only. Returns SQL; never
  * creates a role, opens a connection, applies a migration, or grants ownership.
  * Request/publication/issuance/projection extensions need separately reviewed
  * grants before use. Run as a migration owner against an explicit database. */
 export function foundationRuntimeGrants(role: string): string {
+  return runtimeGrants(role, FOUNDATION_RUNTIME_PRIVILEGES);
+}
+/** SQL generation only; the operator applies it to an explicitly selected DB. */
+export function preparationRuntimeGrants(role: string): string {
+  return runtimeGrants(role, PREPARATION_RUNTIME_PRIVILEGES);
+}
+function runtimeGrants(role: string, profile: readonly RuntimeTablePrivileges[]): string {
   if (!/^[a-z][a-z0-9_]{0,62}$/.test(role) || role.startsWith("pg_") || role === "public") throw new Error("Invalid dedicated runtime role.");
   const target = `"${role}"`;
   return [
     `GRANT USAGE ON SCHEMA open_mint TO ${target};`,
-    `GRANT SELECT ON ${FOUNDATION_RUNTIME_PRIVILEGES.map(table => `open_mint.${table.name}`).join(", ")} TO ${target};`,
-    `GRANT INSERT ON ${FOUNDATION_RUNTIME_PRIVILEGES.filter(table => table.insert).map(table => `open_mint.${table.name}`).join(", ")} TO ${target};`,
+    `GRANT SELECT ON ${profile.map(table => `open_mint.${table.name}`).join(", ")} TO ${target};`,
+    `GRANT INSERT ON ${profile.filter(table => table.insert).map(table => `open_mint.${table.name}`).join(", ")} TO ${target};`,
     // PostgreSQL SELECT FOR UPDATE requires UPDATE on at least one column.
     // Permit only an immutable key, never the operator's generation switch.
-    ...FOUNDATION_RUNTIME_PRIVILEGES.filter(table => table.updates.length).map(table => `GRANT UPDATE (${table.updates.join(", ")}) ON open_mint.${table.name} TO ${target};`),
+    ...profile.filter(table => table.updates.length).map(table => `GRANT UPDATE (${table.updates.join(", ")}) ON open_mint.${table.name} TO ${target};`),
   ].join("\n");
 }

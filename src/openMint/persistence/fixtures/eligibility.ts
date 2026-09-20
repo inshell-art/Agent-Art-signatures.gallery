@@ -13,7 +13,7 @@ export function eligibilityFixture(namespaceId: string, deploymentId: string, no
   const profile = { deployment_id: deploymentId, chain_id: "31337", contract_address: config.contract.toLowerCase(), genesis_hash: config.genesisHash,
     runtime_code_hash: config.runtimeCodeHash, authorizer: config.authorizer.toLowerCase(), deployment_block: "2", deployment_block_hash: config.deploymentBlock.hash,
     origin, session_chain_id: "31337", max_evidence_age_ms: 10000, max_block_age_ms: 120000, max_future_skew_ms: 5000 };
-  return { config, profile, async witness(handle: string, recipient: Address, changes: Partial<PublicChainGateConfig> = {}, code: Hex = runtime) {
+  return { config, profile, async witness(handle: string, recipient: Address, changes: Partial<PublicChainGateConfig> = {}, code: Hex = runtime, nonce: Hex = chainHash("33")) {
     const pinned = { ...config, ...changes }, block = { number: 10n, hash: chainHash("10") }, timestamp = BigInt(Math.floor(now() / 1000));
     const rpc = (id: string): PublicChainRpc => ({ id, async request(method, params) {
       if (method === "eth_chainId") return numberToHex(pinned.chainId);
@@ -27,6 +27,6 @@ export function eligibilityFixture(namespaceId: string, deploymentId: string, no
         : name === "trustedAuthorizer" ? pinned.authorizer : false;
       return encodeFunctionResult({ abi: PUBLIC_CHAIN_READ_ABI, functionName: name, result } as Parameters<typeof encodeFunctionResult>[0]);
     } });
-    return new PublicChainGate(pinned, [rpc("mock-rpc-one"), rpc("mock-rpc-two")], now).preflight({ block, handle, recipient, nonce: chainHash("33") });
+    return new PublicChainGate(pinned, [rpc("mock-rpc-one"), rpc("mock-rpc-two")], now).preflight({ block, handle, recipient, nonce });
   } };
 }

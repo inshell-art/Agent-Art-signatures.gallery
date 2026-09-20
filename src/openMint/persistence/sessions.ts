@@ -32,8 +32,15 @@ export function capabilityHash(value: string): string {
 }
 function sessionError(): PublicError { return new PublicError(403, "SESSION_REQUIRED", "Refresh this page and try again."); }
 function challengeError(replaced = false): PublicError { return new PublicError(409, replaced ? "CHALLENGE_REPLACED" : "CHALLENGE_EXPIRED", "Connect your wallet again."); }
+function cookieToken(cookie?: string): string | undefined {
+  if (cookie !== undefined && cookie.length > 8192) throw new PublicError(400, "INVALID_INPUT", "Cookie header exceeds the size limit.");
+  const tokens = cookie?.split(";").map(value => value.trim()).filter(value => value.startsWith("sg_open_session=")) ?? [];
+  if (tokens.length > 1) throw new PublicError(400, "INVALID_INPUT", "Ambiguous session cookie.");
+  const token = tokens[0]?.slice(16);
+  return isCode(token) ? token : undefined;
+}
 
-/** Async companion to the local WalletSessions map, not yet wired to handlers.
+/** Async companion to the local WalletSessions map.
  * All lifetimes and signature context match the local flow; proof scope stores
  * a hash, so call sites must compare codeHash, not expect a recoverable code.
  */
@@ -65,8 +72,7 @@ export class PostgresWalletSessions {
   #live(row: SessionRow | undefined, now: Date): row is SessionRow { return !!row && !row.revoked && row.expires_at.getTime() > now.getTime(); }
 
   async session(cookie?: string): Promise<{ session: DurableSiteSession; created: boolean }> {
-    if (cookie !== undefined && cookie.length > 8192) throw new PublicError(400, "INVALID_INPUT", "Cookie header exceeds the size limit.");
-    const token = cookie?.split(";").map(value => value.trim()).find(value => value.startsWith("sg_open_session="))?.slice(16);
+    const token = cookieToken(cookie);
     return this.writer.transaction(async tx => {
       const now = await this.#now(tx), row = token && isCode(token) ? await this.#row(tx, token) : undefined;
       if (token && this.#live(row, now)) return { session: this.#view(row, token), created: false };
@@ -75,6 +81,16 @@ export class PostgresWalletSessions {
       const id = opaqueCode(), csrf = opaqueCode(), expires = new Date(now.getTime() + 86_400_000);
       await tx.query("INSERT INTO open_mint.sessions(namespace_id, session_hash, csrf, expires_at) VALUES ($1, $2, $3, $4)", [this.namespaceId, capabilityHash(id), csrf, expires]);
       return { session: { id, csrf, expiresAt: expires.getTime(), generation: "0" }, created: true };
+    });
+  }
+  /** Private reads and mutations must never create a replacement session. */
+  async requireSession(cookie?: string): Promise<DurableSiteSession> {
+    const token = cookieToken(cookie);
+    if (!token) throw sessionError();
+    return this.writer.transaction(async tx => {
+      const row = await this.#row(tx, token), now = await this.#now(tx);
+      if (!this.#live(row, now)) throw sessionError();
+      return this.#view(row, token);
     });
   }
   cookie(session: DurableSiteSession): string {

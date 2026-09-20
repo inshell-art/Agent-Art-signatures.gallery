@@ -108,7 +108,7 @@ export class PublicChainGate {
     this.#rpcs = Object.freeze(rpcs.map(rpc => Object.freeze({ id: label(rpc.id), request: rpc.request.bind(rpc) }))) as unknown as readonly [PublicChainRpc, PublicChainRpc];
     this.#now = now;
   }
-  async preflight(input: { block: PublicChainBlock; handle: string; recipient: string; nonce: Hex }): Promise<PublicChainEligibility> {
+  async preflight(input: { block: PublicChainBlock; handle: string; recipient: string; nonce: Hex; signal?: AbortSignal }): Promise<PublicChainEligibility> {
     return (await this.#observe(input)).witness;
   }
   /** Verify an already supplied signature and its exact commitments. Does not
@@ -126,13 +126,19 @@ export class PublicChainGate {
     const result = await this.#observe({ block, handle, recipient: authorization.recipient, nonce: authorization.nonce }, authorization);
     return Object.freeze({ eligibility: result.witness, authorizationDigest: openMintDigest(domain, authorization) });
   }
-  async #observe(input: { block: PublicChainBlock; handle: string; recipient: string; nonce: Hex }, authorization?: ReturnType<typeof normalizeOpenMintAuthorization>) {
+  async #observe(input: { block: PublicChainBlock; handle: string; recipient: string; nonce: Hex; signal?: AbortSignal }, authorization?: ReturnType<typeof normalizeOpenMintAuthorization>) {
     const deadlineAt = performance.now() + this.#config.observationTimeoutMs;
     const c = this.#config, block = blockPin(input.block), handle = input.handle, handleKey = openMintHandleKey(handle), recipient = address(input.recipient), nonce = hash(input.nonce);
     if (block.number < c.deploymentBlock.number) fail("Observation precedes deployment.");
-    const startedAt = clock(this.#now()), controller = new AbortController();
+    const startedAt = clock(this.#now()), controller = new AbortController(), parent = input.signal;
+    if (parent?.aborted) fail("Chain observation cancelled.");
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new PublicChainGateError("Chain observation timed out.")); }, c.observationTimeoutMs); });
+    let abort: (() => void) | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      abort = () => { controller.abort(); reject(new PublicChainGateError("Chain observation cancelled.")); };
+      parent?.addEventListener("abort", abort, { once: true });
+      timer = setTimeout(() => { controller.abort(); reject(new PublicChainGateError("Chain observation timed out.")); }, c.observationTimeoutMs);
+    });
     const check = () => {
       // Resolved RPC promises can keep the event loop in microtasks and prevent
       // the timeout callback from running. Wall-clock freshness is independent.
@@ -199,6 +205,6 @@ export class PublicChainGate {
       if (error instanceof PublicChainGateError) throw error;
       // RPC errors may embed a credential-bearing URL or provider response.
       throw new PublicChainGateError("Chain observation failed closed.");
-    } finally { clearTimeout(timer); controller.abort(); }
+    } finally { clearTimeout(timer); controller.abort(); if (abort) parent?.removeEventListener("abort", abort); }
   }
 }
