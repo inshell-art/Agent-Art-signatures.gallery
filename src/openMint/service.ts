@@ -11,9 +11,10 @@ import { normalizeOpenMintAuthorization, openMintTokenURIHash, type OpenMintAuth
 import { isCode, isDiagnosticReference, opaqueCode, PublicError, type SiteSession } from "./security.js";
 import { SerialKeys, type KeyValueStore } from "./storage.js";
 import type { OpenMintNetwork } from "./network.js";
+import type { MintConfidence } from "./revealPolicy.js";
 
 export interface MintState {
-  state: "unminted" | "pending" | "minted";
+  state: MintConfidence;
   tokenId?: string;
   wallet?: string;
   transactionHash?: Hex;
@@ -100,7 +101,7 @@ export class OpenMintService {
       try { [chainState, chainTime] = await Promise.all([this.state(handle), this.network!.now()]); }
       catch { throw new PublicError(503, "CHAIN_UNAVAILABLE", "The local chain is temporarily unavailable. Please try again shortly."); }
       if (chainState.state === "minted") throw new PublicError(409, "ALREADY_MINTED", "This handle has already been minted. View its minted signature.");
-      if (chainState.state === "pending") throw new PublicError(409, "MINT_PENDING", "This handle's mint is already confirming.");
+      if (chainState.state === "pending" || chainState.state === "confirming") throw new PublicError(409, "MINT_PENDING", "This handle's mint is already confirming.");
       if (Math.abs(chainTime - nowSeconds(this.now)) > 60) throw new PublicError(503, "CHAIN_CLOCK", "The chain is not synchronized. Please try again shortly.");
       try { await this.network!.preflight?.(wallet); }
       catch { throw new PublicError(503, "CHAIN_UNAVAILABLE", "Minting is not available for this wallet right now. No assessment was requested."); }

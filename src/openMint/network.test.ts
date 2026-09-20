@@ -164,10 +164,10 @@ describe("local open mint network", () => {
     expect(f.rpc.simulate).not.toHaveBeenCalled();
   });
 
-  it("returns pending before the configured confirmation count and minted after", async () => {
+  it("reveals verified inclusion as confirming before the local confirmation count and minted after", async () => {
     const f = fixture(); f.minted();
     f.log.blockNumber = 10n; f.log.blockHash = f.latest.hash;
-    expect(await f.network.state("bigu")).toEqual({ state: "pending", tokenId: BigInt(a.handleKey).toString(), wallet: recipient,
+    expect(await f.network.state("bigu")).toEqual({ state: "confirming", tokenId: BigInt(a.handleKey).toString(), wallet: recipient,
       transactionHash: f.log.transactionHash, assessmentDigest: a.assessmentDigest, artifactDigest: a.artifactDigest, tokenURIHash: a.tokenURIHash });
     f.latest.number = 11n;
     vi.mocked(f.rpc.block).mockImplementation(async number => number === 10n ? { number: 10n, hash: f.log.blockHash, timestamp: 1800000060n } : { ...f.latest });
@@ -292,7 +292,7 @@ describe("local open mint network", () => {
   it("defaults the deployment block to genesis and honors a custom confirmation count", async () => {
     const f = fixture(); f.minted();
     const network = createLocalOpenMintNetwork({ ...config, deploymentBlock: undefined, confirmations: 3 }, f.rpc);
-    expect((await network.state("bigu")).state).toBe("pending");
+    expect((await network.state("bigu")).state).toBe("confirming");
     expect(f.rpc.logs).toHaveBeenCalledWith(contract, a.handleKey, 0n, 10n);
     f.latest.number = 11n;
     expect((await network.state("bigu")).state).toBe("minted");

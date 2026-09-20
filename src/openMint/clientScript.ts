@@ -1,5 +1,7 @@
 import { mintUiState } from "./mintUiState.js";
 import { createWalletProviders } from "./walletProviders.js";
+import { canRevealMint } from "./revealPolicy.js";
+import { REVEAL_MONITOR_SCRIPT } from "./revealMonitor.js";
 
 /** Shared, bounded failure copy for the server-rendered page and live polling. */
 export function assessmentFailureText(input: { error?: unknown; errorCategory?: unknown; diagnosticReference?: unknown }): string {
@@ -12,9 +14,10 @@ export function assessmentFailureText(input: { error?: unknown; errorCategory?: 
   return text;
 }
 
-/** Explicit wallet-gated mint intent; reveal only after verified chain confirmation. */
-export const OPEN_MINT_CLIENT_SCRIPT = String.raw`(() => {
+/** Explicit wallet-gated mint intent; early reveal requires verified inclusion. */
+export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() => {
   const mintUiState = ${mintUiState.toString()};
+  const canRevealMint = ${canRevealMint.toString()};
   const assessmentFailureText = ${assessmentFailureText.toString()};
   const createWalletProviders = ${createWalletProviders.toString()};
   if (window.__openMintBound) return;
@@ -22,7 +25,7 @@ export const OPEN_MINT_CLIENT_SCRIPT = String.raw`(() => {
   const one = (selector) => document.querySelector(selector);
   const all = (selector) => document.querySelectorAll(selector);
   const root = one('[data-open-mint]');
-  if (!root) return;
+  if (!root || one('[data-reveal-monitor]')) return;
   const candidate = one('[data-assessment-code]');
   const page = /^[A-Za-z0-9_-]{43}$/.test(candidate?.dataset.assessmentCode || '') ? candidate : null;
   const code = page?.dataset.assessmentCode || '';
@@ -294,11 +297,13 @@ export const OPEN_MINT_CLIENT_SCRIPT = String.raw`(() => {
     all('[data-connect-wallet]').forEach(button => { (button.querySelector('span') || button).textContent = 'Change wallet'; });
     updateButtons();
   };
-  const reveal = () => {
+  const reveal = (state) => {
     if (stopped) return;
     stopped = true; abort.abort(); bootGeneration++; assessmentGeneration++; mintGeneration++; inspectionGeneration++;
     clearTimeout(timer); clearTimeout(bootTimer); clearTimeout(expiryTimer);
-    storageRemove(intentKey); storageRemove(submissionKey);
+    storageRemove(intentKey);
+    // A provisional reveal must not erase the guard on the private mint request.
+    if (state === 'minted') storageRemove(submissionKey);
     if (/^[A-Za-z0-9_]{1,15}$/.test(handle)) location.assign('/signatures/' + encodeURIComponent(handle));
   };
   const schedule = (callback, delay = 2500) => { clearTimeout(timer); if (!stopped) timer = setTimeout(callback, delay); };
@@ -441,7 +446,7 @@ export const OPEN_MINT_CLIENT_SCRIPT = String.raw`(() => {
         if (!stopped && generation === mintGeneration) { recoverError(error); readUnavailable = true; updateButtons(); message('[data-poll-feedback]', 'Confirmation is temporarily unavailable. This page will retry.' + (submittedHash ? ' Transaction: ' + submittedHash : '') + (['SESSION_REQUIRED', 'SESSION_EXPIRED', 'REQUEST_SESSION_MISMATCH', 'REQUEST_WALLET_MISMATCH'].includes(error?.code) ? ' Restore the original browser session and wallet. Do not submit another mint.' : '')); }
       }
       if (stopped || generation !== mintGeneration) return;
-      if (result?.state === 'minted') { reveal(); return; }
+      if (canRevealMint(result?.state)) { reveal(result.state); return; }
       if (submittedHash && reportNeeded) {
         try { await boundedCheck(post('/api/mints/report', { code, transactionHash: submittedHash })); reportNeeded = false; } catch {}
       }
@@ -487,7 +492,7 @@ export const OPEN_MINT_CLIENT_SCRIPT = String.raw`(() => {
         assertContext();
         sending = true; storageSet(submissionKey, { uncertain: true, wallet: recipient, mode });
         const result = await post('/api/dev/mint', { code, consent: true });
-        if (result.state === 'minted') { reveal(); return; }
+        if (canRevealMint(result.state)) { reveal(result.state); return; }
         if (!hashPattern.test(result.transactionHash || '')) throw new Error('The local wallet returned no valid transaction hash.');
         setPending(result.transactionHash, recipient);
       } else {
@@ -560,7 +565,7 @@ export const OPEN_MINT_CLIENT_SCRIPT = String.raw`(() => {
       if (state.handle !== handle || String(state.tokenId) !== tokenId) throw new Error('The prepared request does not match this handle.');
       readUnavailable = false; readFailures = 0; message('[data-poll-feedback]', '');
       syncDeadlines(state);
-      if (state.mint?.state === 'minted') { reveal(); return; }
+      if (canRevealMint(state.mint?.state)) { reveal(state.mint.state); return; }
       if (state.mint?.state === 'pending') {
         storageRemove(intentKey); page.dataset.mintState = 'pending';
         if (hashPattern.test(state.mint.transactionHash || '')) page.dataset.mintTransactionHash = state.mint.transactionHash;
@@ -716,7 +721,7 @@ export const OPEN_MINT_CLIENT_SCRIPT = String.raw`(() => {
       }
       syncDeadlines(state);
       if (submittedHash || uncertainSubmission || page?.dataset.mintState === 'pending') { message('[data-assessment-status]', ui().status); return; }
-      if (page?.dataset.mintState === 'minted') { reveal(); return; }
+      if (canRevealMint(page?.dataset.mintState)) { reveal(page.dataset.mintState); return; }
       if (requestExpired()) return;
       if (page?.dataset.assessmentState === 'pending') schedule(pollAssessment, 1500);
       else if (page?.dataset.assessmentState === 'ready') await resumeIntent();

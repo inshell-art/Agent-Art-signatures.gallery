@@ -12,7 +12,11 @@ Staging network selected September 20: **Ethereum Sepolia**, explicitly approved
 
 Staging origin selected September 20: **`https://staging.signatures.gallery`**, explicitly approved by the user. This is the intended fixed HTTPS origin; DNS, TLS and hosting have not been provisioned. Continue implementation without requesting routine approval.
 
+Reveal policy selected September 20: **early reveal with “Confirming”** after backend-verified canonical inclusion. Terminal gallery/ownership promotion stays separate; no reveal on submission alone. The [reveal policy](mint-reveal-policy.md) records implemented local behavior and the remaining Sepolia integration boundary. This resolves reveal timing, not public deployment or RPC operating configuration.
+
 ## Target and scope
+
+Latest implementation checkpoint (September 20): the selected [early Confirming reveal](mint-reveal-policy.md) is implemented in the local network/service/progress/detail/preview flow, with a bounded read-only status monitor and terminal-only gallery/collection/sharing admission. A fresh isolated Anvil mint verified the one-block/two-block transition without changing the user's chain. **4,585 tests / 149 files** passed with HTTP and disposable PostgreSQL enabled; typecheck/build/renderer locks, 75 contract and 80 OpenSignatures manifest tests passed. This resolves reveal UX, not E19/E20's remaining public RPC acquisition/finality coordinator or public deployment. Next implementation boundary remains authenticated inclusion/finality acquisition feeding the durable projection, then public read-service integration.
 
 Deliver the active open-mint product through three distinct milestones:
 
@@ -42,7 +46,7 @@ Development can proceed locally before external choices are supplied. No new ren
 - Existing attempt guards, daily limits, coalescing, nonce/context checks and duplicate-submission guards are already implemented. Extend and regression-test them; do not recreate fixed historical bugs as new work.
 - A timed-out/disconnected request may still have cost money or submitted a transaction. Unknown does not mean failed, free, dropped or safe to repeat. Do not automatically fill nonce gaps, replace transactions, clear wallet history or reset a chain.
 - Operational receipts and billing data are private, versioned records separate from immutable assessment/artifact digests. No retroactive rationale, inferred source identity, fabricated usage or rewritten historical hashes.
-- Reveal is a UI experience after canonical confirmation, not cryptographic secrecy. The backend attests its workflow; Grok does not issue the on-chain signature, nor does MBTI claim objective psychological truth.
+- Reveal is a UI experience after verified canonical inclusion, initially labelled Confirming, not cryptographic secrecy. Only terminal confirmation admits a work to minted galleries/sharing/ownership. The backend attests its workflow; Grok does not issue the on-chain signature, nor does MBTI claim objective psychological truth.
 - Signature renderer v2.0.0 and slogan v2.0.1 are intentionally separate. Keep `The_First_Agent_Artwork`, its approved motion, shared caption/link rules and existing caveat style unless a scoped design change is explicitly agreed.
 - Local/staging isolation and today's production refusal remain until reviewed replacements exist. No public test keys, dev mutation routes, fixture masquerading as real Grok, or silent local-to-public artifact migration.
 
@@ -151,7 +155,7 @@ Development can proceed locally before external choices are supplied. No new ren
 | Real pilot, E10 | Handle, profile/exposure acceptance, both API credentials/access, one-call spend authorization; user signs wallet operation | All mocked reliability/accounting work and preflight/report code |
 | UI scope, E13–E14 | Supported wallets/mobile expectations; approve readable narrow-screen wrapping | Inventory, design proposals and non-mutating browser audit |
 | Content, E12 | Definition/scope of “First”; approve evidence-backed wording and any unresolved qualification | Research and About draft; do not assert unproved priority |
-| Public environment, E16/E19 | Ethereum Sepolia and https://staging.signatures.gallery selected; hosting/storage/RPC budget/accounts, finality policy, support address and operational/key owners remain | Local adapters, versioned schema, deployment scripts and tests |
+| Public environment, E16/E19 | Ethereum Sepolia, https://staging.signatures.gallery and early Confirming reveal selected; hosting/storage/RPC budget/accounts, terminal finality/freshness configuration, support address and operational/key owners remain | Local adapters, versioned schema, deployment scripts and tests |
 | Testnet/launch, E23–E24 | Explicit deployment/funds approval, independent reviewer and launch decision | Local failure tests, threat model, scripts and release checklist |
 
 No need to resolve every decision before E00–E08. Do not repeatedly block local work on an approval relevant only to a later milestone.

@@ -21,7 +21,7 @@ export interface ConfirmedSharingInput {
   /** Trusted coordinator/repository output, not a browser claim. The caller
    * authenticates canonicality/finality and invalidates it on unknown/reorg. */
   readonly deployment: ProjectionDeployment;
-  readonly projection: { readonly state: "confirmed" | "pending" | "unknown" | "safety-halted"; readonly item?: ProjectedMint };
+  readonly projection: { readonly state: "confirmed" | "confirming" | "pending" | "unknown" | "safety-halted"; readonly item?: ProjectedMint };
   readonly artifact: PreparedPublicArtifact;
 }
 const privateMetadata: SharingMetadata = Object.freeze({ robots: PRIVATE_ROBOTS, cacheControl: "no-store", head: `<meta name="robots" content="${PRIVATE_ROBOTS}">` });

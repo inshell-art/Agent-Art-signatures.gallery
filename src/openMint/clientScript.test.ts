@@ -551,6 +551,26 @@ describe('request expiry and bounded read recovery', () => {
     expect(sends(test)).toEqual([]);
   });
 
+  it('reveals on verified inclusion without losing the submission guard or replaying an expired mint', async () => {
+    const storage = savedSubmission();
+    const test = setup({ expired: true, walletProved: true, storage,
+      api: path => path.startsWith('/api/mints/status/') ? { state: 'confirming' } : undefined });
+    await flush(); await tick(test, 100);
+    expect(test.navigations).toEqual(['/signatures/agent_art']);
+    expect(storage.has(SUBMISSION_KEY)).toBe(true);
+    expect(storage.has(INTENT_KEY)).toBe(false);
+    expect(test.requests.filter(request => request.init.method === 'POST')).toEqual([]);
+    expect(sends(test)).toEqual([]);
+  });
+
+  it('reveals confirming assessment status without submitting another transaction', async () => {
+    const test = setup({ pending: true, api: path => path === ASSESSMENT_PATH ? { ...readyStatus, mint: { state: 'confirming' } } : undefined });
+    await flush(); await tick(test, 1500);
+    expect(test.navigations).toEqual(['/signatures/agent_art']);
+    expect(sends(test)).toEqual([]);
+    expect(test.requests.filter(request => request.path === '/api/mints/authorize')).toEqual([]);
+  });
+
   it('returns an expired reverted transaction to request recovery, never Continue mint', async () => {
     const test = setup({ walletProved: true, expired: true, storage: savedSubmission(), api: path => path.startsWith('/api/mints/status/') ? { state: 'unminted' } : undefined,
       walletRequest: method => method === 'eth_getTransactionByHash' ? { ...PENDING_TRANSACTION, blockNumber: RECEIPT.blockNumber } : method === 'eth_getTransactionReceipt' ? RECEIPT : undefined }); await flush(); await tick(test, 100);

@@ -3,13 +3,14 @@ import {
   type Address, type Hex,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+import type { MintConfidence } from "./revealPolicy.js";
 import {
   OPEN_MINT_ABI, normalizeOpenMintAuthorization, openMintHandleKey, openMintTokenURIHash,
   signOpenMintAuthorization, verifyOpenMintAuthorization, type OpenMintAuthorization,
 } from "./authorization.js";
 
 export interface OpenMintChainState {
-  state: "unminted" | "pending" | "minted";
+  state: MintConfidence;
   tokenId?: string;
   wallet?: string;
   transactionHash?: Hex;
@@ -233,7 +234,7 @@ export function createLocalOpenMintNetwork(config: OpenMintNetworkConfig, inject
       check(mintBlock.hash === log.blockHash, "Mint event was reorganized out of the canonical chain.");
       await requireStable(block);
       return {
-        state: block.number - log.blockNumber + 1n >= BigInt(confirmations) ? "minted" : "pending",
+        state: block.number - log.blockNumber + 1n >= BigInt(confirmations) ? "minted" : "confirming",
         tokenId: tokenId.toString(), wallet, transactionHash: log.transactionHash,
         assessmentDigest, artifactDigest, tokenURIHash,
       };

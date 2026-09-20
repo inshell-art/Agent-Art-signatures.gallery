@@ -2,12 +2,13 @@ import { galleryFixtureModel } from "./galleryFixtures.js";
 import { canonicalHandle, isMbti } from "./identity.js";
 import type { MBTI } from "./identity.js";
 import type { OpenMintService } from "./service.js";
+import { canRevealMint } from "./revealPolicy.js";
 
-/** Public browsing state intentionally excludes every unconfirmed assessment field. */
+/** Unincluded work stays hidden. Verified inclusion may be shown as confirming. */
 export type PublicPreviewState =
   | { state: "unminted" | "pending" | "unavailable" }
   | {
-    state: "minted" | "fixture";
+    state: "confirming" | "minted" | "fixture";
     renderHandle: string;
     mbti: MBTI;
     rendererVersion: string;
@@ -31,12 +32,12 @@ export async function publicPreviewState(service: OpenMintService, spelling: str
   try {
     const mint = await service.state(handle);
     if (mint.state === "unminted" || mint.state === "pending") return { state: mint.state };
-    if (mint.state !== "minted") return { state: "unavailable" };
+    if (!canRevealMint(mint.state)) return { state: "unavailable" };
     // state() verifies the on-chain commitments against the saved artifact. Never
-    // publish its chosen type or spelling until that confirmation succeeds.
+    // publish its chosen type or spelling until inclusion verification succeeds.
     const artifact = await service.artifact(handle);
     if (!artifact) return { state: "unavailable" };
-    return { state: "minted", renderHandle: artifact.renderHandle ?? artifact.assessment.handle,
+    return { state: mint.state === "minted" ? "minted" : "confirming", renderHandle: artifact.renderHandle ?? artifact.assessment.handle,
       mbti: artifact.assessment.mbti, rendererVersion: artifact.assessment.rendererVersion,
       imageUrl: `/artifacts/${artifact.svgSha256}.svg`, url: `/signatures/${handle}` };
   } catch {

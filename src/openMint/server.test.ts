@@ -223,13 +223,13 @@ async function fixture(options: Pick<OpenMintServerOptions, "rpcUrl" | "supportU
       },
     };
   };
-  const mint = async (handle: string, state: "minted" | "pending" = "minted") => {
+  const mint = async (handle: string, state: "minted" | "confirming" | "pending" = "minted") => {
     const artifact = (await service.artifact(handle))!;
     states.set(handle.toLowerCase(), { state, tokenId: BigInt(handleDigest(handle)).toString(), wallet: wallet.address,
       transactionHash: `0x${"a".repeat(64)}`, assessmentDigest: artifact.assessment.digest, artifactDigest: artifact.digest,
       tokenURIHash: openMintTokenURIHash(artifact.tokenURI) });
   };
-  return { origin, client, service, store, sessions, assess, network, mint, repository };
+  return { origin, client, service, store, sessions, assess, network, mint, repository, states };
 }
 
 async function recordedGrokFixture() {
@@ -251,6 +251,86 @@ async function recordedGrokFixture() {
   const request = await owner.assess("ALICE_BOB");
   return { ...test, owner, assessment, ...request };
 }
+
+describe("verified early reveal", () => {
+  it("reveals one confirming artifact consistently, while galleries and ownership remain terminal-only", async () => {
+    const f = await fixture(), owner = f.client(), viewer = f.client(); await owner.init();
+    const { code, url } = await owner.assess("Alice_Bob");
+    const artifact = (await f.service.artifact("alice_bob"))!;
+    const before = JSON.stringify(artifact);
+    await f.mint("alice_bob", "confirming");
+    const privateState = await owner.request(`/api/assessments/${code}`);
+    expect(privateState.json).toMatchObject({ canMint: false, mbti: artifact.assessment.mbti, artifactDigest: artifact.digest, mint: { state: "confirming" } });
+    const redirect = await owner.request(url, { followRedirects: false });
+    expect(redirect.status).toBe(303); expect(redirect.headers.get("location")).toBe("/signatures/alice_bob");
+    const page = await viewer.request("/signatures/alice_bob");
+    expect(page.status).toBe(200);
+    expect(page.text).toContain(`data-reveal-artifact="${artifact.digest}"`);
+    expect(page.text).toContain('data-reveal-monitor');
+    expect(page.text).toContain('data-mint-state-label>Confirming</span>');
+    expect(page.text).toContain(`/artifacts/${artifact.svgSha256}.svg`);
+    expect(page.text).not.toMatch(/>Minted<|data-assessment-code|data-submit-mint|data-connect-wallet|property="og:/);
+    expect(page.headers.get("cache-control")).toContain("no-store");
+    expectArtworkCaptionPolicy(page.text, 1, 0);
+    const status = await viewer.request("/api/signatures/alice_bob/status");
+    expect(status.json).toEqual({ handle: "alice_bob", tokenId: BigInt(handleDigest("alice_bob")).toString(), state: "confirming", artifactDigest: artifact.digest, transactionHash: `0x${"a".repeat(64)}` });
+    expect(status.headers.get("cache-control")).toContain("no-store");
+    for (const path of ["/", `/${artifact.assessment.mbti}/`, "/me"]) {
+      const gallery = await owner.request(path);
+      expect(gallery.text).not.toContain('class="gallery-item"');
+    }
+    const variations = await viewer.request("/p/Alice_Bob/variations");
+    expectArtworkCaptionPolicy(variations.text, 16, 0, 15);
+    expect(variations.text.match(/>Confirming<\/span>/g)).toHaveLength(1);
+    expect(variations.text).toContain('View confirming signature');
+    expect(variations.text).not.toContain('Mint for this handle');
+    const preview = await viewer.request(`/p/Alice_Bob/${artifact.assessment.mbti}`);
+    expectArtworkCaptionPolicy(preview.text, 1, 0);
+    expect(preview.text).toContain('>Confirming</span>');
+    await owner.prove();
+    expect((await owner.request("/api/assessments", { method: "POST", body: { handle: "Alice_Bob" } })).json.code).toBe("MINT_PENDING");
+    await owner.prove(code);
+    expect((await owner.request("/api/mints/authorize", { method: "POST", body: { code, consent: true } })).json.code).toBe("ALREADY_MINTED");
+    await f.mint("alice_bob");
+    const terminal = await viewer.request("/signatures/alice_bob");
+    expect(terminal.text).toContain('data-mint-state-label>Minted</a>');
+    expect(terminal.text).not.toContain('data-reveal-monitor');
+    expect((await owner.request("/")).text).toContain('class="gallery-item"');
+    expect((await owner.request("/me")).text).toContain('class="gallery-item"');
+    expect(JSON.stringify(await f.service.artifact("alice_bob"))).toBe(before);
+    expect(f.assess).toHaveBeenCalledOnce();
+  });
+
+  it("withdraws inclusion on reorg, fails closed on unavailable/corrupt evidence, and never regenerates", async () => {
+    const f = await fixture(), owner = f.client(), viewer = f.client(); await owner.init();
+    await owner.assess("Alice_Bob"); await f.mint("alice_bob", "confirming");
+    const artifact = (await f.service.artifact("alice_bob"))!;
+    for (const state of ["pending", "unminted"] as const) {
+      if (state === "pending") await f.mint("alice_bob", state);
+      else f.states.set("alice_bob", { state });
+      const result = await viewer.request("/api/signatures/alice_bob/status");
+      expect(result.json).toEqual({ state, handle: "alice_bob", tokenId: BigInt(handleDigest("alice_bob")).toString() });
+      expect((await viewer.request("/signatures/alice_bob")).status).toBe(404);
+    }
+    await f.mint("alice_bob", "confirming");
+    f.states.get("alice_bob")!.artifactDigest = `0x${"b".repeat(64)}`;
+    expect((await viewer.request("/api/signatures/alice_bob/status")).status).toBe(503);
+    expect((await viewer.request("/signatures/alice_bob")).status).toBe(503);
+    vi.mocked(f.network.state).mockRejectedValue(new Error("private RPC failure"));
+    const failed = await viewer.request("/api/signatures/alice_bob/status");
+    expect(failed.status).toBe(503); expect(failed.text).not.toMatch(/artifactDigest|private RPC/);
+    expect(await f.service.artifact("alice_bob")).toEqual(artifact);
+    expect(f.assess).toHaveBeenCalledOnce();
+  });
+
+  it("rejects confidence overrides and mutations on the public read endpoint", async () => {
+    const f = await fixture(), client = f.client(); await client.init();
+    expect((await client.request("/api/signatures/alice/status?state=minted")).status).toBe(400);
+    expect((await client.request("/api/signatures/alice/status", { method: "POST", body: { state: "minted" } })).status).toBe(404);
+    expect(f.network.state).not.toHaveBeenCalled();
+    expect(f.assess).not.toHaveBeenCalled();
+  });
+});
 
 describe("local-only crawl policy", () => {
   it("serves disallow-all robots before session creation or service work", async () => {

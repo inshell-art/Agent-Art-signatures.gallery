@@ -3,7 +3,7 @@ import { RENDERER_VERSION } from "./identity.js";
 import { publicPreviewState } from "./previewState.js";
 import type { OpenMintService } from "./service.js";
 
-function service(state: "unminted" | "pending" | "minted" = "unminted") {
+function service(state: "unminted" | "pending" | "confirming" | "minted" = "unminted") {
   const status = vi.fn(async () => ({ state }));
   const artifact = vi.fn(async () => ({ renderHandle: "Alice_Bob_Key", svgSha256: "a".repeat(64),
     assessment: { handle: "alice_bob_key", mbti: "INTJ", rendererVersion: RENDERER_VERSION } }));
@@ -19,10 +19,10 @@ describe("read-only public preview state", () => {
     expect(test.artifact).not.toHaveBeenCalled();
   });
 
-  it("exposes only confirmed saved identity, type, renderer, and archived image", async () => {
-    const test = service("minted");
+  it.each(["confirming", "minted"] as const)("exposes verified %s saved identity, type, renderer, and archived image", async state => {
+    const test = service(state);
     expect(await publicPreviewState(test.value, "ALICE_BOB_KEY")).toEqual({
-      state: "minted", renderHandle: "Alice_Bob_Key", mbti: "INTJ", rendererVersion: RENDERER_VERSION,
+      state, renderHandle: "Alice_Bob_Key", mbti: "INTJ", rendererVersion: RENDERER_VERSION,
       imageUrl: `/artifacts/${"a".repeat(64)}.svg`, url: "/signatures/alice_bob_key",
     });
   });

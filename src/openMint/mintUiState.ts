@@ -1,6 +1,7 @@
 /**
  * Mint progress transition contract, in priority order:
- * confirmed -> reveal; submitted/unknown -> reconcile; wallet approval -> wait;
+ * confirmed -> reveal; verified inclusion -> reveal while confirming;
+ * submitted/unknown -> reconcile; wallet approval -> wait;
  * request expiry -> explicit return; failed/abstained -> stop; read failure ->
  * read-only recovery; pending assessment -> monitor; ready + stale proof/wallet
  * -> explicit reconnect; ready + intent -> consume once; ready -> Continue mint.
@@ -28,6 +29,7 @@ export interface MintUiInput {
 export function mintUiState(input: MintUiInput) {
   let phase = "ready", status = "Ready to continue";
   if (input.mintState === "minted") { phase = "confirmed"; status = "Your signature is minted."; }
+  else if (input.mintState === "confirming") { phase = "confirming"; status = "Your signature is revealed. The mint is confirming."; }
   else if (input.submitted || input.mintState === "pending") { phase = "submitted"; status = "Mint submitted. Waiting to reveal your signature…"; }
   else if (input.awaitingApproval) { phase = "wallet-approval"; status = "Approve in your wallet"; }
   else if (input.uncertain) { phase = "uncertain"; status = "Checking your mint. Check wallet activity before any retry."; }
@@ -45,7 +47,7 @@ export function mintUiState(input: MintUiInput) {
     canSubmit: phase === "ready",
     canConnect: phase === "wallet-required" || phase === "ready",
     showReturn: phase === "expired" || phase === "unavailable",
-    monitorMint: phase === "submitted" || phase === "uncertain",
-    clearIntent: ["confirmed", "submitted", "uncertain", "expired", "failed", "abstained", "unavailable", "wallet-required", "read-unavailable"].includes(phase),
+    monitorMint: phase === "confirming" || phase === "submitted" || phase === "uncertain",
+    clearIntent: ["confirmed", "confirming", "submitted", "uncertain", "expired", "failed", "abstained", "unavailable", "wallet-required", "read-unavailable"].includes(phase),
   };
 }

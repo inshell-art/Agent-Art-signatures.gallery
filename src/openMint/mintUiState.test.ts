@@ -23,6 +23,7 @@ describe("shared mint progress state contract", () => {
     [{ uncertain: true, requestExpired: true, readUnavailable: true }, "uncertain", false, false],
     [{ awaitingApproval: true, requestExpired: true }, "wallet-approval", false, false],
     [{ mintState: "minted", uncertain: true, requestExpired: true }, "confirmed", false, false],
+    [{ mintState: "confirming", submitted: true, uncertain: true, requestExpired: true }, "confirming", false, false],
   ] as const)("projects %# consistently on the server and serialized client", (overrides, phase, canSubmit, showReturn) => {
     const input = { ...ready, ...overrides };
     const result = mintUiState(input);

@@ -73,7 +73,7 @@ describe("environment-aware sharing policy (unwired, offline)", () => {
     const result = await openMintSharing({ profile: { ...profile(), indexConfirmedWorks: false }, path: mintedPath, minted: minted() });
     expect(result.robots).toBe("noindex, follow"); expect(result.canonical).toBe(`https://gallery.example${mintedPath}`);
   });
-  it.each(["pending", "unknown", "safety-halted"] as const)("never shares a %s projection even with valid saved artwork", async state => {
+  it.each(["confirming", "pending", "unknown", "safety-halted"] as const)("never shares a %s projection even with valid saved artwork", async state => {
     const record = minted(); Object.assign(record.projection, { state });
     expect(await openMintSharing({ profile: profile(), path: mintedPath, minted: record })).toEqual(denied);
   });

@@ -18,6 +18,7 @@ import { OPEN_MINT_GALLERY_FIXTURES, galleryFixtureModel } from "./galleryFixtur
 import { publicPreviewState } from "./previewState.js";
 import { openMintSupportUrl } from "./supportUrl.js";
 import { LOCAL_ROBOTS_TXT, PRIVATE_ROBOTS } from "./sharing.js";
+import { canRevealMint } from "./revealPolicy.js";
 
 export interface OpenMintServerOptions {
   origin: string; fixture: boolean; service: OpenMintService; sessions: WalletSessions;
@@ -71,16 +72,16 @@ export function createOpenMintServer(options: OpenMintServerOptions) {
   });
   const artifactFields = (artifact: SignatureArtifact) => ({ renderHandle: artifact.renderHandle ?? artifact.assessment.handle, mbti: artifact.assessment.mbti,
     imageUrl: `/artifacts/${artifact.pngSha256}.png`, svgUrl: `/artifacts/${artifact.svgSha256}.svg`,
-    rendererVersion: artifact.assessment.rendererVersion, svgSha256: artifact.svgSha256, pngSha256: artifact.pngSha256,
+    rendererVersion: artifact.assessment.rendererVersion, svgSha256: artifact.svgSha256, pngSha256: artifact.pngSha256, artifactDigest: artifact.digest,
     assessedAt: artifact.assessment.createdAt, assessmentProvenance: artifact.assessment.provenance,
     assessmentModel: artifact.assessment.model, assessmentSourceUrls: artifact.assessment.sourceUrls,
     ...(artifact.assessment.xIdentity?.provenance === "x-api" ? { verifiedXUserId: artifact.assessment.xIdentity.userId, identityVerifiedAt: artifact.assessment.xIdentity.verifiedAt } : {}) });
   const model = async (request: SignatureRequest, session: SiteSession): Promise<AssessmentPageModel> => {
     const mint = await service.state(request.handle);
     // This is a UI reveal, not cryptographic secrecy: mint calldata already binds the artifact.
-    // Never send an unminted result to the progress UI or its polling endpoint.
-    const artifact = mint.state === "minted" ? await service.artifact(request.handle) : undefined;
-    return { handle: request.handle, renderHandle: request.requestedHandle ?? request.handle, code: request.code, status: request.errorCategory === "assessment-abstained" ? "abstained" : request.status, tokenId: BigInt(handleDigest(request.handle)).toString(), canMint: service.canMint(request, session),
+    // Only verified canonical inclusion (or stronger) unlocks early reveal.
+    const artifact = canRevealMint(mint.state) ? await service.artifact(request.handle) : undefined;
+    return { handle: request.handle, renderHandle: request.requestedHandle ?? request.handle, code: request.code, status: request.errorCategory === "assessment-abstained" ? "abstained" : request.status, tokenId: BigInt(handleDigest(request.handle)).toString(), canMint: mint.state === "unminted" && service.canMint(request, session),
       diagnosticReference: request.attemptId, errorCategory: request.errorCategory,
       walletProvedForCode: await service.walletProved(request.code, session), requestExpired: request.expiresAt <= service.now(), requestExpiresAt: request.expiresAt, ...walletTiming(session), error: request.error,
       ...(artifact ? artifactFields(artifact) : {}), mint };
@@ -199,6 +200,15 @@ export function createOpenMintServer(options: OpenMintServerOptions) {
       if (status) return json(res, await model(await service.sessionRequest(status[1], session), session));
       const mintStatus = /^\/api\/mints\/status\/([A-Za-z0-9_-]{43})$/.exec(path);
       if (mintStatus) return json(res, await service.state((await service.sessionRequest(mintStatus[1], session)).handle));
+      const revealStatus = /^\/api\/signatures\/([a-z0-9_]{1,15})\/status$/.exec(path);
+      if (revealStatus) {
+        if (url.search) throw new PublicError(400, "INVALID_REQUEST", "This status endpoint accepts no parameters.");
+        const handle = revealStatus[1], mint = await service.state(handle);
+        // Public read-only confidence projection, not a request capability or
+        // authority endpoint. state() verifies saved commitments before reveal.
+        return json(res, { handle, tokenId: BigInt(handleDigest(handle)).toString(), state: mint.state,
+          ...(canRevealMint(mint.state) ? { artifactDigest: mint.artifactDigest, transactionHash: mint.transactionHash } : {}) });
+      }
       if (path === "/") return send(res, 200, homePage(pageOptions(session), await publicEntries()));
       const mbtiPath = /^\/([A-Za-z]{4})\/?$/.exec(path);
       const mbti = mbtiPath?.[1]?.toUpperCase();
@@ -226,7 +236,7 @@ export function createOpenMintServer(options: OpenMintServerOptions) {
       if (mintRequest) {
         const request = await service.sessionRequest(mintRequest[1], session);
         const view = await model(request, session);
-        if (view.mint?.state === "minted") { res.setHeader("Location", `/signatures/${request.handle}`); return send(res, 303, ""); }
+        if (canRevealMint(view.mint?.state)) { res.setHeader("Location", `/signatures/${request.handle}`); return send(res, 303, ""); }
         return send(res, 200, assessmentPage(view, pageOptions(session)));
       }
       const preview = /^\/(?:p|s)\/([^/]+)(?:\/([^/]+))?$/.exec(path);
@@ -244,14 +254,14 @@ export function createOpenMintServer(options: OpenMintServerOptions) {
         if (!preview[2]) { res.setHeader("Location", `/mint?handle=${spelling}`); return send(res, 303, ""); }
         if (preview[2] === "variations") {
           const state = await publicPreviewState(service, spelling, galleryFixtures);
-          if (state.state === "minted") spelling = state.renderHandle;
+          if (state.state === "minted" || state.state === "confirming") spelling = state.renderHandle;
           if (preview[1] !== spelling) { res.setHeader("Location", `/p/${spelling}/variations`); return send(res, 303, ""); }
           return send(res, 200, previewVariationsPage(spelling, pageOptions(session), state));
         }
         const mbti = preview[2].toUpperCase();
         if (!isMbti(mbti)) throw new PublicError(404, "NOT_FOUND", "Use a four-letter MBTI type, such as ENFP.");
         const state = await publicPreviewState(service, spelling, galleryFixtures);
-        if (state.state === "minted") spelling = state.renderHandle;
+        if (state.state === "minted" || state.state === "confirming") spelling = state.renderHandle;
         if (preview[2] !== mbti || preview[1] !== spelling) { res.setHeader("Location", `/p/${spelling}/${mbti}`); return send(res, 303, ""); }
         return send(res, 200, previewPage(spelling, mbti, pageOptions(session), state));
       }
@@ -269,7 +279,7 @@ export function createOpenMintServer(options: OpenMintServerOptions) {
         const artifact = await service.artifact(permalink[1]!);
         if (!artifact) throw new PublicError(404, "NOT_FOUND", "Signature not found.");
         const mint = await service.state(artifact.assessment.handle);
-        if (mint.state !== "minted") throw new PublicError(404, "NOT_FOUND", "This signature has not been minted yet.");
+        if (!canRevealMint(mint.state)) throw new PublicError(404, "NOT_FOUND", "This signature has not been included in a verified block yet.");
         return send(res, 200, assessmentPage({ handle: artifact.assessment.handle, code: "", status: "ready", canMint: false, ...artifactFields(artifact), mint }, pageOptions(session)));
       }
       throw new PublicError(404, "NOT_FOUND", "Page not found. Start a new signature request from the gallery.");
