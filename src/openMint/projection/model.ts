@@ -37,6 +37,7 @@ export interface ProjectionCursor {
   readonly snapshot: { readonly number: string; readonly hash: string }; readonly last: Position;
 }
 export class ProjectionConflictError extends Error {}
+export class ProjectionSafetyHaltError extends ProjectionConflictError {}
 export class ProjectionCursorError extends Error {}
 export const ZERO_ADDRESS = `0x${"0".repeat(40)}`;
 export const stable = (value: unknown): string => canonicalize(value)!;

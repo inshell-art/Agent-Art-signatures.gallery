@@ -1,6 +1,6 @@
 import { ExclusiveWriter, type OwnershipConnection } from "../persistence/writer.js";
 import { readProjectionObservation, type ProjectionChainCursor, type ProjectionObservation } from "./observer.js";
-import { address, decodeCursor, encodeCursor, fields, hash, ProjectionConflictError, ProjectionCursorError, quantity, reference,
+import { address, decodeCursor, encodeCursor, fields, hash, ProjectionConflictError, ProjectionCursorError, ProjectionSafetyHaltError, quantity, reference,
   stable, validateBatch, validateDeployment, validateEvent, validateFilter, validateLimit, ZERO_ADDRESS,
   type GalleryFilter, type Position, type ProjectionDeployment, type ValidatedBatch, type ValidatedBlock, type ValidatedMint, type ValidatedTransfer } from "./model.js";
 
@@ -58,7 +58,7 @@ export class OpenMintProjection {
   }
   async #cursor(tx: Transaction): Promise<ProjectionChainCursor> {
     const state = await this.#state(tx);
-    if (state.health === "safety-halted") fail("Projection is safety-halted.");
+    if (state.health === "safety-halted") throw new ProjectionSafetyHaltError("Projection is safety-halted.");
     const tail = (await tx.query<{ number: string; hash: string }>(`SELECT number::text,hash FROM open_mint.projection_blocks
       WHERE deployment_id=$1 AND canonical ORDER BY projection_blocks.number DESC LIMIT $2`, [this.#deployment.id, this.#deployment.policy.rollbackBlocks + 1])).rows.reverse();
     return { head: state.head_number === null ? null : { number: state.head_number, hash: state.head_hash! },

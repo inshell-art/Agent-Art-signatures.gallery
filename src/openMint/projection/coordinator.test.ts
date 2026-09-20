@@ -86,8 +86,16 @@ describe.skipIf(process.env.OPEN_MINT_TEST_POSTGRES !== "1")("RPC witness → fe
     expect(await service.sync(signal())).toBe("safety-halted");
     expect(await home()).toEqual({ state: "unknown", items: [] });
     expect(await projection.checkpoint()).toMatchObject({ health: "safety-halted", halt_reason: "canonical-contradiction" });
-    expect(await service.sync(signal())).toBe("unavailable");
+    expect(await service.sync(signal())).toBe("safety-halted");
     expect((await projection.checkpoint()).health).toBe("safety-halted");
+    // A new process must stop too, before consulting RPCs or retrying a halt.
+    service = createProjectionCoordinator(projection, fixture.options);
+    const calls = fixture.calls.length; expect(await service.sync(signal())).toBe("safety-halted"); expect(fixture.calls).toHaveLength(calls);
+  });
+  it("reports writer loss as terminal rather than retryable chain unavailability", async () => {
+    await service.sync(signal()); const calls = fixture.calls.length; await writer.close();
+    expect(await service.sync(signal())).toBe("writer-unavailable"); expect(fixture.calls).toHaveLength(calls);
+    expect(await home()).toEqual({ state: "unknown", items: [] });
   });
   it("fails closed on an RPC outage and recovers only through an explicit new pass", async () => {
     fixture.setFinalized(11); await service.sync(signal());

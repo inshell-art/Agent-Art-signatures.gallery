@@ -48,10 +48,10 @@ describe("bounded read-only chain polling lifecycle", () => {
     await vi.advanceTimersByTimeAsync(30_000); expect(sync).toHaveBeenCalledOnce(); expect(withdraw).toHaveBeenCalledOnce();
     expect(p.snapshot().state).toBe("failed"); expect(vi.getTimerCount()).toBe(0);
   });
-  it.each(["safety-halted", "busy"] as const)("stops without retry on %s", async outcome => {
+  it.each(["safety-halted", "busy", "writer-unavailable"] as const)("stops without retry on %s", async outcome => {
     const sync = vi.fn(async () => outcome), withdraw = vi.fn(); const p = createProjectionPoller({ sync, withdraw }, config);
     p.start(signal()); await vi.advanceTimersByTimeAsync(30_000);
-    expect(sync).toHaveBeenCalledOnce(); expect(withdraw).toHaveBeenCalledOnce(); expect(p.snapshot().state).toBe(outcome === "busy" ? "failed" : outcome);
+    expect(sync).toHaveBeenCalledOnce(); expect(withdraw).toHaveBeenCalledOnce(); expect(p.snapshot().state).toBe(outcome === "safety-halted" ? outcome : "failed");
     expect(() => p.start(signal())).toThrow("single-use"); p.stop(); expect(withdraw).toHaveBeenCalledOnce();
   });
   it.each([true, false])("consumes unexpected %s synchronous errors without leaking details", async synchronous => {

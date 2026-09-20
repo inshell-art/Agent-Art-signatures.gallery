@@ -1,5 +1,6 @@
 import type { GalleryPage, OpenMintProjection } from "./postgres.js";
-import { ProjectionCursorError } from "./model.js";
+import { ProjectionCursorError, ProjectionSafetyHaltError } from "./model.js";
+import { WriterUnavailableError } from "../persistence/writer.js";
 import { createProjectionObserver, type ProjectionObservation } from "./observer.js";
 
 /** One fenced writer / one coordinator. No public request is allowed to trigger
@@ -14,7 +15,7 @@ export function createProjectionCoordinator(projection: OpenMintProjection, opti
     /** Immediate read withdrawal on drain/lost ownership, with no DB or RPC I/O.
      * An already-running pass cannot restore this withdrawn generation. */
     withdraw(): void { witness = undefined; generation++; },
-    async sync(signal: AbortSignal): Promise<"observed" | "safety-halted" | "unavailable" | "busy"> {
+    async sync(signal: AbortSignal): Promise<"observed" | "safety-halted" | "unavailable" | "writer-unavailable" | "busy"> {
       if (running) return "busy";
       running = true; witness = undefined; generation++;
       const epoch = generation;
@@ -27,7 +28,9 @@ export function createProjectionCoordinator(projection: OpenMintProjection, opti
           witness = next;
         }
         return result;
-      } catch {
+      } catch (error) {
+        if (error instanceof ProjectionSafetyHaltError) return "safety-halted";
+        if (error instanceof WriterUnavailableError) return "writer-unavailable";
         await projection.unavailable().catch(() => undefined);
         return "unavailable";
       } finally { running = false; }

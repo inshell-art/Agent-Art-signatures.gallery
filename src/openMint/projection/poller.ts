@@ -47,7 +47,7 @@ export function createProjectionPoller(coordinator: Coordinator, input: Projecti
       if (ended) return;
       clearTimeout(deadline); active = undefined;
       if (outcome === "safety-halted") return finish({ state: "safety-halted", failures: state.failures, lastOutcome: outcome });
-      if (outcome === "busy") return finish({ state: "failed", failures: state.failures + 1, lastOutcome: outcome });
+      if (outcome === "busy" || outcome === "writer-unavailable") return finish({ state: "failed", failures: state.failures + 1, lastOutcome: outcome });
       const failures = outcome === "observed" ? 0 : Math.min(state.failures + 1, 30);
       const delay = Math.min(maxBackoffMs, intervalMs * 2 ** failures);
       state = { state: failures ? "backing-off" : "waiting", failures, lastOutcome: outcome, nextDelayMs: delay };
