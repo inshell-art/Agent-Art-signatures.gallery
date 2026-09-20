@@ -1,5 +1,7 @@
 # One-attempt paid Grok pilot
 
+**Current status — September 20, after recovery:** The separately approved recovery also received X HTTP 402, before any Grok call or mint. The shared bearer token's association with the funded X app/account is unverified. No further live retry is staged. The independent [fixture Anvil rehearsal](validation/local-anvil-2026-09-20.md) passed without paid provider calls; it does not complete E10. The chronological notes below describe earlier checkpoints.
+
 **Latest result — September 20:** The approved attempt stopped at the X identity lookup with **HTTP 402**. No Grok call, accepted assessment or mint occurred. Preserve the failed attempt and no-retry guard; account billing review and separately approved recovery are required. See the [live pilot report](validation/e10-pilot-2026-09-20.md). The preparation notes below are historical; they do not authorize a second attempt.
 
 **Recovery update — September 20, 08:12 UTC:** The user separately approved one additional attempt. After operator billing review and private backup, the exact audited recovery was staged as `a9443f9f-ae30-428d-a9a8-5a5031a5f861`; original evidence and the same Anvil chain/deployment were preserved. The app is restarted on `3020` / RPC `18560`. No new provider dispatch has occurred: fresh browser wallet proof and an explicit **Mint & reveal** click are now required. This is staged recovery, not successful E10 validation; see the report for evidence and limits.

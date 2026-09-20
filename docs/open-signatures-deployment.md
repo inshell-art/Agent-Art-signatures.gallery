@@ -2,7 +2,7 @@
 
 This is separate from the GalleryOfSignatures deployment tooling. It prepares and checks **OpenSignatures**, whose exact EIP-712 domain is `SignaturesOpenMint` / `1`. It does not deploy publicly, start an RPC server, provision accounts, read private keys, enable the application, or complete E19.
 
-The existing production startup refusal is unchanged. Do not use `NODE_ENV=development` as a hosted-staging bypass. No public network, signer custody, operational owners, finality policy or deployment budget has been approved by this tooling.
+The existing production startup refusal is unchanged. Do not use `NODE_ENV=development` as a hosted-staging bypass. The user selected **Ethereum Sepolia** on 2026-09-20; this tooling does not approve signer custody, operational owners, finality policy or a deployment budget. See [the architecture decision](public-architecture.md).
 
 ## Files and checks
 
@@ -94,14 +94,14 @@ Success returns `offlineConsistent:true`, a manifest SHA-256, and **false** for 
 
 `sg-open-collection-raw-sha256-v1` is deliberately narrower than E18's general deterministic UnixFS publication profile: one canonical UTF-8 JSON object, maximum 262144 bytes, raw-codec CIDv1 with SHA-256 and an exact root `ipfs://` URI. No path, query, fragment, gateway rewrite or mutable HTTPS URI is accepted. The collection `name` must equal the constructor name. E18 may use dag-pb for larger assets; those are not silently treated as raw collection documents. Publication/privacy checks for nested collection fields remain E18 integration work.
 
-The pure validator can evaluate a `public-testnet-draft` only with an explicit caller-supplied testnet chain-ID allowlist and HTTPS RPC configuration. There is no default public network. Mainnet, dev chain IDs, literal IP/development RPC endpoints, known Foundry/Hardhat first-20 mnemonic accounts, small scalar test-key accounts and obvious tiny addresses are refused. This finite test-identity denylist is defense in depth, not proof that a remaining address has safe custody. No private keys belong in a manifest or CLI argument.
+The pure validator can evaluate a `public-testnet-draft` only with an explicit caller-supplied testnet chain-ID allowlist and HTTPS RPC configuration. There is no implicit public network in the generic validator. For this project's approved staging target, the caller must use only Ethereum Sepolia (`11155111`), with independently verified genesis and deployment pins. Mainnet, dev chain IDs, literal IP/development RPC endpoints, known Foundry/Hardhat first-20 mnemonic accounts, small scalar test-key accounts and obvious tiny addresses are refused. This finite test-identity denylist is defense in depth, not proof that a remaining address has safe custody. No private keys belong in a manifest or CLI argument.
 
 Public drafts additionally require `publication:"verified"` and distinct publication/retrieval evidence references. Strings cannot establish independent publication by themselves: the operator must verify the actual E18 receipts and bytes. Even a consistent public draft cannot pass the local CLI or script broadcast gate.
 
 ## Remaining E19/E21/E23 work
 
 - A bounded public-chain/RPC adapter fetching independent block-pinned evidence, checking DNS-resolved destinations/redirects/timeouts/body limits, code/domain/signer/roles and chain clock, and verifying actual signed authorizations.
-- Approved network/genesis, finality/provider agreement, source verification, deployment package, role owners and signer custody. Finite configuration checks do not replace operational review.
+- Ethereum Sepolia genesis verification, finality/provider agreement, source verification, deployment package, role owners and signer custody. Network selection is recorded; finite configuration checks do not replace operational review.
 - Durable binding of manifest hash to namespace/deployment, E18 verified collection/artifact receipts, E20 canonical role/mint/transfer projection and recovery.
 - Explicit reviewed staging startup mode that cannot borrow development-only controls; production refusal remains until that integration and separate approvals.
 - A separately reviewed public broadcast gate and funding/deployment approval. No non-local broadcast path is implemented here; green local tests cannot open it.

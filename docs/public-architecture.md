@@ -1,8 +1,10 @@
 # Public open-mint architecture proposal
 
-Status: **Proposed; local interface/schema work may proceed. Public environment and operating decisions are not approved.**
+Status: **Ethereum Sepolia approved as the staging target on 2026-09-20; architecture and remaining operating decisions are under review. Local interface/schema work may proceed.**
 
 Recorded: 2026-09-20. Scope: E16 and the implementation boundaries for E17–E22 in [the development plan](development-plan.md). This document does not complete E16's review, authorize paid dispatch, select an account/vendor, provision infrastructure, deploy a contract, or authorize a public transaction. The current local startup refusal remains in force until its reviewed replacement exists.
+
+User decision: “yes, use Ethereum Sepolia as staging target.” This selects Ethereum Sepolia, not another chain's Sepolia deployment. RPC accounts, finality policy, origin, infrastructure, key custody, deployment/funding and production authorization remain separate decisions. Do not infer an existing deployment or populate unknown chain/deployment hashes from this approval.
 
 ## 1. Proposed minimum topology
 
@@ -49,7 +51,7 @@ Introduce an explicit runtime profile, conceptually `local-fixture | local-real 
 | --- | --- |
 | Local fixture | Literal loopback, isolated files/Anvil, explicit simulated provenance; existing developer controls only here. |
 | Local real | Literal loopback, separate real namespace, existing reviewed paid envelope and local user-approved mint. Never loads fixture exemptions. |
-| Staging testnet | Exact approved HTTPS origin and allowlisted testnet identity; separate database, artifacts, secrets and deployment manifest; real public security checks; no fixture provider, fixture galleries, study routes, dev wallet, dev mint, Anvil control, or test key. Always noindex. |
+| Staging testnet | Ethereum Sepolia, with an exact approved HTTPS origin and pinned chain identity; separate database, artifacts, secrets and deployment manifest; real public security checks; no fixture provider, fixture galleries, study routes, dev wallet, dev mint, Anvil control, or test key. Always noindex. |
 | Production | Separately disabled until E24 launch approval and reviewed startup checks. Staging authorization cannot enable it. |
 
 Public startup must validate the database schema/profile/namespace, writer ownership, deployment manifest, chain ID and genesis/deployment block hashes, runtime code hash, EIP-712 name/version/address, trusted signer and role configuration, URI profile, publication readiness, clock skew, bounded budgets, finality policy and index freshness. A required check that is unavailable is a blocker. Read-only degraded operation can be explicitly configured; generation and signing must each remain fail-closed.
@@ -190,7 +192,7 @@ E19 needs a distinct OpenSignatures deploy script, ABI/version identifier, manif
 
 Persist `OpenSignatureMinted`, `Transfer`, signer/nonce/pause/role observations and contiguous block headers from the exact deployment block. Use bounded block ranges, log counts, response sizes and per-tick work; provider errors shrink/pause work rather than starting unbounded backfill. Retain block-hash-qualified observations so shallow reorgs can roll projections back to a common ancestor and replay. A contradiction at a previously promoted finality boundary halts promotion and new authority for that deployment until reviewed.
 
-The finality profile must be explicit per approved network: promotion rule, independent RPC agreement requirement, maximum lag, historical-state requirement, rollback horizon and what happens when finality tags are absent. No default chain or number of confirmations is chosen here. Local two-confirmation behavior is not a public finality policy. Separate observed/pending, confirmed/publicly promotable, unknown/unavailable and safety-halted states, applying the same confidence boundary to mint and current owner. Verify mint provenance against durable authorization and artifact commitments; a matching event name alone is insufficient.
+The finality profile must be explicit for Ethereum Sepolia: promotion rule, independent RPC agreement requirement, maximum lag, historical-state requirement, rollback horizon and what happens when finality tags are absent. The network choice does not select a number of confirmations or approve a finality policy. Local two-confirmation behavior is not a public finality policy. Separate observed/pending, confirmed/publicly promotable, unknown/unavailable and safety-halted states, applying the same confidence boundary to mint and current owner. Verify mint provenance against durable authorization and artifact commitments; a matching event name alone is insufficient.
 
 Home/MBTI/owner queries use database indexes and stable descending mint position `(block_number, transaction_index, log_index, token_id)`, not last access, assessment time or mutable owner-change time. Cursor payloads bind deployment, filter, limit policy, snapshot block/hash and final item position; validate all fields and bound retention. Pin subsequent pages to the same promoted snapshot, using retained ownership intervals for owner filtering, or explicitly invalidate an expired/reorged snapshot and ask the client to restart. Do not silently mix current-owner pages from different snapshots. One quarantined corrupt artifact or transient fetch failure must not invalidate unrelated gallery entries; expose an honest availability state and diagnose privately.
 
@@ -227,7 +229,7 @@ The following are actual user/operating decisions, not inferred approvals:
 | Decision | Needed before | Local work that can continue |
 | --- | --- | --- |
 | Hosting/operator, PostgreSQL account/location, spending/retention and recovery targets | Provisioning and public operation | Schema, repository interfaces, disposable local tests and backup format |
-| Approved testnet, RPC accounts, finality/confidence policy and funds | Public deployment/rehearsal | Manifest schema, chain mocks and reorg tests |
+| Ethereum Sepolia selected; RPC accounts, finality/confidence policy and funds still needed | Public deployment/rehearsal | Sepolia-targeted configuration design, manifest schema, chain mocks and reorg tests |
 | Public app/artifact origins, URI profile, pin/storage accounts, replication and long-term ownership | Freezing public metadata or uploading it | Serializer/CID adapters, exact-byte fixtures and dry-run publication |
 | Signer custody; deployer/admin/manager/pauser/revoker owners and role separation | Key setup, signing in a public environment or deployment | Restricted signer interface, signature tests and role manifest validation |
 | Wallet/device support, support/escalation destination and claim wording | Public acceptance/content completion | Existing EOA flow and E13/E14/E12 work within its current scope |

@@ -15,6 +15,8 @@
     "dev:open": "node --env-file-if-exists=.env.local --import tsx src/main.ts --local-chain",
     "open:contract:build": "cd contracts && forge build --offline",
     "test:open": "vitest run src/openMint",
+    "test:open:persistence": "OPEN_MINT_TEST_POSTGRES=1 vitest run src/openMint/persistence",
+    "test:open:manifest": "node --test contracts/tools/open-signatures-manifest.node-test.mjs",
     "open:rehearsal": "node scripts/open-mint-rehearsal.mjs",
     "open:preflight": "node --env-file-if-exists=.env.local --import tsx scripts/open-mint-preflight.mjs",
     "legacy:dev": "tsx src/legacyMain.ts",
