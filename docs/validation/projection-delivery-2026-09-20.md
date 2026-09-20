@@ -7,7 +7,7 @@ September 20, 2026. E18–E21 local integration increment following `4b7d9dd`.
 - Full offline HTTP/PostgreSQL coverage: **4,801 tests / 156 files** after terminal-lifecycle hardening (4,799 at `684f3de`). Coverage **95.93% statements/lines, 92.28% branches, 98.38% functions**; thresholds unchanged.
 - TypeScript typecheck, build and all renderer/slogan source/golden locks passed.
 - Earlier in this same implementation batch: **75 contract tests** and **80 OpenSignatures manifest-tooling tests** passed. No contract/tooling source changed in this increment.
-- Whitespace checks passed. Hosted CI is recorded separately after the branch push; local green is not hosted evidence.
+- Whitespace checks passed. Hosted [Verify run 35509317231](https://github.com/inshell-art/Agent-Art-signatures.gallery/actions/runs/35509317231) passed for `684f3de`, including real HTTP/PostgreSQL coverage, build/locks, contract/manifest checks and an isolated fixture-Anvil mint rehearsal. The terminal-lifecycle follow-up has the 4,801-test local evidence above; its hosted result is checked separately after pushing it.
 
 The database tests use newly initialized PostgreSQL 16 clusters with private Unix sockets and TCP disabled. HTTP tests bind disposable loopback listeners. Provider, upload and chain responses are scripted; signing uses established public test vectors. No new X/Grok charge, actual wallet signature, public upload or live chain transaction occurred. The running app, Anvil, `.env.local` and saved pilot history were not changed.
 
