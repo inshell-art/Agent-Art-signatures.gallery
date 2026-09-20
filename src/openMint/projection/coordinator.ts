@@ -1,0 +1,48 @@
+import type { GalleryPage, OpenMintProjection } from "./postgres.js";
+import { ProjectionCursorError } from "./model.js";
+import { createProjectionObserver, type ProjectionObservation } from "./observer.js";
+
+/** One fenced writer / one coordinator. No public request is allowed to trigger
+ * sync: an operator-owned scheduler supplies cancellation and bounded cadence.
+ * Reads never fetch RPCs, assess, issue authority, or retry writes. Restart loses
+ * freshness intentionally; a persisted 'available' flag alone reveals nothing.
+ */
+export function createProjectionCoordinator(projection: OpenMintProjection, options: Parameters<typeof createProjectionObserver>[0]) {
+  const observe = createProjectionObserver(options);
+  let witness: ProjectionObservation | undefined, running = false, generation = 0;
+  return Object.freeze({
+    async sync(signal: AbortSignal): Promise<"observed" | "safety-halted" | "unavailable" | "busy"> {
+      if (running) return "busy";
+      running = true; witness = undefined; generation++;
+      try {
+        const next = await observe(await projection.chainCursor(), signal);
+        if (signal.aborted) throw new Error("Cancelled before projection write.");
+        const result = await projection.applyObservation(next);
+        if (result === "observed" && !signal.aborted) witness = next;
+        return result;
+      } catch {
+        await projection.unavailable().catch(() => undefined);
+        return "unavailable";
+      } finally { running = false; }
+    },
+    async gallery(input: Parameters<OpenMintProjection["gallery"]>[0]): Promise<GalleryPage> {
+      const captured = witness, epoch = generation;
+      if (!captured) return { state: "unknown", items: [] };
+      try {
+        const result = await projection.gallery(input, captured);
+        return witness === captured && generation === epoch ? result : { state: "unknown", items: [] };
+      } catch (error) {
+        if (error instanceof ProjectionCursorError) throw error;
+        return { state: "unknown", items: [] };
+      }
+    },
+    async lookup(handle: string): Promise<Awaited<ReturnType<OpenMintProjection["lookup"]>>> {
+      const captured = witness, epoch = generation;
+      if (!captured) return { state: "unknown" };
+      try {
+        const result = await projection.lookup(handle, captured);
+        return witness === captured && generation === epoch ? result : { state: "unknown" };
+      } catch { return { state: "unknown" }; }
+    },
+  });
+}

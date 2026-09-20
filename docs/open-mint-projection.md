@@ -1,8 +1,26 @@
-# OpenSignatures chain projection — E20 foundation
+# OpenSignatures chain observation and projection — E19/E20
 
-This is an offline, unwired PostgreSQL projection for `OpenSignatures`, with a separate strict event decoder. It does not replace the active gallery, start an indexer, contact an RPC, authorize a mint, or establish public finality. The storage adapter accepts validated events; the adjacent decoder verifies event bytes and mint evidence but not chain authenticity. E20 is not complete.
+The PostgreSQL projection now composes with a bounded two-RPC observer, strict event/evidence decoder, atomic observation application, freshness-gated read coordinator and read-only HTTP routes. This composition is exercised locally against scripted RPCs and a disposable real database. It does not replace the running file-backed gallery or automatically start an indexer. E20 and public deployment are not complete.
 
-The existing application and production-startup refusal are unchanged. No approved public chain, deployment, signer, finality policy or operating account is introduced.
+The existing application and production-startup refusal are unchanged. Ethereum Sepolia and `https://staging.signatures.gallery` are the approved target, not a deployed environment. No RPC/storage account, signer, deployment, operating lag/freshness values or funding is chosen by this module.
+
+## Authenticated observation and public-read boundary
+
+`createProjectionObserver` snapshots an explicit deployment, chain identity and two distinct RPC identities. It checks chain ID, genesis and deployment pins, agreed canonical headers, runtime bytecode hash, EIP-712 domain and trusted authorizer at the observed head and every processed block. State calls use [EIP-1898](https://eips.ethereum.org/EIPS/eip-1898) hash selectors with `requireCanonical`; relevant logs use [EIP-234](https://eips.ethereum.org/EIPS/eip-234) exact-block filters, never a moving numeric range. The two sources must return the same normalized logs. Every relevant transaction must occupy its claimed block index and have a matching successful receipt containing exactly its relevant logs, from both sources.
+
+This is **trusted RPC quorum verification, not a cryptographic Ethereum light client**. Matching node responses cannot detect two colluding operators or prove a wholly omitted transaction independently. Operators must choose genuinely independent sources and enforce DNS/egress policy; distinct configured IDs alone do not establish independence. Numeric canonical membership and finalized ancestry outside the contiguous acquired range rely on those nodes' execution/consensus view.
+
+The explicit `finalized` block tag, not a confirmation count or elapsed-time heuristic, controls promotion ([Ethereum JSON-RPC](https://ethereum.org/en/developers/docs/apis/json-rpc/)). Both sources must attest at least the selected common finalized height and agree on its canonical hash. Missing tags, excessive lag, stale head/finality timestamps, clock reversal, parent/order conflicts, a changed header during acquisition, failed receipts and missing private evidence all fail closed. No older-height search is used to conceal source disagreement. A bounded ancestor search is used only to reconcile stored unfinalized history. A proven promoted-history contradiction or a fork outside the configured rollback horizon produces a halt witness; storage records `canonical-contradiction` and cannot automatically recover it.
+
+One invocation processes at most 32 blocks, 128 relevant logs per block and 512 per batch. Each header has at most 4,096 transaction hashes and a relevant receipt at most 1,024 logs. The existing 1-MiB transport response cap, whole-observation deadline (at most 30 seconds), monotonic checks, parent cancellation and bounded private decoder apply. Rollback search is capped at the configured 1–128 blocks. No retries, transaction submission, provider call or daemon is hidden in the observer. The explicitly configured latest/finalized lag, age and witness TTL values are required; test values are not a Sepolia operating-policy approval.
+
+The observer returns an opaque process-local witness, not serializable authority. `applyObservation` requires the exact immutable deployment, unchanged database cursor and a fresh witness under the **database clock**. Appending/reorg reconciliation and finality promotion commit atomically; expiry at the end rolls the entire operation back. Repeated immutable promotion references bind the promoted block, not a changing timestamp. The RPC sources/time/finalized-tip evidence remains process-local in this increment; durable observation-audit retention is still an operations task.
+
+`PostgresAuthorizationIssuer.projectionEvidence` joins a historical signed reservation/signature to the exact accepted assessment and completed publication. It revalidates stored bindings, bytes and ECDSA without a fresh wallet session, unexpired request or enabled generation/issuance switch. It never reserves, signs, assesses, renews or publishes. The returned private object is consumed only by the strict decoder and must not be serialized through HTTP.
+
+`createProjectionCoordinator` exposes one explicit `sync(signal)` plus read-only `gallery`/`lookup`. Sync is serialized, immediately withdraws prior freshness, and does not retry. Public reads cannot call sync. On restart there is no witness, even if PostgreSQL retained `health=available`. During partial backfill, stale verification, outages or concurrent sync, public reads return unknown; absence never grants mint eligibility. A caught-up, fresh inclusion can return **confirming** for detail lookup. Only finalized promotion admits galleries and owner snapshots. A provisional transfer does not alter the finalized owner's collection.
+
+`projection/http.ts` exposes `GET /api/gallery` (exclusive `mbti` or `owner` filter, `limit` 1–50, `after` cursor) and `GET /api/signatures/<canonical-handle>/status`. It allowlists public fields, uses no-store/noindex, rejects bodies/unknown or duplicate parameters, emits 503 on unknown confidence and never allocates a session. The local durable API server can compose these routes optionally, behind its unchanged loopback/Host/proxy restrictions. They are not active-home-page wiring or an artifact delivery adapter.
 
 ## Storage and ownership
 
@@ -40,9 +58,9 @@ An unpromoted suffix can roll back only within the explicit `rollbackBlocks` pol
 
 Promotion is a separate call naming an exact stored canonical block/hash, the pinned policy ID and an immutable evidence reference. No default confirmation count or public finality rule exists. `unavailable()` preserves all history but makes ordinary queries unknown; database/writer failures reject, never return an empty success that could imply no mint.
 
-**Freshness remains a coordinator prerequisite.** The checkpoint's `health: "available"` means a structurally valid saved batch was processed, not that the latest public chain was consulted. Replaying old bytes may restore that storage-observation state without advancing head or promotion. `checkpoint()` therefore always reports `freshChainVerified:false`. A `confirmed` query result means confirmed in the explicitly promoted stored prefix; it is not a fresh-chain assertion or mint-authority decision. Before public reads or authority use, the future coordinator must enforce approved independent RPC agreement, chain clock, latest-head/finality freshness, maximum lag, historical state and tag-absence behavior. Those policies are not selected here.
+**Raw store reads are maintenance primitives, not public confidence.** The checkpoint's `health: "available"` means a structurally valid saved batch was processed, not that the latest public chain was consulted. Replaying old bytes may restore that storage-observation state without advancing head or promotion. `checkpoint()` therefore always reports `freshChainVerified:false`. Runtime reads must go through the coordinator's opaque, applied, caught-up witness check; it validates TTL and exact head/promoted hashes at both ends of the database read. No projection lookup authorizes a mint.
 
-Missing handles return `unknown`; observed but unpromoted mints return `pending`; safety-halted deployments return no ordinary public entries. Mint and owner lookup use the same promoted block. An unpromoted transfer cannot make a confirmed mint appear owned by its pending recipient. Pending lookup does not disclose assessment/artifact contents.
+Missing handles return `unknown`; raw store lookups of unpromoted mints return `pending` with no artwork. The freshness-gated coordinator may instead return `confirming` with verified mint commitments. Safety-halted deployments return no ordinary public entries. Confirmed mint and owner lookup use the same promoted block.
 
 ## Stable, snapshot-bound galleries
 
@@ -70,9 +88,8 @@ Coverage includes strict inputs/cursors, exact replay and writer replacement, de
 
 ## Remaining integration
 
-- Independent authenticated RPC/header/receipt and complete event-range reads around the implemented strict decoder; signer/nonce/pause/role observations are not yet projected.
-- Wire durable authorization/publication joins to the decoder's trusted enrichment callback, and E19 manifest/code/deployment admission.
-- Approved network-specific finality and freshness policy, independent RPC checks, maximum lag, canonical head tracking, and reviewed halt recovery.
+- Operator-selected independent RPCs and lag/freshness policy; actual Ethereum Sepolia capability/deployment evidence, and reviewed halt recovery. No live RPC was called in these tests.
+- E19 manifest admission and E21 restricted projection-role/startup integration; signer/nonce/pause/role changes are not separately projected (identity changes fail closed).
 - Bounded indexing scheduler, backfill/adaptive range handling, retention/archive/restore tests and backup operations.
-- Public read-service/cache integration and operating-scale query/EXPLAIN tests. The current foundation serializes reads on the exclusive writer for consistent testable transactions; it is not a production read-pool architecture.
+- Public HTML/artifact/cache integration and operating-scale query/EXPLAIN tests. The current foundation serializes reads on the exclusive writer for consistent testable transactions; it is not a production read-pool architecture.
 - Public startup/admission/gallery wiring after the other E17–E23 gates. No returned projection value may independently authorize signing or treat absence as unminted.

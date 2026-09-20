@@ -1,4 +1,5 @@
 import { ExclusiveWriter, type OwnershipConnection } from "../persistence/writer.js";
+import { readProjectionObservation, type ProjectionChainCursor, type ProjectionObservation } from "./observer.js";
 import { address, decodeCursor, encodeCursor, fields, hash, ProjectionConflictError, ProjectionCursorError, quantity, reference,
   stable, validateBatch, validateDeployment, validateEvent, validateFilter, validateLimit, ZERO_ADDRESS,
   type GalleryFilter, type Position, type ProjectionDeployment, type ValidatedBatch, type ValidatedBlock, type ValidatedMint, type ValidatedTransfer } from "./model.js";
@@ -12,6 +13,7 @@ export interface ProjectedMint {
   readonly tokenId: string; readonly availability: ArtifactAvailability;
   readonly handle?: string; readonly mbti?: string; readonly originalRecipient?: string; readonly currentOwner?: string;
   readonly assessmentDigest?: string; readonly artifactDigest?: string; readonly tokenURIHash?: string;
+  readonly transactionHash?: string;
 }
 export interface GalleryPage {
   readonly state: "confirmed" | "unknown" | "safety-halted";
@@ -21,8 +23,8 @@ export interface GalleryPage {
 const bytes = (value: unknown): Buffer => Buffer.from(stable(value));
 const fail = (message: string): never => { throw new ProjectionConflictError(message); };
 
-/** Offline/unwired projection store. No RPC, raw-log decoder, signer or provider.
- * The caller must authenticate deployment/log completeness/provenance/finality. */
+/** Fenced projection store. append/promote are offline maintenance primitives;
+ * public runtime composition must use applyObservation and its opaque witness. */
 export class OpenMintProjection {
   readonly #deployment: ProjectionDeployment;
   private constructor(readonly writer: ExclusiveWriter, deployment: ProjectionDeployment) { this.#deployment = deployment; }
@@ -54,10 +56,50 @@ export class OpenMintProjection {
   checkpoint(): Promise<Readonly<Checkpoint> & { freshChainVerified: false }> {
     return this.writer.transaction(async tx => ({ ...await this.#state(tx), freshChainVerified: false }));
   }
+  async #cursor(tx: Transaction): Promise<ProjectionChainCursor> {
+    const state = await this.#state(tx);
+    if (state.health === "safety-halted") fail("Projection is safety-halted.");
+    const tail = (await tx.query<{ number: string; hash: string }>(`SELECT number::text,hash FROM open_mint.projection_blocks
+      WHERE deployment_id=$1 AND canonical ORDER BY number DESC LIMIT $2`, [this.#deployment.id, this.#deployment.policy.rollbackBlocks + 1])).rows.reverse();
+    return { head: state.head_number === null ? null : { number: state.head_number, hash: state.head_hash! },
+      promoted: state.promoted_number === null ? null : { number: state.promoted_number, hash: state.promoted_hash! }, tail };
+  }
+  chainCursor(): Promise<ProjectionChainCursor> { return this.writer.transaction(tx => this.#cursor(tx)); }
+  /** The witness and database clock are checked before AND after mutation, in
+   * the same transaction as append + promotion. A timeout rolls everything back.
+   * A serialized record or previously persisted batch cannot assert freshness. */
+  applyObservation(witness: ProjectionObservation): Promise<"observed" | "safety-halted"> {
+    return this.writer.transaction(async tx => {
+      const now = async () => (await tx.query<{ now: Date }>("SELECT clock_timestamp() AS now")).rows[0].now.getTime();
+      const evidence = readProjectionObservation(witness, this.#deployment, await now());
+      if (stable(evidence.cursor) !== stable(await this.#cursor(tx))) fail("Projection changed during chain observation.");
+      if (evidence.halt) {
+        const halted = await this.#halt(tx, "canonical-contradiction");
+        readProjectionObservation(witness, this.#deployment, await now());
+        return halted;
+      }
+      const result = await this.#append(tx, evidence.batch!);
+      if (result === "observed" && evidence.promotion) await this.#promote(tx, { ...evidence.promotion,
+        policyId: this.#deployment.policy.id, evidenceReference: `ethereum-finalized:${evidence.promotion.hash}` });
+      readProjectionObservation(witness, this.#deployment, await now());
+      return result;
+    });
+  }
+  async #fresh(tx: Transaction, witness: ProjectionObservation): Promise<void> {
+    const time = (await tx.query<{ now: Date }>("SELECT clock_timestamp() AS now")).rows[0].now.getTime();
+    const e = readProjectionObservation(witness, this.#deployment, time), state = await this.#state(tx);
+    const tip = e.batch?.blocks.at(-1), promoted = e.promotion ?? e.cursor.promoted;
+    if (e.halt || !tip || tip.number !== e.head.number || tip.hash !== e.head.hash || state.health !== "available"
+      || state.head_number !== tip.number || state.head_hash !== tip.hash
+      || state.promoted_number !== (promoted?.number ?? null) || state.promoted_hash !== (promoted?.hash ?? null)) fail("Projection has no current caught-up observation.");
+  }
 
   append(input: ValidatedBatch): Promise<"observed" | "safety-halted"> {
-    const batch = validateBatch(input, this.#deployment), id = this.#deployment.id;
-    return this.writer.transaction(async tx => {
+    const batch = validateBatch(input, this.#deployment);
+    return this.writer.transaction(tx => this.#append(tx, batch));
+  }
+  async #append(tx: Transaction, batch: ValidatedBatch): Promise<"observed" | "safety-halted"> {
+      const id = this.#deployment.id;
       const state = await this.#state(tx);
       if (state.health === "safety-halted") return "safety-halted";
       const first = batch.blocks[0], last = batch.blocks[batch.blocks.length - 1];
@@ -96,7 +138,6 @@ export class OpenMintProjection {
       const head = replacement !== undefined || state.head_number === null || BigInt(last.number) > BigInt(state.head_number) ? last : { number: state.head_number, hash: state.head_hash };
       await tx.query("UPDATE open_mint.projection_checkpoints SET head_number=$2,head_hash=$3,health='available' WHERE deployment_id=$1", [id, head.number, head.hash]);
       return "observed";
-    });
   }
   async #events(tx: Transaction, block: ValidatedBlock): Promise<void> {
     const id = this.#deployment.id, mintTransfers = new Map<string, ValidatedTransfer>();
@@ -132,7 +173,9 @@ export class OpenMintProjection {
     const value = structuredClone(input); fields(value, ["number", "hash", "policyId", "evidenceReference"]);
     quantity(value.number, 63); hash(value.hash); reference(value.policyId); reference(value.evidenceReference);
     if (value.policyId !== this.#deployment.policy.id) throw new Error("Projection finality policy mismatch.");
-    return this.writer.transaction(async tx => {
+    return this.writer.transaction(tx => this.#promote(tx, value));
+  }
+  async #promote(tx: Transaction, value: { number: string; hash: string; policyId: string; evidenceReference: string }): Promise<void> {
       const state = await this.#state(tx), id = this.#deployment.id;
       if (state.health !== "available" || state.head_number === null || BigInt(value.number) > BigInt(state.head_number)
         || (state.promoted_number !== null && BigInt(value.number) < BigInt(state.promoted_number))) fail("Projection cannot promote this boundary.");
@@ -142,7 +185,6 @@ export class OpenMintProjection {
       const saved = (await tx.query<{ hash: string; policy_id: string; evidence_reference: string }>("SELECT hash,policy_id,evidence_reference FROM open_mint.projection_promotions WHERE deployment_id=$1 AND number=$2", [id, value.number])).rows[0];
       if (saved.hash !== value.hash || saved.policy_id !== value.policyId || saved.evidence_reference !== value.evidenceReference) fail("Conflicting finality evidence.");
       await tx.query("UPDATE open_mint.projection_checkpoints SET promoted_number=$2,promoted_hash=$3 WHERE deployment_id=$1", [id, value.number, value.hash]);
-    });
   }
   setArtifactAvailability(input: { tokenId: string; artifactDigest: string; availability: ArtifactAvailability }): Promise<void> {
     const { tokenId, artifactDigest, availability } = input;
@@ -166,13 +208,14 @@ export class OpenMintProjection {
         || event.recipient !== row.original_recipient || event.transactionIndex !== row.transaction_index || event.logIndex !== row.log_index) throw new Error();
       return { tokenId: row.token_id, availability: row.availability, handle: event.handle, mbti: event.mbti,
         originalRecipient: event.recipient, currentOwner: row.current_owner, assessmentDigest: event.assessmentDigest,
-        artifactDigest: event.artifactDigest, tokenURIHash: event.tokenURIHash };
+        artifactDigest: event.artifactDigest, tokenURIHash: event.tokenURIHash, transactionHash: event.transactionHash };
     } catch { return { tokenId: row.token_id, availability: "quarantined" }; }
   }
-  gallery(input: { filter: GalleryFilter; limit: number; cursor?: string }): Promise<GalleryPage> {
+  gallery(input: { filter: GalleryFilter; limit: number; cursor?: string }, witness?: ProjectionObservation): Promise<GalleryPage> {
     const filter = validateFilter(input.filter), limit = input.limit; validateLimit(limit);
     const cursor = input.cursor === undefined ? undefined : decodeCursor(input.cursor, this.#deployment.id, filter, limit);
     return this.writer.transaction(async tx => {
+      if (witness) await this.#fresh(tx, witness);
       const state = await this.#state(tx), id = this.#deployment.id;
       if (state.health === "safety-halted") return { state: "safety-halted", items: [] };
       if (state.health !== "available" || state.promoted_number === null) return { state: "unknown", items: [] };
@@ -194,27 +237,31 @@ export class OpenMintProjection {
         WHERE ${conditions.join(" AND ")} ORDER BY m.block_number DESC,m.transaction_index DESC,m.log_index DESC,m.token_id DESC LIMIT $${params.length}`, params)).rows;
       const selected = rows.slice(0, limit), last = selected[selected.length - 1];
       const position: Position | undefined = last && { block: last.block_number, transaction: last.transaction_index, log: last.log_index, token: last.token_id };
+      if (witness) await this.#fresh(tx, witness);
       return { state: "confirmed", snapshot, items: selected.map(row => this.#item(row)), ...(rows.length > limit && position ? {
         nextCursor: encodeCursor({ version: 1, deployment: id, filter, limit, snapshot, last: position }),
       } : {}) };
     });
   }
   /** A missing item is UNKNOWN, not proof of an unminted handle or mint authority. */
-  lookup(handle: string): Promise<{ state: "confirmed" | "pending" | "unknown" | "safety-halted"; item?: ProjectedMint }> {
+  lookup(handle: string, witness?: ProjectionObservation): Promise<{ state: "confirmed" | "confirming" | "pending" | "unknown" | "safety-halted"; item?: ProjectedMint }> {
     if (!/^[a-z0-9_]{1,15}$/.test(handle)) throw new Error("Invalid canonical handle.");
     return this.writer.transaction(async tx => {
+      if (witness) await this.#fresh(tx, witness);
       const state = await this.#state(tx);
       if (state.health !== "available") return { state: state.health === "safety-halted" ? "safety-halted" : "unknown" };
       const row = (await tx.query<{ block_number: string }>("SELECT block_number::text FROM open_mint.projection_mints WHERE deployment_id=$1 AND handle=$2", [this.#deployment.id, handle])).rows[0];
       if (!row) return { state: "unknown" };
-      if (state.promoted_number === null || BigInt(row.block_number) > BigInt(state.promoted_number)) return { state: "pending" };
+      const provisional = state.promoted_number === null || BigInt(row.block_number) > BigInt(state.promoted_number);
+      if (provisional && !witness) return { state: "pending" };
       const saved = (await tx.query<MintRow>(`SELECT m.token_id::text,m.handle,m.mbti,m.original_recipient,m.block_number::text,m.transaction_index,m.log_index,m.payload,l.payload AS log_payload,m.availability,o.owner AS current_owner
         FROM open_mint.projection_mints m JOIN open_mint.projection_ownership o USING(deployment_id,token_id)
         LEFT JOIN open_mint.projection_logs l ON l.deployment_id=m.deployment_id AND l.block_hash=m.block_hash AND l.log_index=m.log_index
-        WHERE m.deployment_id=$1 AND m.handle=$2 AND o.start_block<=$3 AND (o.end_block IS NULL OR o.end_block>$3)`, [this.#deployment.id, handle, state.promoted_number])).rows[0];
+        WHERE m.deployment_id=$1 AND m.handle=$2 AND o.start_block<=$3 AND (o.end_block IS NULL OR o.end_block>$3)`, [this.#deployment.id, handle, provisional ? state.head_number : state.promoted_number])).rows[0];
       if (!saved) return { state: "unknown" };
       const item = this.#item(saved);
-      return item.availability === "quarantined" ? { state: "unknown", item } : { state: "confirmed", item };
+      if (witness) await this.#fresh(tx, witness);
+      return item.availability === "quarantined" ? { state: "unknown", item } : { state: provisional ? "confirming" : "confirmed", item };
     });
   }
 }

@@ -28,7 +28,7 @@ function rpcQuantity(value: unknown, bits = 256): bigint {
   if (typeof value !== "string" || !/^0x(?:0|[1-9a-f][0-9a-f]*)$/.test(value) || value.length > 66 || BigInt(value) >= 1n << BigInt(bits)) return fail();
   return BigInt(value);
 }
-function rawLog(value: unknown, deployment: ProjectionDeployment, block: { number: string; hash: string }): Log {
+export function normalizeProjectionLog(value: unknown, deployment: ProjectionDeployment, block: { number: string; hash: string }): Log {
   if (!value || typeof value !== "object" || Array.isArray(value)) return fail();
   const log = value as Log;
   if (log.address !== deployment.contractAddress || log.removed !== false || log.blockHash !== block.hash
@@ -75,7 +75,7 @@ export async function decodeOpenSignaturesBlock(input: {
   address(authorizer.toLowerCase()); quantity(block.number, 63); quantity(block.timestamp, 64); hash(block.hash); hash(block.parentHash);
   if (!Number.isSafeInteger(input.timeoutMs) || input.timeoutMs < 1 || input.timeoutMs > 30_000 || !Array.isArray(input.logs)
     || input.logs.length > MAX_BLOCK_EVENTS || typeof resolveMint !== "function") return fail();
-  const logs = input.logs.map(log => rawLog(log, deployment, block)), signal = input.signal, controller = new AbortController();
+  const logs = input.logs.map(log => normalizeProjectionLog(log, deployment, block)), signal = input.signal, controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined, abort: (() => void) | undefined;
   const stop = new Promise<never>((_, reject) => {
     abort = () => { controller.abort(); reject(new Error("Projection decoding cancelled.")); };

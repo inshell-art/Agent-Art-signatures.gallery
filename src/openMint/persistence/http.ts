@@ -4,6 +4,7 @@ import { PRIVATE_ROBOTS } from "../sharing.js";
 import { IssuanceBlockedError } from "./authorizations.js";
 import { AdmissionBlockedError } from "./repository.js";
 import { DurableMintRuntime } from "./runtimeService.js";
+import { createProjectionReadHandler, type ProjectionReads } from "../projection/http.js";
 
 const posts = new Set(["/api/wallet/challenge", "/api/wallet/verify", "/api/session/logout", "/api/assessments", "/api/mints/authorize"]);
 const statusPath = /^\/api\/assessments\/([A-Za-z0-9_-]{43})$/;
@@ -51,10 +52,11 @@ function publicFailure(error: unknown): { status: number; code: string; error: s
  * intentionally has no pages, preview/provider APIs, dev controls, raw artifact
  * reads, transaction broadcaster or user-controlled deployment/MBTI fields.
  */
-export function createDurableMintApiServer(runtime: DurableMintRuntime) {
+export function createDurableMintApiServer(runtime: DurableMintRuntime, publicReads?: ProjectionReads) {
   if (process.env.NODE_ENV === "production" || runtime.requests.repository.namespace.profile !== "local-real"
     || runtime.requests.profile.chain_id !== "31337") throw new Error("Public durable HTTP startup remains disabled.");
   const origin = runtime.sessions.origin, host = new URL(origin).host;
+  const readProjection = publicReads && createProjectionReadHandler(publicReads);
   let active = 0;
   const server = createServer(async (req, res) => {
     res.setHeader("Cache-Control", "no-store"); res.setHeader("X-Robots-Tag", PRIVATE_ROBOTS);
@@ -70,6 +72,7 @@ export function createDurableMintApiServer(runtime: DurableMintRuntime) {
       if (!loopback(req.socket.remoteAddress) || !loopback(req.socket.localAddress)) throw new PublicError(403, "LOCAL_ONLY", "This integration server is local only.");
       if (req.headers.host !== host) throw new PublicError(421, "WRONG_HOST", "Open the configured site address.");
       if (req.headers.forwarded !== undefined || Object.keys(req.headers).some(key => key.startsWith("x-forwarded-"))) throw new PublicError(400, "PROXY_UNSUPPORTED", "Proxy headers are not accepted by this local integration server.");
+      if (readProjection && await readProjection(req, res)) return;
       const path = req.url ?? "/";
       const status = statusPath.exec(path), method = req.method;
       if (method !== "GET" && method !== "POST") throw new PublicError(405, "METHOD_NOT_ALLOWED", "Method not allowed.");

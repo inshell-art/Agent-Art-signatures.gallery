@@ -7,6 +7,7 @@ import { normalizeOpenMintAuthorization, openMintDigest, openMintHandleKey, open
   verifyOpenMintAuthorization, type OpenMintAuthorizationInput } from "../authorization.js";
 import { readPublicChainEligibility, type PublicChainEvidence } from "../publicChain.js";
 import type { PreparedPublicArtifact } from "../publicArtifacts.js";
+import type { MintProjectionEvidence } from "../projection/decode.js";
 import { isCode } from "../security.js";
 import { PostgresPublicationJournal } from "./publication.js";
 import { PostgresMintRequests } from "./requests.js";
@@ -121,7 +122,7 @@ export class PostgresAuthorizationIssuer {
       || blockTime - now > bounds.max_future_skew_ms) blocked("CHAIN_UNAVAILABLE", "Chain evidence exceeds the durable freshness policy.");
     return evidence;
   }
-  async #publication(tx: Transaction, artifact: PreparedPublicArtifact, request: Request): Promise<void> {
+  async #publication(tx: Transaction, artifact: PreparedPublicArtifact, request: Pick<Request, "handle" | "assessment_id">): Promise<void> {
     const namespace = this.requests.repository.namespace;
     const saved = (await tx.query<{ payload: Buffer; digest: string; assessment_id: string; handle: string }>(`SELECT s.payload,s.digest,s.assessment_id,s.handle FROM open_mint.assessments s
       JOIN open_mint.assessment_attempts a USING(namespace_id,attempt_id) WHERE s.namespace_id=$1 AND s.handle=$2 AND a.state='accepted'`, [namespace.id, request.handle])).rows[0];
@@ -160,6 +161,33 @@ export class PostgresAuthorizationIssuer {
     return (await tx.query<Stored>(`SELECT a.*,a.session_generation::text,a.issued_at::text,a.deadline::text,a.signing_epoch::text
       FROM open_mint.authorization_heads h JOIN open_mint.authorizations a USING(namespace_id,deployment_id,handle,authorization_id)
       WHERE h.namespace_id=$1 AND h.deployment_id=$2 AND h.handle=$3 FOR UPDATE OF a`, [this.requests.repository.namespace.id, this.requests.profile.deployment_id, handle])).rows[0];
+  }
+  /** Private read-only bridge for the canonical event decoder. Historical
+   * issuance remains inspectable after logout/expiry/kill-switch; this does not
+   * reserve, sign, assess, renew or publish anything. Never expose this payload
+   * from an HTTP route: it contains private reservation/session references. */
+  async projectionEvidence(log: { readonly handle: string; readonly nonce: string; readonly authorizationDigest: string }, signal: AbortSignal): Promise<MintProjectionEvidence | undefined> {
+    const captured = { handle: log.handle, nonce: log.nonce, authorizationDigest: log.authorizationDigest };
+    openMintHandleKey(captured.handle);
+    if (![captured.nonce, captured.authorizationDigest].every(v => /^0x[0-9a-f]{64}$/.test(v))) throw new PersistenceConflictError("Invalid projection evidence key.");
+    const check = () => { if (signal.aborted) throw new PersistenceConflictError("Projection evidence read cancelled."); this.writer.assertHealthy(); };
+    check();
+    const artifact = await this.journal.load(captured.handle, true); check();
+    if (!artifact) return undefined;
+    const result = await this.writer.transaction(async tx => {
+      check();
+      const row = (await tx.query<Stored & { signature: string | null }>(`SELECT a.*,a.session_generation::text,a.issued_at::text,a.deadline::text,a.signing_epoch::text,s.signature
+        FROM open_mint.authorizations a LEFT JOIN open_mint.authorization_signatures s USING(namespace_id,authorization_id)
+        WHERE a.namespace_id=$1 AND a.deployment_id=$2 AND a.handle=$3 AND a.nonce=$4 AND a.authorization_digest=$5`,
+      [this.requests.repository.namespace.id, this.requests.profile.deployment_id, captured.handle, captured.nonce, captured.authorizationDigest])).rows[0];
+      if (!row || row.state !== "signed" || !row.signature) return undefined;
+      const reservation = this.#decode(row);
+      await this.#publication(tx, artifact, { handle: captured.handle, assessment_id: reservation.assessmentId });
+      check(); return { reservation, signature: row.signature, artifact };
+    });
+    check();
+    if (result && !await verifyReservedSignature(result.reservation, result.signature)) throw new PersistenceConflictError("Stored projection signature is invalid.");
+    check(); return result;
   }
   #sameOwner(value: AuthorizationReservation, input: CapturedIntent, request: Request, artifact: PreparedPublicArtifact): void {
     if (value.requestId !== request.request_id || value.sessionHash !== input.sessionHash || value.generation !== input.sessionGeneration

@@ -159,6 +159,35 @@ describe.skipIf(process.env.OPEN_MINT_TEST_POSTGRES !== "1")("reserve-before-sig
     const second = await issuer.issue(await intent(), sign);
     expect(second).toEqual(first); expect(sign.signTypedData).toHaveBeenCalledOnce();
   });
+  it("resolves historical projection evidence with real cryptography after logout and issuance shutdown, without signing again", async () => {
+    vi.mocked(verifyOpenMintAuthorization).mockImplementation(actualAuthorization.verifyOpenMintAuthorization);
+    const sign = signer(typedData => publicTestAccount.signTypedData(typedData));
+    const saved = await issuer.issue(await intent(), sign);
+    await logout(); await admin.query("UPDATE open_mint.issuance_profiles SET enabled=false WHERE namespace_id=$1", [namespace.id]);
+    await writer.close(); writer = await ExclusiveWriter.acquire(factory); await startIssuer();
+    const before = await counts();
+    const result = await issuer.projectionEvidence({ handle: saved.reservation.handle, nonce: saved.reservation.authorization.nonce, authorizationDigest: saved.reservation.digest }, new AbortController().signal);
+    expect(result?.reservation).toEqual(saved.reservation); expect(result?.signature).toBe(saved.signature); expect(result?.artifact).toEqual(artifact);
+    expect(sign.signTypedData).toHaveBeenCalledOnce(); expect(await counts()).toEqual(before);
+  });
+  it.each(["unknown", "reserved", "wrong-nonce", "wrong-digest", "invalid-signature", "cancelled", "missing-publication", "invalid-key"])("projection evidence refuses %s without issuing new authority", async kind => {
+    const i = await intent(), sign = signer();
+    const reservation = kind === "reserved" ? await issuer.reserve(i) : (await issuer.issue(i, sign)).reservation;
+    const log = { handle: reservation.handle, nonce: reservation.authorization.nonce, authorizationDigest: reservation.digest };
+    const controller = new AbortController();
+    if (kind === "unknown") log.handle = "notminted";
+    if (kind === "wrong-nonce") log.nonce = chainHash("99");
+    if (kind === "wrong-digest") log.authorizationDigest = chainHash("99");
+    if (kind === "invalid-signature") vi.mocked(verifyOpenMintAuthorization).mockResolvedValue(false);
+    if (kind === "cancelled") controller.abort();
+    if (kind === "missing-publication") vi.spyOn(journal, "load").mockResolvedValue(undefined);
+    if (kind === "invalid-key") log.nonce = "invalid" as Hex;
+    const before = await counts(), calls = sign.signTypedData.mock.calls.length;
+    const result = issuer.projectionEvidence(log, controller.signal);
+    if (["invalid-signature", "cancelled", "invalid-key"].includes(kind)) await expect(result).rejects.toThrow();
+    else expect(await result).toBeUndefined();
+    expect(await counts()).toEqual(before); expect(sign.signTypedData).toHaveBeenCalledTimes(calls);
+  });
   it("defaults issuance profiles to disabled and refuses the explicit kill switch before reservation", async () => {
     const defaultValue = (await admin.query("SELECT column_default FROM information_schema.columns WHERE table_schema='open_mint' AND table_name='issuance_profiles' AND column_name='enabled'")).rows[0].column_default;
     expect(defaultValue).toBe("false");
