@@ -3,6 +3,7 @@ import { handleDigest } from "../identity.js";
 import { PublicError } from "../security.js";
 import type { createProjectionCoordinator } from "./coordinator.js";
 import { ProjectionCursorError, validateFilter, validateLimit, type GalleryFilter } from "./model.js";
+import type { createVerifiedArtworkReads, ArtworkKind } from "./artwork.js";
 
 export type ProjectionReads = Pick<ReturnType<typeof createProjectionCoordinator>, "gallery" | "lookup">;
 function json(res: ServerResponse, status: number, value: unknown): void {
@@ -14,17 +15,32 @@ function json(res: ServerResponse, status: number, value: unknown): void {
  * Data is no-store and noindex even when finalized; public caching is a later
  * explicitly reviewed policy, not inferred from the route name.
  */
-export function createProjectionReadHandler(reads: ProjectionReads) {
+export function createProjectionReadHandler(reads: ProjectionReads, artwork?: Pick<ReturnType<typeof createVerifiedArtworkReads>, "media">) {
   const gallery = reads.gallery.bind(reads), lookup = reads.lookup.bind(reads);
+  const media = artwork?.media.bind(artwork);
   return async (req: IncomingMessage, res: ServerResponse): Promise<boolean> => {
     const raw = req.url ?? "", path = raw.split("?")[0], signature = /^\/api\/signatures\/([a-z0-9_]{1,15})\/status$/.exec(path);
-    if (path !== "/api/gallery" && !signature) return false;
+    const image = media && /^\/api\/signatures\/([a-z0-9_]{1,15})\/artwork\/(0x[0-9a-f]{64})\/(svg|png|metadata)$/.exec(path);
+    if (path !== "/api/gallery" && !signature && !image) return false;
     res.setHeader("Cache-Control", "no-store"); res.setHeader("X-Robots-Tag", "noindex, nofollow, noarchive");
     res.setHeader("X-Content-Type-Options", "nosniff"); res.setHeader("Referrer-Policy", "no-referrer");
     try {
       if (req.method !== "GET") { res.setHeader("Allow", "GET"); throw new PublicError(405, "METHOD_NOT_ALLOWED", "Use GET for public reads."); }
       if (req.headers["transfer-encoding"] || (req.headers["content-length"] !== undefined && req.headers["content-length"] !== "0") || raw.length > 4096 || raw.includes("#")) {
         throw new PublicError(400, "INVALID_REQUEST", "Invalid read request.");
+      }
+      if (image) {
+        if (raw.includes("?")) throw new PublicError(400, "INVALID_REQUEST", "Artwork reads accept no parameters.");
+        const controller = new AbortController(), cancel = () => controller.abort();
+        res.once("close", cancel);
+        try {
+          const object = await media!(image[1], image[2], image[3] as ArtworkKind, controller.signal);
+          if (!res.destroyed && !res.writableEnded) {
+            res.statusCode = 200; res.setHeader("Content-Type", object.mediaType); res.setHeader("Content-Length", object.bytes.byteLength);
+            res.setHeader("Content-Security-Policy", "default-src 'none'; sandbox; frame-ancestors 'none'"); res.end(Buffer.from(object.bytes));
+          }
+        } finally { controller.abort(); res.removeListener("close", cancel); }
+        return true;
       }
       if (signature) {
         if (raw.includes("?")) throw new PublicError(400, "INVALID_REQUEST", "This status endpoint accepts no parameters.");

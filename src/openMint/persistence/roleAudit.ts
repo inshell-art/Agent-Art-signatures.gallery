@@ -1,4 +1,4 @@
-import { FOUNDATION_RUNTIME_PRIVILEGES, PREPARATION_RUNTIME_PRIVILEGES, type RuntimeTablePrivileges } from "./runtimeRole.js";
+import { FOUNDATION_RUNTIME_PRIVILEGES, PREPARATION_RUNTIME_PRIVILEGES, PROJECTION_RUNTIME_PRIVILEGES, type RuntimeTablePrivileges } from "./runtimeRole.js";
 
 /** Connected, bounded catalog-read interface. The caller owns connection/auth
  * and statement timeout. This module never connects, SETs, grants, or writes. */
@@ -18,6 +18,9 @@ export interface FoundationRoleAudit {
 export interface PreparationRoleAudit extends Omit<FoundationRoleAudit, "scope"> {
   readonly scope: "open-mint-preparation-role-v1";
 }
+export interface ProjectionRoleAudit extends Omit<FoundationRoleAudit, "scope"> {
+  readonly scope: "open-mint-projection-role-v1";
+}
 export class DatabaseRoleAuditError extends Error {
   constructor() { super("Foundation database role audit unavailable or rejected."); this.name = "DatabaseRoleAuditError"; }
 }
@@ -27,7 +30,7 @@ export class DatabaseRoleAuditError extends Error {
 // shadowing. MEMBER deliberately includes NOINHERIT/SET ROLE paths; membership
 // options that might make a path unusable are not a reason to weaken this audit.
 const AUDIT_SQL = `WITH
-expected AS (SELECT * FROM pg_catalog.jsonb_to_recordset($1::jsonb) AS e(name text, columns text[], "insert" boolean, updates text[])),
+expected AS (SELECT * FROM pg_catalog.jsonb_to_recordset($1::jsonb) AS e(name text, columns text[], "insert" boolean, updates text[], "delete" boolean)),
 roles AS (SELECT oid, rolname, rolsuper, rolbypassrls, rolcreaterole, rolcreatedb, rolreplication FROM pg_catalog.pg_roles
   WHERE rolname = current_user OR pg_catalog.pg_has_role(current_user, oid, 'MEMBER')),
 objects AS (SELECT e.*, c.oid, c.relkind, c.relpersistence FROM expected e
@@ -36,7 +39,7 @@ objects AS (SELECT e.*, c.oid, c.relkind, c.relpersistence FROM expected e
 columns AS (SELECT o.*, a.attname, a.attnum FROM objects o JOIN pg_catalog.pg_attribute a ON a.attrelid = o.oid
   WHERE a.attnum > 0 AND NOT a.attisdropped),
 table_permissions AS (SELECT r.oid AS role_oid, o.oid, o.name, p.permission,
-  (p.permission = 'SELECT' OR (p.permission = 'INSERT' AND o."insert")) AS allowed
+  (p.permission = 'SELECT' OR (p.permission = 'INSERT' AND o."insert") OR (p.permission = 'DELETE' AND COALESCE(o."delete", false))) AS allowed
   FROM roles r CROSS JOIN objects o CROSS JOIN (VALUES ('SELECT'),('INSERT'),('UPDATE'),('DELETE'),('TRUNCATE'),('REFERENCES'),('TRIGGER')) p(permission)),
 column_permissions AS (SELECT r.oid AS role_oid, c.oid, c.attnum, p.permission,
   (p.permission = 'SELECT' OR (p.permission = 'INSERT' AND c."insert") OR (p.permission = 'UPDATE' AND c.attname = ANY(c.updates))) AS allowed
@@ -67,7 +70,8 @@ SELECT
     OR o.columns IS DISTINCT FROM (SELECT pg_catalog.array_agg(c.attname::text ORDER BY c.attname::text COLLATE pg_catalog."C") FROM columns c WHERE c.oid = o.oid)) AS "foundationLayout",
   (EXISTS (SELECT 1 FROM pg_catalog.pg_namespace n WHERE n.nspname = 'open_mint' AND pg_catalog.has_schema_privilege(current_user, n.oid, 'USAGE'))
     AND NOT EXISTS (SELECT 1 FROM objects o WHERE NOT COALESCE(pg_catalog.has_table_privilege(current_user, o.oid, 'SELECT'), false)
-      OR (o."insert" AND NOT COALESCE(pg_catalog.has_table_privilege(current_user, o.oid, 'INSERT'), false)))
+      OR (o."insert" AND NOT COALESCE(pg_catalog.has_table_privilege(current_user, o.oid, 'INSERT'), false))
+      OR (COALESCE(o."delete", false) AND NOT COALESCE(pg_catalog.has_table_privilege(current_user, o.oid, 'DELETE'), false)))
     AND NOT EXISTS (SELECT 1 FROM columns c WHERE c.attname = ANY(c.updates) AND NOT pg_catalog.has_column_privilege(current_user, c.oid, c.attnum, 'UPDATE'))) AS "requiredPrivileges",
   NOT (EXISTS (SELECT 1 FROM table_permissions p WHERE NOT p.allowed AND pg_catalog.has_table_privilege(p.role_oid, p.oid, p.permission))
     OR EXISTS (SELECT 1 FROM column_permissions p WHERE NOT p.allowed AND pg_catalog.has_column_privilege(p.role_oid, p.oid, p.attnum, p.permission))) AS "noExtraPrivileges",
@@ -85,6 +89,9 @@ export async function auditFoundationRole(connection: RoleAuditConnection): Prom
  * extension tables. Does not certify arbitrary future tables or projection. */
 export async function auditPreparationRole(connection: RoleAuditConnection): Promise<PreparationRoleAudit> {
   return Object.freeze({ scope: "open-mint-preparation-role-v1", ...await auditPrivileges(connection, PREPARATION_RUNTIME_PRIVILEGES) });
+}
+export async function auditProjectionRole(connection: RoleAuditConnection): Promise<ProjectionRoleAudit> {
+  return Object.freeze({ scope: "open-mint-projection-role-v1", ...await auditPrivileges(connection, PROJECTION_RUNTIME_PRIVILEGES) });
 }
 async function auditPrivileges(connection: RoleAuditConnection, profile: readonly RuntimeTablePrivileges[]): Promise<Omit<FoundationRoleAudit, "scope">> {
   try {

@@ -5,6 +5,7 @@ import { IssuanceBlockedError } from "./authorizations.js";
 import { AdmissionBlockedError } from "./repository.js";
 import { DurableMintRuntime } from "./runtimeService.js";
 import { createProjectionReadHandler, type ProjectionReads } from "../projection/http.js";
+import type { createVerifiedArtworkReads } from "../projection/artwork.js";
 
 const posts = new Set(["/api/wallet/challenge", "/api/wallet/verify", "/api/session/logout", "/api/assessments", "/api/mints/authorize"]);
 const statusPath = /^\/api\/assessments\/([A-Za-z0-9_-]{43})$/;
@@ -49,14 +50,14 @@ function publicFailure(error: unknown): { status: number; code: string; error: s
 }
 
 /** Loopback-only integration server, not the public/staging entrypoint. It
- * intentionally has no pages, preview/provider APIs, dev controls, raw artifact
- * reads, transaction broadcaster or user-controlled deployment/MBTI fields.
+ * intentionally has no pages, preview/provider APIs, dev controls, private raw
+ * artifact reads, broadcaster or user-controlled deployment/MBTI fields.
  */
-export function createDurableMintApiServer(runtime: DurableMintRuntime, publicReads?: ProjectionReads) {
+export function createDurableMintApiServer(runtime: DurableMintRuntime, publicReads?: ProjectionReads, artwork?: Pick<ReturnType<typeof createVerifiedArtworkReads>, "media">) {
   if (process.env.NODE_ENV === "production" || runtime.requests.repository.namespace.profile !== "local-real"
     || runtime.requests.profile.chain_id !== "31337") throw new Error("Public durable HTTP startup remains disabled.");
   const origin = runtime.sessions.origin, host = new URL(origin).host;
-  const readProjection = publicReads && createProjectionReadHandler(publicReads);
+  const readProjection = publicReads && createProjectionReadHandler(publicReads, artwork);
   let active = 0;
   const server = createServer(async (req, res) => {
     res.setHeader("Cache-Control", "no-store"); res.setHeader("X-Robots-Tag", PRIVATE_ROBOTS);

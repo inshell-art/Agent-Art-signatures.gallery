@@ -20,6 +20,10 @@ import { capabilityHash, PostgresWalletSessions } from "./sessions.js";
 import { ExclusiveWriter, WriterUnavailableError, type OwnershipConnection } from "./writer.js";
 import { eligibilityFixture, chainHash } from "./fixtures/eligibility.js";
 import { disposablePostgres, installSchema } from "./fixtures/postgres.js";
+import { projectionRpcFixture } from "../fixtures/projectionRpc.js";
+import { OpenMintProjection } from "../projection/postgres.js";
+import { createProjectionCoordinator } from "../projection/coordinator.js";
+import { createVerifiedArtworkReads } from "../projection/artwork.js";
 
 // Real cryptography is exercised separately below with an existing public
 // literal. Most DB tests stub verification; one explicit offline test uses
@@ -104,6 +108,8 @@ describe.skipIf(process.env.OPEN_MINT_TEST_POSTGRES !== "1")("reserve-before-sig
   beforeAll(async () => {
     cluster = disposablePostgres(); admin = factory(); await admin.connect(); await installSchema(admin);
     for (const file of ["requests-schema.sql", "publication-schema.sql", "authorization-schema.sql"]) await admin.query(readFileSync(new URL(file, import.meta.url), "utf8"));
+    await admin.query(readFileSync(new URL("../projection/projection-schema.sql", import.meta.url), "utf8"));
+    await admin.query(readFileSync(new URL("../projection/projection-v2.sql", import.meta.url), "utf8"));
     artifact = await preparePublicArtifact({ assessment: syntheticPublicAssessment(), origin: "https://signatures.example" });
   }, 30000);
   beforeEach(async () => {
@@ -169,6 +175,32 @@ describe.skipIf(process.env.OPEN_MINT_TEST_POSTGRES !== "1")("reserve-before-sig
     const result = await issuer.projectionEvidence({ handle: saved.reservation.handle, nonce: saved.reservation.authorization.nonce, authorizationDigest: saved.reservation.digest }, new AbortController().signal);
     expect(result?.reservation).toEqual(saved.reservation); expect(result?.signature).toBe(saved.signature); expect(result?.artifact).toEqual(artifact);
     expect(sign.signTypedData).toHaveBeenCalledOnce(); expect(await counts()).toEqual(before);
+  });
+  it("composes actual durable signed publication → observer → projection → exact saved reveal, including writer restart", async () => {
+    vi.mocked(verifyOpenMintAuthorization).mockImplementation(actualAuthorization.verifyOpenMintAuthorization);
+    const sign = signer(typedData => publicTestAccount.signTypedData(typedData)), signed = await issuer.issue(await intent(), sign);
+    const rpc = await projectionRpcFixture({ evidence: { ...signed, artifact }, config: gate.config, runtime: "0x60006000" });
+    const compose = async () => {
+      const p = await OpenMintProjection.open(writer, rpc.options.deployment);
+      const coordinator = createProjectionCoordinator(p, { ...rpc.options, resolveMint: issuer.projectionEvidence.bind(issuer) });
+      const reads = createVerifiedArtworkReads({ projection: coordinator, journal, namespaceId: namespace.id, origin: artifact.origin, timeoutMs: 2000 });
+      return { coordinator, reads, p };
+    };
+    let { coordinator, reads, p } = await compose(); const signal = () => new AbortController().signal;
+    await expect(reads.detail(artifact.assessment.handle, signal())).rejects.toThrow();
+    expect(await coordinator.sync(signal())).toBe("observed");
+    // Numeric block order must survive digit boundaries (not text "9" > "12").
+    expect((await p.chainCursor()).tail.map(pin => pin.number)).toEqual(["7", "8", "9", "10", "11", "12"]);
+    expect((await reads.detail(artifact.assessment.handle, signal())).mint?.state).toBe("confirming");
+    expect((await coordinator.gallery({ filter: { kind: "home" }, limit: 10 })).items).toHaveLength(0);
+    rpc.setFinalized(11); expect(await coordinator.sync(signal())).toBe("observed");
+    expect((await reads.media(artifact.assessment.handle, artifact.digest, "png", signal())).bytes).toEqual(artifact.png.bytes);
+    expect((await coordinator.gallery({ filter: { kind: "home" }, limit: 10 })).items).toHaveLength(1);
+    await writer.close(); writer = await ExclusiveWriter.acquire(factory); await startIssuer(); ({ coordinator, reads } = await compose());
+    await expect(reads.detail(artifact.assessment.handle, signal())).rejects.toThrow();
+    expect(await coordinator.sync(signal())).toBe("observed");
+    expect((await reads.detail(artifact.assessment.handle, signal())).mint?.state).toBe("minted");
+    expect(sign.signTypedData).toHaveBeenCalledOnce(); expect(await counts()).toEqual({ authorizations: 1, authorization_heads: 1, authorization_signatures: 1 });
   });
   it.each(["unknown", "reserved", "wrong-nonce", "wrong-digest", "invalid-signature", "cancelled", "missing-publication", "invalid-key"])("projection evidence refuses %s without issuing new authority", async kind => {
     const i = await intent(), sign = signer();

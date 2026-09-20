@@ -11,14 +11,21 @@ export function createProjectionCoordinator(projection: OpenMintProjection, opti
   const observe = createProjectionObserver(options);
   let witness: ProjectionObservation | undefined, running = false, generation = 0;
   return Object.freeze({
+    /** Immediate read withdrawal on drain/lost ownership, with no DB or RPC I/O.
+     * An already-running pass cannot restore this withdrawn generation. */
+    withdraw(): void { witness = undefined; generation++; },
     async sync(signal: AbortSignal): Promise<"observed" | "safety-halted" | "unavailable" | "busy"> {
       if (running) return "busy";
       running = true; witness = undefined; generation++;
+      const epoch = generation;
       try {
         const next = await observe(await projection.chainCursor(), signal);
         if (signal.aborted) throw new Error("Cancelled before projection write.");
         const result = await projection.applyObservation(next);
-        if (result === "observed" && !signal.aborted) witness = next;
+        if (result === "observed") {
+          if (signal.aborted || generation !== epoch) return "unavailable";
+          witness = next;
+        }
         return result;
       } catch {
         await projection.unavailable().catch(() => undefined);

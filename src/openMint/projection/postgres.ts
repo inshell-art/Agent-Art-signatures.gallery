@@ -32,7 +32,7 @@ export class OpenMintProjection {
     const deployment = validateDeployment(input), payload = bytes(deployment);
     await writer.transaction(async tx => {
       const version = (await tx.query<{ version: number }>("SELECT version FROM open_mint.projection_schema_version")).rows;
-      if (version.length !== 1 || version[0].version !== 1) fail("Unsupported projection schema.");
+      if (version.length !== 1 || version[0].version !== 2) fail("Unsupported projection schema.");
       await tx.query("INSERT INTO open_mint.projection_deployments(deployment_id, namespace_id, configuration) VALUES($1,$2,$3) ON CONFLICT DO NOTHING", [deployment.id, deployment.namespaceId, payload]);
       const saved = (await tx.query<{ configuration: Buffer }>("SELECT configuration FROM open_mint.projection_deployments WHERE deployment_id=$1", [deployment.id])).rows[0];
       if (!saved?.configuration.equals(payload)) fail("Immutable projection deployment mismatch.");
@@ -60,7 +60,7 @@ export class OpenMintProjection {
     const state = await this.#state(tx);
     if (state.health === "safety-halted") fail("Projection is safety-halted.");
     const tail = (await tx.query<{ number: string; hash: string }>(`SELECT number::text,hash FROM open_mint.projection_blocks
-      WHERE deployment_id=$1 AND canonical ORDER BY number DESC LIMIT $2`, [this.#deployment.id, this.#deployment.policy.rollbackBlocks + 1])).rows.reverse();
+      WHERE deployment_id=$1 AND canonical ORDER BY projection_blocks.number DESC LIMIT $2`, [this.#deployment.id, this.#deployment.policy.rollbackBlocks + 1])).rows.reverse();
     return { head: state.head_number === null ? null : { number: state.head_number, hash: state.head_hash! },
       promoted: state.promoted_number === null ? null : { number: state.promoted_number, hash: state.promoted_hash! }, tail };
   }

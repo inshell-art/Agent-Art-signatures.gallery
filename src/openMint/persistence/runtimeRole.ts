@@ -21,7 +21,7 @@ export const FOUNDATION_RUNTIME_PRIVILEGES = Object.freeze(([
 ] as const).map(([name, columns, insert, updates]) => Object.freeze({ name, columns: Object.freeze(columns.split(" ").sort()), insert,
   updates: Object.freeze(updates ? updates.split(" ") : []) })));
 
-export interface RuntimeTablePrivileges { readonly name: string; readonly columns: readonly string[]; readonly insert: boolean; readonly updates: readonly string[] }
+export interface RuntimeTablePrivileges { readonly name: string; readonly columns: readonly string[]; readonly insert: boolean; readonly updates: readonly string[]; readonly delete?: boolean }
 /** Preparation API only. No projection/rollback, migration, operator-policy or
  * recovery privileges are implicitly included in this separate profile. */
 export const PREPARATION_RUNTIME_PRIVILEGES: readonly RuntimeTablePrivileges[] = Object.freeze([
@@ -41,6 +41,26 @@ export const PREPARATION_RUNTIME_PRIVILEGES: readonly RuntimeTablePrivileges[] =
     updates: Object.freeze(updates ? updates.split(" ") : []) })),
 ]);
 
+/** One fenced runtime with preparation + projection. Only materialized mint and
+ * ownership rows can be deleted for bounded unfinalized rollback. Immutable
+ * logs, blocks, promotions, assessments and authorization evidence cannot. */
+export const PROJECTION_RUNTIME_PRIVILEGES: readonly RuntimeTablePrivileges[] = Object.freeze([
+  ...PREPARATION_RUNTIME_PRIVILEGES,
+  ...([
+    ["projection_schema_version", "version", false, "", false],
+    ["projection_deployments", "deployment_id namespace_id configuration", true, "", false],
+    ["projection_checkpoints", "deployment_id head_number head_hash promoted_number promoted_hash health halt_reason", true,
+      "head_number head_hash promoted_number promoted_hash health halt_reason", false],
+    ["projection_blocks", "deployment_id number hash parent_hash canonical payload", true, "canonical", false],
+    ["projection_logs", "deployment_id block_hash transaction_hash transaction_index log_index kind payload", true, "", false],
+    ["projection_mints", "deployment_id token_id handle mbti nonce original_recipient block_number block_hash transaction_index log_index payload availability", true, "availability", true],
+    ["projection_ownership", "deployment_id token_id owner start_block start_transaction start_log end_block end_transaction end_log mint_block mint_transaction mint_log", true,
+      "end_block end_transaction end_log", true],
+    ["projection_promotions", "deployment_id number hash policy_id evidence_reference", true, "", false],
+  ] as const).map(([name, columns, insert, updates, deletion]) => Object.freeze({ name, columns: Object.freeze(columns.split(" ").sort()), insert,
+    updates: Object.freeze(updates ? updates.split(" ") : []), delete: deletion })),
+]);
+
 /** Reviewed grant template for the foundation schema only. Returns SQL; never
  * creates a role, opens a connection, applies a migration, or grants ownership.
  * Request/publication/issuance/projection extensions need separately reviewed
@@ -52,6 +72,9 @@ export function foundationRuntimeGrants(role: string): string {
 export function preparationRuntimeGrants(role: string): string {
   return runtimeGrants(role, PREPARATION_RUNTIME_PRIVILEGES);
 }
+export function projectionRuntimeGrants(role: string): string {
+  return runtimeGrants(role, PROJECTION_RUNTIME_PRIVILEGES);
+}
 function runtimeGrants(role: string, profile: readonly RuntimeTablePrivileges[]): string {
   if (!/^[a-z][a-z0-9_]{0,62}$/.test(role) || role.startsWith("pg_") || role === "public") throw new Error("Invalid dedicated runtime role.");
   const target = `"${role}"`;
@@ -62,5 +85,6 @@ function runtimeGrants(role: string, profile: readonly RuntimeTablePrivileges[])
     // PostgreSQL SELECT FOR UPDATE requires UPDATE on at least one column.
     // Permit only an immutable key, never the operator's generation switch.
     ...profile.filter(table => table.updates.length).map(table => `GRANT UPDATE (${table.updates.join(", ")}) ON open_mint.${table.name} TO ${target};`),
+    ...profile.filter(table => table.delete).map(table => `GRANT DELETE ON open_mint.${table.name} TO ${target};`),
   ].join("\n");
 }

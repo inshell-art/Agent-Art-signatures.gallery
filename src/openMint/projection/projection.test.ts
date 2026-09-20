@@ -92,6 +92,7 @@ describe.skipIf(process.env.OPEN_MINT_TEST_POSTGRES !== "1")("isolated PostgreSQ
   beforeAll(async () => {
     cluster = disposablePostgres(); admin = factory(); await admin.connect(); await installSchema(admin);
     await admin.query(readFileSync(new URL("./projection-schema.sql", import.meta.url), "utf8"));
+    await admin.query(readFileSync(new URL("./projection-v2.sql", import.meta.url), "utf8"));
   }, 30000);
   beforeEach(async () => {
     config = deployment(); await admin.query("INSERT INTO open_mint.namespaces VALUES($1,'local-fixture','development-fixture','fixture-policy')", [config.namespaceId]);
@@ -103,8 +104,8 @@ describe.skipIf(process.env.OPEN_MINT_TEST_POSTGRES !== "1")("isolated PostgreSQ
   it("does not grant PUBLIC execution of additive projection trigger functions", async () => {
     const rows = (await admin.query(`SELECT p.proname, EXISTS(SELECT 1 FROM aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) a WHERE a.grantee=0 AND a.privilege_type='EXECUTE') AS public_execute
       FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='open_mint'
-      AND p.proname IN ('guard_projection_block','guard_projection_mint')`)).rows;
-    expect(rows).toHaveLength(2); expect(rows.every(row => row.public_execute === false)).toBe(true);
+      AND p.proname IN ('guard_projection_block','guard_projection_mint','guard_projection_ownership')`)).rows;
+    expect(rows).toHaveLength(3); expect(rows.every(row => row.public_execute === false)).toBe(true);
   });
 
   it("retains exact logs and atomically checkpoints, with replay and restart idempotence", async () => {

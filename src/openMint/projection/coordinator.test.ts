@@ -10,6 +10,8 @@ import { createProjectionCoordinator } from "./coordinator.js";
 import { createProjectionObserver, type ProjectionObservation } from "./observer.js";
 import { OpenMintProjection } from "./postgres.js";
 import { createProjectionReadHandler } from "./http.js";
+import { createVerifiedArtworkReads } from "./artwork.js";
+import { createProjectionPoller } from "./poller.js";
 
 const signal = () => new AbortController().signal;
 describe.skipIf(process.env.OPEN_MINT_TEST_POSTGRES !== "1")("RPC witness → fenced PostgreSQL → read service", () => {
@@ -20,6 +22,7 @@ describe.skipIf(process.env.OPEN_MINT_TEST_POSTGRES !== "1")("RPC witness → fe
   beforeAll(async () => {
     cluster = disposablePostgres(); admin = factory(); await admin.connect(); await installSchema(admin);
     await admin.query(readFileSync(new URL("./projection-schema.sql", import.meta.url), "utf8"));
+    await admin.query(readFileSync(new URL("./projection-v2.sql", import.meta.url), "utf8"));
   }, 30000);
   beforeEach(async () => {
     fixture = await projectionRpcFixture();
@@ -48,6 +51,29 @@ describe.skipIf(process.env.OPEN_MINT_TEST_POSTGRES !== "1")("RPC witness → fe
     service = createProjectionCoordinator(projection, fixture.options);
     expect(await home()).toEqual({ state: "unknown", items: [] }); expect(await service.lookup("alice_bob_key")).toEqual({ state: "unknown" });
     expect(await service.sync(signal())).toBe("observed"); expect((await home()).items).toHaveLength(1);
+  });
+  it("withdraws immediately on drain and refuses freshness from an already-running pass", async () => {
+    await service.sync(signal()); expect((await service.lookup("alice_bob_key")).state).toBe("confirming");
+    service.withdraw(); expect(await service.lookup("alice_bob_key")).toEqual({ state: "unknown" });
+    let resume!: () => void, entered!: () => void;
+    const waiting = new Promise<void>(r => { resume = r; }), ready = new Promise<void>(r => { entered = r; });
+    const apply = projection.applyObservation.bind(projection);
+    vi.spyOn(projection, "applyObservation").mockImplementationOnce(async witness => { entered(); await waiting; return apply(witness); });
+    const pending = service.sync(signal()); await ready; service.withdraw(); resume();
+    expect(await pending).toBe("unavailable"); expect(await service.lookup("alice_bob_key")).toEqual({ state: "unknown" });
+    expect(await service.sync(signal())).toBe("observed"); expect((await service.lookup("alice_bob_key")).state).toBe("confirming");
+  });
+  it("polls read-only finality through the real coordinator, then withdraws on stop", async () => {
+    let completed!: () => void;
+    const sync = async (s: AbortSignal) => { const outcome = await service.sync(s); completed(); return outcome; };
+    const poller = createProjectionPoller({ sync, withdraw: service.withdraw }, { intervalMs: 250, maxBackoffMs: 1000, passTimeoutMs: 5000 });
+    try {
+      const first = new Promise<void>(r => { completed = r; }); poller.start(signal()); await first;
+      expect((await service.lookup("alice_bob_key")).state).toBe("confirming");
+      const second = new Promise<void>(r => { completed = r; }); fixture.setFinalized(11); await second;
+      expect((await home()).items).toHaveLength(1);
+    } finally { poller.stop(); }
+    expect(await home()).toEqual({ state: "unknown", items: [] });
   });
   it("removes provisional reveal on shallow reorg, retaining exact orphan logs", async () => {
     await service.sync(signal()); fixture.fork(11);
@@ -137,19 +163,29 @@ describe.skipIf(process.env.OPEN_MINT_TEST_POSTGRES !== "1")("RPC witness → fe
     expect(await service.lookup("alice_bob_key")).toMatchObject({ state: "unknown", item: { availability: "quarantined" } });
   });
   it.skipIf(process.env.OPEN_MINT_TEST_HTTP !== "1")("serves verified status and paginated galleries over real isolated loopback HTTP with no read-triggered RPC", async () => {
-    const handler = createProjectionReadHandler(service), server = createServer((req, res) => { void handler(req, res).then(handled => { if (!handled) { res.statusCode = 404; res.end(); } }); });
+    const artwork = createVerifiedArtworkReads({ projection: service,
+      journal: { namespaceId: fixture.options.deployment.namespaceId, origin: fixture.evidence.artifact.origin, load: async () => structuredClone(fixture.evidence.artifact) },
+      namespaceId: fixture.options.deployment.namespaceId, origin: fixture.evidence.artifact.origin, timeoutMs: 1000 });
+    const handler = createProjectionReadHandler(service, artwork), server = createServer((req, res) => { void handler(req, res).then(handled => { if (!handled) { res.statusCode = 404; res.end(); } }); });
     server.listen(0, "127.0.0.1"); await once(server, "listening");
     const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
     try {
       expect((await fetch(`${url}/api/gallery`)).status).toBe(503);
+      const mediaUrl = `${url}/api/signatures/alice_bob_key/artwork/${fixture.evidence.artifact.digest}/svg`;
+      expect((await fetch(mediaUrl)).status).toBe(503);
       await service.sync(signal());
       const status = await fetch(`${url}/api/signatures/alice_bob_key/status`); expect(status.headers.get("cache-control")).toBe("no-store");
       expect(await status.json()).toMatchObject({ state: "confirming" });
+      const image = await fetch(mediaUrl); expect(image.status).toBe(200); expect(image.headers.get("cache-control")).toBe("no-store");
+      expect(image.headers.get("content-security-policy")).toContain("sandbox");
+      expect(new Uint8Array(await image.arrayBuffer())).toEqual(fixture.evidence.artifact.svg.bytes);
+      expect((await fetch(`${mediaUrl}?mbti=ENFP`)).status).toBe(400);
       expect((await (await fetch(`${url}/api/gallery`)).json()).items).toEqual([]);
       fixture.setFinalized(11); await service.sync(signal()); const before = fixture.calls.length;
       expect((await (await fetch(`${url}/api/gallery?mbti=INTJ&limit=1`)).json()).items).toHaveLength(1);
       expect((await (await fetch(`${url}/api/signatures/alice_bob_key/status`)).json()).state).toBe("minted");
       expect(fixture.calls).toHaveLength(before);
+      fixture.mutate(() => { throw new Error("RPC unavailable"); }); await service.sync(signal()); expect((await fetch(mediaUrl)).status).toBe(503);
     } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
   });
 });
