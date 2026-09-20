@@ -157,6 +157,11 @@ ${SLOGAN_MBTI_HERO_CSS}
 .open-mint .provenance-sources ul{padding-inline-start:1.25rem;line-height:1.6;overflow-wrap:anywhere}
 .open-mint .provenance-sources li+li{margin-top:.35rem}
 .open-mint [data-mint-transaction],.open-mint [data-mint-network]{overflow-wrap:anywhere}
+.open-mint [data-wallet-choice]{width:min(28rem,calc(100vw - 2rem));max-height:calc(100dvh - 2rem);box-sizing:border-box;padding:1rem;border:1px solid var(--line);border-radius:2px;background:var(--paper);color:var(--ink)}
+.open-mint [data-wallet-choice]::backdrop{background:#0008}
+.open-mint [data-wallet-choice] button{display:block;width:100%;min-height:44px;margin:.5rem 0 0;padding:.6rem .75rem;border:1px solid var(--line);background:transparent;color:inherit;font:inherit;text-align:start;white-space:normal;overflow-wrap:anywhere}
+.open-mint [data-wallet-choice] button:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+.open-mint [data-wallet-choice] p{margin:0 0 .75rem;font-size:1rem}
 .open-mint:has(.home-grid){--home-nav-inset:clamp(-22px,calc((1024px - 100vw)/2 + 20px),12px)}
 .open-mint:has(.home-grid) .home-return{inset-inline-start:max(var(--home-nav-inset),calc(env(safe-area-inset-left) - 22px))}
 .open-mint:has(.home-grid) .collection-shortcut{inset-inline-end:max(var(--home-nav-inset),calc(env(safe-area-inset-right) - 22px))}

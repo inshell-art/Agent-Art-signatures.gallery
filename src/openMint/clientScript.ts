@@ -1,4 +1,5 @@
 import { mintUiState } from "./mintUiState.js";
+import { createWalletProviders } from "./walletProviders.js";
 
 /** Shared, bounded failure copy for the server-rendered page and live polling. */
 export function assessmentFailureText(input: { error?: unknown; errorCategory?: unknown; diagnosticReference?: unknown }): string {
@@ -15,6 +16,7 @@ export function assessmentFailureText(input: { error?: unknown; errorCategory?: 
 export const OPEN_MINT_CLIENT_SCRIPT = String.raw`(() => {
   const mintUiState = ${mintUiState.toString()};
   const assessmentFailureText = ${assessmentFailureText.toString()};
+  const createWalletProviders = ${createWalletProviders.toString()};
   if (window.__openMintBound) return;
   window.__openMintBound = true;
   const one = (selector) => document.querySelector(selector);
@@ -51,6 +53,8 @@ export const OPEN_MINT_CLIENT_SCRIPT = String.raw`(() => {
   let bootFeedback = null;
   let requestDeadline = 0, proofDeadline = 0;
   let reservedUntil = 0;
+  const wallets = createWalletProviders(window);
+  let selectedWallet = null, cancelWalletChoice = null;
   const readTimeoutMs = 8000;
   const delayedConfirmationMs = 30000;
   const abort = new AbortController();
@@ -67,6 +71,9 @@ export const OPEN_MINT_CLIENT_SCRIPT = String.raw`(() => {
     return '0x' + chain.toString(16);
   };
   const errorText = (error) => {
+    if (error?.code === 'UNSUPPORTED_ACCOUNT') return 'Minting supports accounts without on-chain code only. Contract wallets and delegated or other code-bearing accounts are not supported. Choose a different account in your wallet and reconnect.';
+    if (error?.code === 4200 || error?.code === -32601) return 'This wallet does not support the required signing or network method. Choose another injected wallet and reconnect.';
+    if (error?.code === 4100) return 'Wallet access is not authorized. Unlock your selected wallet, allow account access, and reconnect.';
     if (error?.code === 4001 || error?.code === 'ACTION_REJECTED') return 'Cancelled in your wallet. Your prepared signature is unchanged. Choose Continue mint when ready.';
     if (error?.code === 'MINT_RESERVED') {
       const expires = Date.parse(error.reservedUntil);
@@ -177,8 +184,45 @@ export const OPEN_MINT_CLIENT_SCRIPT = String.raw`(() => {
     return chain;
   };
   const provider = () => {
-    if (!window.ethereum?.request) throw new Error('No Ethereum wallet was found. Open this page in a browser with a wallet.');
-    return window.ethereum;
+    if (!selectedWallet) throw new Error('Choose and connect an injected wallet before continuing.');
+    return selectedWallet.provider;
+  };
+  const bindWallet = choice => {
+    if (selectedWallet?.provider === choice?.provider) return;
+    selectedWallet?.provider.removeListener?.('accountsChanged', onAccounts);
+    selectedWallet?.provider.removeListener?.('chainChanged', onChain);
+    selectedWallet?.provider.removeListener?.('disconnect', onDisconnect);
+    selectedWallet = choice;
+    selectedWallet?.provider.on?.('accountsChanged', onAccounts);
+    selectedWallet?.provider.on?.('chainChanged', onChain);
+    selectedWallet?.provider.on?.('disconnect', onDisconnect);
+  };
+  const chooseWallet = async button => {
+    const choices = wallets.choices();
+    if (!choices.length) throw new Error('No Ethereum wallet was found. Open this page in a browser with an injected wallet.');
+    if (choices.length === 1) return choices[0];
+    return new Promise(resolve => {
+      const dialog = document.createElement('dialog');
+      dialog.setAttribute('aria-label', 'Choose a wallet');
+      dialog.dataset.walletChoice = 'true';
+      const title = document.createElement('p'); title.textContent = 'Choose a wallet'; dialog.append(title);
+      const finish = choice => { cancelWalletChoice = null; dialog.close(); dialog.remove(); if (!stopped) button.focus(); resolve(choice); };
+      choices.forEach((choice, index) => {
+        const option = document.createElement('button'); option.type = 'button';
+        option.textContent = choice.name + (choice.rdns ? ' (' + choice.rdns + ')' : '') + ' · ' + (index + 1);
+        option.addEventListener('click', () => finish(choice)); dialog.append(option);
+      });
+      const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = 'Cancel';
+      cancel.addEventListener('click', () => finish(null)); dialog.append(cancel);
+      dialog.addEventListener('cancel', event => { event.preventDefault(); finish(null); });
+      cancelWalletChoice = () => finish(null);
+      document.body.append(dialog); dialog.showModal();
+    });
+  };
+  const supportedAccount = async (ethereum, address) => {
+    const code = await ethereum.request({ method: 'eth_getCode', params: [address, 'latest'] });
+    if (typeof code !== 'string' || !/^0x(?:[a-f0-9]{2})*$/i.test(code)) throw new Error('The wallet account type could not be checked. Reconnect and try again.');
+    if (code !== '0x') throw Object.assign(new Error('Unsupported account'), { code: 'UNSUPPORTED_ACCOUNT' });
   };
   const isQuantity = (value) => typeof value === 'string' && /^0x(?:0|[1-9a-f][0-9a-f]*)$/.test(value) && BigInt(value) <= BigInt(Number.MAX_SAFE_INTEGER);
   const quantity = (value) => {
@@ -218,7 +262,7 @@ export const OPEN_MINT_CLIENT_SCRIPT = String.raw`(() => {
   const walletUnchanged = async (ethereum, state, address, generation, requireVerified = true) => {
     const accounts = await ethereum.request({ method: 'eth_accounts' });
     const chain = await ethereum.request({ method: 'eth_chainId' });
-    if (stopped || generation !== walletGeneration || !sameAddress(accounts?.[0], address) || asChain(chain) !== expectedChain(state) || (requireVerified && !sameAddress(verified, address))) throw new Error('The wallet changed during preparation. Connect it again.');
+    if (stopped || ethereum !== selectedWallet?.provider || generation !== walletGeneration || !sameAddress(accounts?.[0], address) || asChain(chain) !== expectedChain(state) || (requireVerified && !sameAddress(verified, address))) throw new Error('The wallet changed during preparation. Connect it again.');
   };
   const ensureChain = async (ethereum, state) => {
     const chainId = expectedChain(state);
@@ -245,6 +289,7 @@ export const OPEN_MINT_CLIENT_SCRIPT = String.raw`(() => {
     if (!addressPattern.test(address || '')) throw new Error('The wallet verification response was invalid.');
     verified = address; walletMode = mode;
     storageSet('wallet-mode', { address, mode });
+    if (mode === 'injected') storageSet('wallet-provider', selectedWallet?.key);
     message('[data-wallet-label]', address);
     all('[data-connect-wallet]').forEach(button => { (button.querySelector('span') || button).textContent = 'Change wallet'; });
     updateButtons();
@@ -448,6 +493,7 @@ export const OPEN_MINT_CLIENT_SCRIPT = String.raw`(() => {
       } else {
         const ethereum = provider(); await ensureChain(ethereum, state);
         await walletUnchanged(ethereum, state, recipient, generation);
+        await supportedAccount(ethereum, recipient);
         feedback('Preparing your mint authorization…');
         const result = await post('/api/mints/authorize', { code, consent: true }, () => {
           assertContext();
@@ -565,6 +611,7 @@ export const OPEN_MINT_CLIENT_SCRIPT = String.raw`(() => {
       if (mode === 'injected') {
         const ethereum = provider(); await ensureChain(ethereum, state);
         await walletUnchanged(ethereum, state, recipient, generation);
+        await supportedAccount(ethereum, recipient);
       }
       const result = await post('/api/assessments', { handle: requestedHandle }, () => {
         if (stopped || generation !== walletGeneration || !sameAddress(verified, recipient) || walletMode !== mode) throw new Error('The wallet changed. Connect it again before preparing a signature.');
@@ -584,12 +631,17 @@ export const OPEN_MINT_CLIENT_SCRIPT = String.raw`(() => {
     if (stopped || walletBusy || mintBusy || requestBusy || submittedHash || uncertainSubmission || requestExpired()) return;
     walletBusy = true; button.disabled = true; invalidateWallet();
     try {
-      const ethereum = provider(), state = await session();
       feedback('Choose your wallet…');
+      const choice = await chooseWallet(button);
+      if (!choice || stopped) { feedback('Wallet connection cancelled. Choose Connect wallet when ready.'); return; }
+      bindWallet(choice);
+      const ethereum = provider(), state = await session();
       const address = (await ethereum.request({ method: 'eth_requestAccounts' }))?.[0];
-      if (!addressPattern.test(address || '')) throw new Error('The wallet returned no valid address.');
+      if (!addressPattern.test(address || '') || /^0x0{40}$/i.test(address)) throw new Error('The wallet returned no valid address. Unlock it and select an account, then reconnect.');
       await ensureChain(ethereum, state);
       const generation = walletGeneration;
+      await walletUnchanged(ethereum, state, address, generation, false);
+      await supportedAccount(ethereum, address);
       await walletUnchanged(ethereum, state, address, generation, false);
       const proof = await post('/api/wallet/challenge', { address, ...(code ? { code } : {}) });
       if (!proof.challengeId || typeof proof.message !== 'string' || !proof.message || (proof.address && !sameAddress(proof.address, address)) || (proof.code && proof.code !== code)) throw new Error('The wallet proof does not match this request. Nothing was signed.');
@@ -605,8 +657,8 @@ export const OPEN_MINT_CLIENT_SCRIPT = String.raw`(() => {
       syncDeadlines(result);
       if (one('[data-collection-page]')) { location.reload(); return; }
       feedback('Wallet connected. Choose Mint & reveal when ready.');
-    } catch (error) { invalidateWallet(); recoverError(error); feedback(errorText(error)); }
-    finally { walletBusy = false; button.disabled = false; updateButtons(); }
+    } catch (error) { invalidateWallet(); recoverError(error); feedback(error?.code === 4001 || error?.code === 'ACTION_REJECTED' ? 'Cancelled in your wallet. Choose Connect wallet to connect and verify when ready.' : errorText(error)); }
+    finally { walletBusy = false; button.disabled = false; updateButtons(); if (!stopped) button.focus(); }
   }));
   one('[data-mint-form]')?.addEventListener('submit', async (event) => { event.preventDefault(); await submitMint('injected'); });
   if (local) {
@@ -641,9 +693,9 @@ export const OPEN_MINT_CLIENT_SCRIPT = String.raw`(() => {
   });
   const onAccounts = () => { if (walletBusy) walletGeneration++; else { invalidateWallet(); feedback('The wallet account changed. Connect it again before continuing.'); } };
   const onChain = () => { const label = one('[data-mint-network]'); if (label) label.hidden = true; if (walletBusy) walletGeneration++; else { invalidateWallet(); feedback('The wallet network changed. Connect it again before continuing.'); } };
-  window.ethereum?.on?.('accountsChanged', onAccounts);
-  window.ethereum?.on?.('chainChanged', onChain);
-  window.addEventListener('pagehide', () => { stopped = true; bootGeneration++; assessmentGeneration++; mintGeneration++; inspectionGeneration++; clearTimeout(timer); clearTimeout(bootTimer); clearTimeout(expiryTimer); abort.abort(); window.ethereum?.removeListener?.('accountsChanged', onAccounts); window.ethereum?.removeListener?.('chainChanged', onChain); }, { once: true });
+  const onDisconnect = () => { invalidateWallet(); feedback('The selected wallet disconnected. Unlock it and reconnect. Any submitted mint is still being checked.'); };
+  bindWallet(wallets.restore(storageGet('wallet-provider')));
+  window.addEventListener('pagehide', () => { stopped = true; bootGeneration++; assessmentGeneration++; mintGeneration++; inspectionGeneration++; clearTimeout(timer); clearTimeout(bootTimer); clearTimeout(expiryTimer); abort.abort(); cancelWalletChoice?.(); bindWallet(null); wallets.dispose(); }, { once: true });
   window.addEventListener('pageshow', (event) => { if (event.persisted) location.reload(); });
   const boot = async () => {
     if (stopped || (!page && !one('[data-assessment-request]'))) return;
@@ -656,7 +708,12 @@ export const OPEN_MINT_CLIENT_SCRIPT = String.raw`(() => {
       if (bootFeedback && one(bootFeedback.selector)?.textContent === bootFeedback.copy) message(bootFeedback.selector, '');
       bootFeedback = null;
       const savedMode = storageGet('wallet-mode');
-      if (wallet === walletGeneration && (state.walletVerified === true || page?.dataset.walletProved === 'true')) walletReady(walletAddress(state), state, local && savedMode?.mode === 'local' && sameAddress(savedMode.address, walletAddress(state)) ? 'local' : 'injected');
+      const mode = local && savedMode?.mode === 'local' && sameAddress(savedMode.address, walletAddress(state)) ? 'local' : 'injected';
+      if (!selectedWallet && mode === 'injected') bindWallet(wallets.restore(storageGet('wallet-provider')));
+      if (wallet === walletGeneration && (state.walletVerified === true || page?.dataset.walletProved === 'true')) {
+        if (mode === 'local' || selectedWallet) walletReady(walletAddress(state), state, mode);
+        else { storageRemove(intentKey); feedback('Choose and reconnect your wallet to continue. The previous wallet could not be identified.'); }
+      }
       syncDeadlines(state);
       if (submittedHash || uncertainSubmission || page?.dataset.mintState === 'pending') { message('[data-assessment-status]', ui().status); return; }
       if (page?.dataset.mintState === 'minted') { reveal(); return; }

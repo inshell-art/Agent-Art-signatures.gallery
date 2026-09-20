@@ -20,8 +20,18 @@ class Element {
   hidden = false;
   value = "";
   textContent = "";
+  type = "";
+  nodes: Element[] = [];
+  attributes: Record<string, string> = {};
+  open = false;
+  removed = false;
   addEventListener(type: string, listener: Listener) { this.listeners[type] = listener; }
   querySelector(selector: string) { return this.children[selector] ?? null; }
+  setAttribute(name: string, value: string) { this.attributes[name] = value; }
+  append(node: Element) { this.nodes.push(node); }
+  showModal() { this.open = true; }
+  close() { this.open = false; }
+  remove() { this.removed = true; }
   focus() {}
   select() {}
   async emit(type: string) {
@@ -53,6 +63,8 @@ type SetupOptions = {
   mintState?: string;
   mintHash?: string;
   response?: (path: string) => { ok: boolean; json: () => Promise<unknown> } | undefined;
+  providerKey?: string | null;
+  configureWindow?: (window: any) => void;
 };
 const flush = async () => { for (let i = 0; i < 250; i++) await Promise.resolve(); };
 function setup(options: SetupOptions = {}) {
@@ -76,12 +88,16 @@ function setup(options: SetupOptions = {}) {
   const walletEvents: Record<string, Listener> = {};
   const navigations: string[] = [];
   const storage = options.storage ?? new Map<string, string>();
+  if (options.providerKey !== null && !storage.has('sg-open:wallet-provider')) storage.set('sg-open:wallet-provider', JSON.stringify(options.providerKey ?? 'legacy:rabby'));
   let reloads = 0;
   let chain = "0x7a69";
   const state = { csrfToken: "csrf", wallet: WALLET, walletVerified: Boolean(options.walletProved), chainId: "31337", chainName: "Local chain", rpcUrl: "http://127.0.0.1:8545" };
   const window = {
     addEventListener(type: string, cb: Listener) { globalEvents[type] = cb; },
+    removeEventListener(type: string) { delete globalEvents[type]; },
+    dispatchEvent(event: Event) { globalEvents[event.type]?.(event); return true; },
     ethereum: {
+      isRabby: true,
       on(type: string, cb: Listener) { walletEvents[type] = cb; },
       removeListener(type: string) { delete walletEvents[type]; },
       async request({ method, params }: { method: string; params: unknown }) {
@@ -93,6 +109,7 @@ function setup(options: SetupOptions = {}) {
         if (method === "eth_getBlockByNumber") return { number: (params as any)[0], hash: BLOCK_HASH };
         if (method === "eth_getTransactionCount") return '0x1';
         if (method === "eth_call") return '0x';
+        if (method === "eth_getCode") return '0x';
         if (method === "wallet_switchEthereumChain") { chain = ((params as any)[0]).chainId; return null; }
         if (method === "personal_sign") return "0xsignature";
         if (method === "eth_sendTransaction") return HASH;
@@ -102,12 +119,14 @@ function setup(options: SetupOptions = {}) {
       },
     },
   };
+  options.configureWindow?.(window);
+  const body = new Element();
   const context = {
     window,
-    document: { querySelector: (selector: string) => elements[selector] ?? null, querySelectorAll: (selector: string) => elements[selector] ? [elements[selector]] : [] },
+    document: { body, createElement: () => new Element(), querySelector: (selector: string) => elements[selector] ?? null, querySelectorAll: (selector: string) => elements[selector] ? [elements[selector]] : [] },
     location: { origin: "https://example.test", hash: "", assign(path: string) { navigations.push(path); }, reload() { reloads += 1; } },
     sessionStorage: { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value), removeItem: (key: string) => storage.delete(key) },
-    URL, AbortController, Date: class extends Date { static now() { return options.now?.() ?? Date.now(); } }, navigator: {},
+    URL, Event, AbortController, Date: class extends Date { static now() { return options.now?.() ?? Date.now(); } }, navigator: {},
     setTimeout(fn: () => Promise<void>, delay = 0) {
       const id = ++nextTimerId;
       const run = async () => { timers.delete(id); const index = scheduled.indexOf(run); if (index !== -1) scheduled.splice(index, 1); await fn(); };
@@ -136,7 +155,7 @@ function setup(options: SetupOptions = {}) {
     },
   };
   runInNewContext(OPEN_MINT_CLIENT_SCRIPT, context);
-  return { elements, requests, walletCalls, scheduled, globalEvents, walletEvents, navigations, storage, state, reloads: () => reloads, rerun: () => runInNewContext(OPEN_MINT_CLIENT_SCRIPT, context) };
+  return { elements, requests, walletCalls, scheduled, globalEvents, walletEvents, navigations, storage, state, window, body, reloads: () => reloads, rerun: () => runInNewContext(OPEN_MINT_CLIENT_SCRIPT, context) };
 }
 function intent(storage = new Map<string, string>(), overrides = {}) {
   storage.set('sg-open:intent:rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr', JSON.stringify({ code: 'rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr', handle: 'agent_art', tokenId: '123', wallet: WALLET, mode: 'injected', chain: '0x7a69', contract: CONTRACT, expiresAt: Date.now() + 60_000, ...overrides }));
@@ -152,6 +171,127 @@ const tick = (test: ReturnType<typeof setup>, delay: number) => {
   expect(timer, `Expected a ${delay}ms timer`).toBeDefined();
   return timer!();
 };
+
+describe('injected wallet selection and account scope', () => {
+  const extraWallet = (request?: (request: { method: string; params?: unknown }) => Promise<unknown>) => {
+    const calls: string[] = [], events: Record<string, Listener> = {};
+    return { calls, events, provider: { isMetaMask: true, on: (name: string, fn: Listener) => { events[name] = fn; }, removeListener: (name: string) => { delete events[name]; }, request: async (input: { method: string; params?: unknown }) => { calls.push(input.method); return request?.(input); } } };
+  };
+
+  it('waits for explicit multi-extension selection and sends all proof/mint calls only to that provider', async () => {
+    let primary: any;
+    const second = extraWallet(input => primary.request(input));
+    const test = setup({ entry: true, providerKey: null, configureWindow: window => { primary = window.ethereum; window.ethereum = { providers: [primary, second.provider] }; } }); await flush();
+    const connecting = test.elements['[data-connect-wallet]'].emit('click'); await flush();
+    expect(test.walletCalls).toEqual([]); expect(second.calls).toEqual([]);
+    const dialog = test.body.nodes[0]!;
+    expect(dialog.attributes['aria-label']).toBe('Choose a wallet'); expect(dialog.open).toBe(true);
+    expect(dialog.nodes[1]!.textContent).toContain('Rabby'); expect(dialog.nodes[2]!.textContent).toContain('MetaMask');
+    await dialog.nodes[2]!.emit('click'); await connecting;
+    expect(dialog.removed).toBe(true);
+    expect(second.calls).toContain('personal_sign');
+    expect(test.walletEvents).toEqual({}); expect(Object.keys(second.events)).toEqual(['accountsChanged', 'chainChanged', 'disconnect']);
+    expect(JSON.parse(test.storage.get('sg-open:wallet-provider')!)).toBe('legacy:metamask');
+    await test.elements['[data-assessment-request]'].emit('submit');
+    expect(second.calls.filter(method => method === 'eth_getCode')).toHaveLength(2);
+    expect(test.navigations).toHaveLength(1);
+  });
+
+  it.each(['cancel', 'escape', 'pagehide'])('cancels wallet selection with %s without account access or proof', async how => {
+    const second = extraWallet();
+    const test = setup({ providerKey: null, configureWindow: window => { window.ethereum.providers = [window.ethereum, second.provider]; } }); await flush();
+    const connecting = test.elements['[data-connect-wallet]'].emit('click'); await flush(); const dialog = test.body.nodes[0]!;
+    if (how === 'pagehide') test.globalEvents.pagehide({});
+    else await (how === 'escape' ? dialog.emit('cancel') : dialog.nodes.at(-1)!.emit('click'));
+    await connecting;
+    expect(dialog.removed).toBe(true); expect(test.walletCalls).toEqual([]); expect(second.calls).toEqual([]);
+    expect(test.requests.filter(request => request.init.method === 'POST')).toEqual([]);
+  });
+
+  it('keeps the selected object and removes its listeners when window.ethereum is replaced', async () => {
+    const test = setup({ walletProved: true }); await flush();
+    const replacement = extraWallet(); test.window.ethereum = replacement.provider as any;
+    await test.elements['[data-mint-form]'].emit('submit');
+    expect(sends(test)).toHaveLength(1); expect(replacement.calls).toEqual([]);
+    test.globalEvents.pagehide({}); expect(test.walletEvents).toEqual({}); expect(replacement.events).toEqual({});
+  });
+
+  it('moves listeners only after explicitly selecting another wallet on reconnect', async () => {
+    let primary: any; const second = extraWallet(input => primary.request(input));
+    const test = setup({ walletProved: true, configureWindow: window => { primary = window.ethereum; window.ethereum.providers = [primary, second.provider]; } }); await flush();
+    const oldAccounts = test.walletEvents.accountsChanged;
+    const connecting = test.elements['[data-connect-wallet]'].emit('click'); await flush();
+    await test.body.nodes[0]!.nodes[2]!.emit('click'); await connecting;
+    expect(test.walletEvents).toEqual({}); expect(second.events.accountsChanged).toBe(oldAccounts);
+    second.events.accountsChanged([OTHER]);
+    await test.elements['[data-mint-form]'].emit('submit'); expect(sends(test)).toEqual([]);
+    expect(test.elements['[data-mint-feedback]'].textContent).toContain('account changed');
+  });
+
+  it.each([null, 'legacy:metamask'])('does not restore or auto-mint a verified session with missing provider identity %s', async providerKey => {
+    const test = setup({ walletProved: true, storage: intent(), providerKey }); await flush();
+    expect(test.walletCalls).toEqual([]); expect(sends(test)).toEqual([]); expect(test.storage.has(INTENT_KEY)).toBe(false);
+    expect(test.elements['[data-submit-mint]'].disabled).toBe(true);
+    expect(test.elements['[data-mint-feedback]'].textContent).toContain('previous wallet could not be identified');
+  });
+
+  it('restores the selected EIP-6963 provider by unique RDNS and ignores provider icon markup', async () => {
+    let primary: any; const second = extraWallet(input => primary.request(input));
+    const test = setup({ walletProved: true, providerKey: 'eip6963:io.metamask', configureWindow: window => {
+      primary = window.ethereum;
+      window.dispatchEvent = (event: Event) => { if (event.type === 'eip6963:requestProvider') window.announce?.(); return true; };
+      const listen = window.addEventListener;
+      window.addEventListener = (name: string, handler: Listener) => {
+        listen(name, handler);
+        if (name === 'eip6963:announceProvider') window.announce = () => handler({ detail: { info: { uuid: '00000000-0000-4000-8000-000000000001', name: '<img onerror=bad()>', rdns: 'io.metamask', icon: 'data:image/svg+xml,<svg onload=bad() />' }, provider: second.provider } });
+      };
+    } }); await flush();
+    await test.elements['[data-mint-form]'].emit('submit');
+    expect(second.calls).toContain('eth_sendTransaction'); expect(test.walletEvents).toEqual({});
+    expect(test.body.nodes).toEqual([]);
+  });
+
+  it('invalidates a disconnected wallet without releasing an unresolved submission', async () => {
+    const test = setup({ walletProved: true, storage: savedSubmission() }); await flush();
+    test.walletEvents.disconnect({ code: 4900 });
+    expect(test.storage.has(SUBMISSION_KEY)).toBe(true); expect(test.elements['[data-submit-mint]'].disabled).toBe(true);
+    await tick(test, 100); expect(test.requests.some(request => request.path.startsWith('/api/mints/status/'))).toBe(true);
+    expect(sends(test)).toEqual([]);
+  });
+
+  it.each(['0x6000', '0xef0100' + '1'.repeat(40)])('rejects on-chain code %s before signing or starting an assessment regardless of brand', async bytecode => {
+    const test = setup({ entry: true, walletRequest: method => method === 'eth_getCode' ? bytecode : undefined }); await flush();
+    await test.elements['[data-connect-wallet]'].emit('click');
+    expect(test.requests.filter(request => request.init.method === 'POST')).toEqual([]);
+    expect(test.walletCalls.some(call => call.method === 'personal_sign')).toBe(false);
+    expect(test.elements['[data-mint-feedback]'].textContent).toContain('delegated or other code-bearing accounts');
+    expect(test.elements['[data-assessment-request]'].children['button[type=submit]'].disabled).toBe(true);
+  });
+
+  it.each(['assessment', 'mint'])('checks changed account code before %s authority is requested', async action => {
+    const test = setup({ entry: action === 'assessment', walletProved: true, walletRequest: method => method === 'eth_getCode' ? '0xef0100' + '2'.repeat(40) : undefined }); await flush();
+    await test.elements[action === 'assessment' ? '[data-assessment-request]' : '[data-mint-form]'].emit('submit');
+    expect(test.requests.filter(request => request.init.method === 'POST')).toEqual([]); expect(sends(test)).toEqual([]);
+  });
+
+  it.each([{ accounts: [] }, { accounts: ['invalid'] }, { accounts: ['0x' + '0'.repeat(40)] }])('handles empty or invalid account responses $accounts without signing', async ({ accounts }) => {
+    const test = setup({ accounts: () => accounts }); await flush(); await test.elements['[data-connect-wallet]'].emit('click');
+    expect(test.walletCalls.some(call => call.method === 'personal_sign')).toBe(false);
+    expect(test.elements['[data-mint-feedback]'].textContent).toContain('Unlock it and select an account');
+  });
+
+  it.each([4001, 'ACTION_REJECTED', 4100, 4200, -32601])('leaves connection rejection or unsupported method %s recoverable', async code => {
+    let failed = true;
+    const test = setup({ walletRequest: method => { if (method === 'personal_sign' && failed) throw Object.assign(new Error('raw provider error'), { code }); } }); await flush();
+    await test.elements['[data-connect-wallet]'].emit('click');
+    expect(test.elements['[data-connect-wallet]'].disabled).toBe(false);
+    expect(test.elements['[data-mint-feedback]'].textContent).not.toContain('raw provider error');
+    expect(test.requests.some(request => request.path === '/api/wallet/verify')).toBe(false);
+    failed = false; await test.elements['[data-connect-wallet]'].emit('click');
+    expect(test.requests.filter(request => request.path === '/api/wallet/verify')).toHaveLength(1);
+    expect(sends(test)).toEqual([]);
+  });
+});
 
 describe('actionable mint recovery', () => {
   const reference = '12345678-1234-4123-8123-123456789abc';
@@ -1128,8 +1268,8 @@ describe('preview and mint browser lifecycle', () => {
     const article = new Element(); article.dataset = { assessmentCode: '', assessmentHandle: 'agent_art', mintState: 'minted' };
     test.elements['[data-assessment-code]'] = article;
     // A separate execution represents a document with empty-code public markup.
-    const scriptWindow: Record<string, unknown> = { addEventListener() {} };
-    runInNewContext(OPEN_MINT_CLIENT_SCRIPT, { window: scriptWindow, document: { querySelector: (key: string) => test.elements[key] ?? null, querySelectorAll: () => [] }, AbortController, Date, URL, location: { assign: (url: string) => test.navigations.push(url) }, fetch: () => { throw new Error('Public minted page must not poll.'); } });
+    const scriptWindow: Record<string, unknown> = { addEventListener() {}, removeEventListener() {}, dispatchEvent() {} };
+    runInNewContext(OPEN_MINT_CLIENT_SCRIPT, { window: scriptWindow, document: { querySelector: (key: string) => test.elements[key] ?? null, querySelectorAll: () => [] }, Event, AbortController, Date, URL, location: { assign: (url: string) => test.navigations.push(url) }, fetch: () => { throw new Error('Public minted page must not poll.'); } });
     await flush(); expect(test.navigations).toEqual([]); expect(test.requests).toEqual([]);
   });
   it('cancels paid preparation on an account-change event during eth_accounts, even if the account changes back', async () => {
