@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { performance } from "node:perf_hooks";
 import { Client } from "pg";
 import { privateKeyToAccount } from "viem/accounts";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -180,12 +181,19 @@ describe.skipIf(process.env.OPEN_MINT_TEST_POSTGRES !== "1")("isolated PostgreSQ
     expect(await row()).toMatchObject({ state: "pending", job_state: "running", fences: 1, receipts: 0 });
   });
   it("times out hung refresh using durable zero-fence evidence and refuses late continuation", async () => {
-    let release!: (value: unknown) => void;
-    refresh.mockImplementation(() => new Promise(resolve => { release = resolve; }));
-    worker = new PostgresAssessmentWorker(requests, { timeoutMs: 30, provider, identityResolver: resolver, refreshEligibility: refresh });
-    await expect(worker.run(intent)).resolves.toMatchObject({ outcome: { kind: "blocked-before-dispatch", phase: "before-dispatch" } });
-    release(await gate.witness("alice", account.address)); await new Promise(resolve => setTimeout(resolve, 0));
-    expect(await row()).toMatchObject({ state: "closed", job_state: "complete", fences: 0 }); expect(resolver.resolve).not.toHaveBeenCalled();
+    let release!: (value: unknown) => void, arrived!: () => void, elapsed = 0;
+    const ready = new Promise<void>(resolve => { arrived = resolve; });
+    refresh.mockImplementation(() => new Promise(resolve => { release = resolve; arrived(); }));
+    const monotonic = vi.spyOn(performance, "now").mockImplementation(() => elapsed);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      worker = new PostgresAssessmentWorker(requests, { timeoutMs: 30, provider, identityResolver: resolver, refreshEligibility: refresh });
+      const pending = worker.run(intent); await ready;
+      elapsed = 31; await vi.advanceTimersByTimeAsync(31);
+      await expect(pending).resolves.toMatchObject({ outcome: { kind: "blocked-before-dispatch", phase: "before-dispatch" } });
+      release(await gate.witness("alice", account.address)); await vi.advanceTimersByTimeAsync(0);
+      expect(await row()).toMatchObject({ state: "closed", job_state: "complete", fences: 0 }); expect(resolver.resolve).not.toHaveBeenCalled();
+    } finally { release?.(undefined); monotonic.mockRestore(); vi.useRealTimers(); }
   });
   it("cannot create a late claim if its deadline expires behind another transaction", async () => {
     const slow = writer.transaction(async tx => { await tx.query("SELECT pg_sleep(0.1)"); });
@@ -194,15 +202,24 @@ describe.skipIf(process.env.OPEN_MINT_TEST_POSTGRES !== "1")("isolated PostgreSQ
     expect(await row()).toMatchObject({ state: "pending", job_state: "queued", fences: 0 }); expect(await repository.getTerminal(attemptId)).toBeUndefined();
   });
   it("cancels a queued receipt write and determines uncertainty from committed fences", async () => {
-    let receiptWrite: Promise<void> | undefined;
+    let receiptWrite: Promise<void> | undefined, arrived!: () => void, release!: () => void, elapsed = 0;
+    const ready = new Promise<void>(resolve => { arrived = resolve; }), held = new Promise<void>(resolve => { release = resolve; });
     resolver.resolve.mockImplementation(async (handle, execution) => {
-      const slow = writer.transaction(async tx => { await tx.query("SELECT pg_sleep(0.1)"); });
+      const slow = writer.transaction(async tx => { await tx.query("SELECT 1"); arrived(); await held; });
       receiptWrite = execution!.recordReceipt(receipt("x-identity", "1"));
       await Promise.all([receiptWrite, slow]); return { ...identity(handle), provenance: "x-api" };
     });
-    worker = new PostgresAssessmentWorker(requests, { timeoutMs: 30, provider, identityResolver: resolver, refreshEligibility: refresh });
-    await expect(worker.run(intent)).resolves.toMatchObject({ outcome: { kind: "uncertain", phase: "x-identity" } });
-    await expect(receiptWrite).rejects.toThrow("deadline exceeded");
-    expect(await row()).toMatchObject({ state: "closed", job_state: "complete", fences: 1, receipts: 0 }); expect(provider.assess).not.toHaveBeenCalled();
+    // Let real SQL reach the committed dispatch fence and queued receipt before
+    // advancing the deadline. Runner speed must not choose a different phase.
+    const monotonic = vi.spyOn(performance, "now").mockImplementation(() => elapsed);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      worker = new PostgresAssessmentWorker(requests, { timeoutMs: 30, provider, identityResolver: resolver, refreshEligibility: refresh });
+      const pending = worker.run(intent); await ready;
+      elapsed = 31; await vi.advanceTimersByTimeAsync(31); release();
+      await expect(pending).resolves.toMatchObject({ outcome: { kind: "uncertain", phase: "x-identity" } });
+      await expect(receiptWrite).rejects.toThrow("deadline exceeded");
+      expect(await row()).toMatchObject({ state: "closed", job_state: "complete", fences: 1, receipts: 0 }); expect(provider.assess).not.toHaveBeenCalled();
+    } finally { release(); monotonic.mockRestore(); vi.useRealTimers(); }
   });
 });
